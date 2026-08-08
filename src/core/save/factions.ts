@@ -1,51 +1,95 @@
 /**
- * Faction index → display name.
+ * Faction slot → identity.
  *
  * The save stores reputations as a bare array of 47 slots: the *index is the
- * identity*, no names are written anywhere in the file. Names below are guesses
- * at the game's internal faction order and are suffixed with `?` until
- * confirmed, so the uncertainty shows up in output instead of reading as fact.
+ * identity*, no names are written anywhere in the file. The engine's slot order
+ * is not in the game data either — `records/game/gamefactions.dbr` holds the
+ * roster as a *set* of keys (`factionSurvivors`, `factionUser8`, …), and the
+ * `.arz` stores fields alphabetically, so reading the record back tells you
+ * which factions exist but not what number each one is.
  *
- * What the test characters do establish: slot 0 is a locked, always-zero
- * placeholder (so the list is 1-based), and slot 1 is a positive early-game
- * faction consistent with Devil's Crossing. Past slot 4 the ordering is
- * *known to be wrong somewhere* — the current guesses put both Kymon's Chosen
- * and Order of Death's Vigil at Honored on the same character, which the game
- * makes mutually exclusive. Stage 5 pins these down for real (they only start
- * mattering when faction vendor augments feed the context document); until
- * then only `unlocked` and `tier` are relied on.
+ * The order below was derived from the two live saves and holds together on
+ * every check available:
+ *
+ * - the eight non-`User` factions occupy slots 0–7, and `factionUser<N>` sits at
+ *   slot `N + 6` (so `factionUser2` = 8, `factionUser22` = 28);
+ * - every slot that comes out hostile is an enemy faction — Beasts (5, also the
+ *   record's own `hiddenFactions` entry), Arkovian Undead (12), Aetherial
+ *   Vanguard (18), Eldritch Horrors (22), Bloodbound (24);
+ * - the slots that are never unlocked are the ones with no reputation to earn:
+ *   Players (0), Neutral NPCs (7), Traps (25), The Dread (26), Asterkarn Dead (28);
+ * - it resolves the contradiction the previous guessed table produced. Slot 11
+ *   (Order of Death's Vigil) is Honored while slot 14 (Kymon's Chosen) is
+ *   hostile, which is exactly the mutual exclusivity the game enforces; the old
+ *   table put both at Honored;
+ * - `_Suchka` wears three Wight Skin Powders, a Kurn augment the vendor only
+ *   stocks at Honored. Kurn is `factionUser17` → slot 23, which reads 13,643
+ *   (Honored). Under the old table Kurn landed on a slot that never reached it.
+ *
+ * `id` matches `DbFaction.id`, so a save slot joins straight onto the game
+ * database's vendor stock (`db.vendorItems(id, tier)`). Names are the English
+ * fallback for `cli parse`, which has no database to localize against.
  */
-const FACTION_NAMES: readonly (string | undefined)[] = [
-  /*  0 */ undefined,
-  /*  1 */ "Devil's Crossing?",
-  /*  2 */ 'Aetherials?',
-  /*  3 */ 'Chthonians?',
-  /*  4 */ "Cronley's Gang?",
-  /*  5 */ undefined,
-  /*  6 */ 'Rovers?',
-  /*  7 */ undefined,
-  /*  8 */ 'Homestead?',
-  /*  9 */ 'The Outcast?',
-  /* 10 */ "Order of Death's Vigil?",
-  /* 11 */ "Kymon's Chosen?",
-  /* 12 */ undefined,
-  /* 13 */ undefined,
-  /* 14 */ undefined,
-  /* 15 */ undefined,
-  /* 16 */ undefined,
-  /* 17 */ 'Coven of Ugdenbog?',
-  /* 18 */ 'Barrowholm?',
-  /* 19 */ 'Malmouth Resistance?',
-  /* 20 */ 'Cult of Bysmiel?',
-  /* 21 */ 'Cult of Dreeg?',
-  /* 22 */ 'Cult of Solael?',
-  /* 23 */ undefined,
-  /* 24 */ undefined,
-  /* 25 */ undefined,
+
+export interface FactionSlot {
+  /** `DbFaction.id` — `f<n>` for the numbered user factions, else a slug. */
+  id: string;
+  /** English name, for output that has no database on hand. */
+  name: string;
+}
+
+/** Slots 0–7: the fixed factions, in engine order. */
+const FIXED_FACTIONS: readonly FactionSlot[] = [
+  { id: 'player', name: 'Players' },
+  { id: 'survivors', name: "Devil's Crossing" },
+  { id: 'aetherials', name: 'Aetherials' },
+  { id: 'cthonians', name: 'Chthonians' },
+  { id: 'outlaws', name: "Cronley's Gang" },
+  { id: 'beasts', name: 'Beasts' },
+  { id: 'drifters', name: 'Rovers' },
+  { id: 'neutralnpc', name: 'Neutral NPCs' },
 ];
 
+/** `factionUser<N>` names, indexed by N. There is no `factionUser0` or `1`. */
+const USER_FACTIONS: readonly (string | undefined)[] = [
+  /*  0 */ undefined,
+  /*  1 */ undefined,
+  /*  2 */ 'Homestead',
+  /*  3 */ 'Free Men of Corrigan Mine',
+  /*  4 */ 'The Outcast',
+  /*  5 */ "Order of Death's Vigil",
+  /*  6 */ 'Arkovian Undead',
+  /*  7 */ 'The Black Legion',
+  /*  8 */ "Kymon's Chosen",
+  /*  9 */ 'Coven of Ugdenbog',
+  /* 10 */ 'Barrowholm',
+  /* 11 */ 'Malmouth Resistance',
+  /* 12 */ 'Aetherial Vanguard',
+  /* 13 */ 'Cult of Bysmiel',
+  /* 14 */ 'Cult of Dreeg',
+  /* 15 */ 'Cult of Solael',
+  /* 16 */ 'Eldritch Horrors',
+  /* 17 */ 'Kurn',
+  /* 18 */ 'Bloodbound',
+  /* 19 */ 'Traps',
+  /* 20 */ 'The Dread',
+  /* 21 */ 'Noktukari',
+  /* 22 */ 'Asterkarn Dead',
+];
+
+/** The offset from `factionUser<N>` to its save slot. */
+const USER_SLOT_OFFSET = 6;
+
+/** Save slot → faction identity, or undefined for a slot the roster never fills. */
+export function factionSlot(index: number): FactionSlot | undefined {
+  if (index < FIXED_FACTIONS.length) return FIXED_FACTIONS[index];
+  const user = index - USER_SLOT_OFFSET;
+  const name = USER_FACTIONS[user];
+  return name === undefined ? undefined : { id: `f${user}`, name };
+}
+
 export function factionName(index: number): string | undefined {
-  return FACTION_NAMES[index];
+  return factionSlot(index)?.name;
 }
 
 /**

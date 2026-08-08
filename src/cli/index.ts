@@ -6,9 +6,10 @@
  * stage adds a command here. Run with `npm run cli -- <command>`.
  */
 
-import { copyFileSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { Command } from 'commander';
 
+import { buildContextDoc } from '../core/context/builder.js';
 import { loadGameDb } from '../core/db/index.js';
 import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
 import { createIconService } from '../core/icons/index.js';
@@ -31,6 +32,7 @@ import {
 } from '../core/save/gst.js';
 import {
   EQUIP_SLOT_NAMES,
+  parseDifficulty,
   type BlockReport,
   type CharacterSave,
   type Difficulty,
@@ -867,5 +869,77 @@ program
       });
     });
   });
+
+// ---------------------------------------------------------------------------
+// Stage 5B — the context document
+// ---------------------------------------------------------------------------
+
+/** `elite`, `Elite`, `1` — all three name the same difficulty. */
+function requireDifficulty(input: string): Difficulty {
+  const parsed = parseDifficulty(input);
+  if (parsed) return parsed;
+  console.error(`error: unknown difficulty ${JSON.stringify(input)}; expected Normal, Elite, Ultimate or 0/1/2`);
+  process.exit(1);
+}
+
+program
+  .command('context')
+  .description('compile the character + database + aggregates into the markdown context document')
+  .option('-c, --char <name>', 'character directory name under <saveDir>/main')
+  .option('--difficulty <d>', 'Normal | Elite | Ultimate (or 0/1/2); default: the character’s current one')
+  .option('-o, --out <file>', 'write the document here instead of stdout')
+  .option('--max-tokens <n>', 'token budget the document is trimmed to fit', '30000')
+  .option('--candidates <n>', 'candidates per equipment slot before trimming', '8')
+  .option('--refresh', 'rebuild the database first')
+  .action(
+    async (opts: {
+      char?: string;
+      difficulty?: string;
+      out?: string;
+      maxTokens: string;
+      candidates: string;
+      refresh?: boolean;
+    }) => {
+      await withDb({ refresh: opts.refresh, quiet: opts.out === undefined }, (db) => {
+        const settings = resolveSettings();
+        const name = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
+        if (!name) {
+          console.error(`error: no characters found under ${settings.saveDir}/main`);
+          process.exit(1);
+        }
+
+        const path = characterSavePath(name, settings.saveDir);
+        const save = parseGdc(readSave(path), { path });
+        const difficulty = opts.difficulty ? requireDifficulty(opts.difficulty) : save.difficulty;
+
+        const stashBuf = readOptionalSave(transferStashPath(settings.saveDir));
+        const formulasBuf = readOptionalSave(formulasPath(settings.saveDir));
+        const resolved = resolveCharacter(
+          save,
+          stashBuf ? parseTransferStash(stashBuf) : undefined,
+          formulasBuf ? parseFormulasFile(formulasBuf) : undefined,
+          db,
+        );
+
+        const doc = buildContextDoc(
+          { save, aggregate: aggregateCharacter(save, db, difficulty), resolved, db },
+          { maxTokens: Number(opts.maxTokens), perGroup: Number(opts.candidates) },
+        );
+
+        if (opts.out) {
+          writeFileSync(opts.out, doc.markdown);
+          console.log(`${opts.out} — ${doc.markdown.length.toLocaleString('en-US')} chars, ~${doc.tokenEstimate.toLocaleString('en-US')} tokens`);
+        } else {
+          process.stdout.write(doc.markdown);
+        }
+        // Trimming and the estimate go to stderr so `context > doc.md` stays clean.
+        console.error(`~${doc.tokenEstimate.toLocaleString('en-US')} tokens (budget ${Number(opts.maxTokens).toLocaleString('en-US')})`);
+        for (const note of doc.trimmed) console.error(`  trimmed: ${note}`);
+        if (doc.trimmed.length) {
+          console.error('  raise --max-tokens (and --candidates) to keep them; the untrimmed document is bounded by the level window, not by the caps');
+        }
+      });
+    },
+  );
 
 program.parse();

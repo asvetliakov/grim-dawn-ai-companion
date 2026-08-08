@@ -123,6 +123,20 @@ export interface Attributes {
 
 export type Difficulty = 'Normal' | 'Elite' | 'Ultimate';
 
+/** In save-file order, which is also the order the difficulty select lists them. */
+export const DIFFICULTIES: readonly Difficulty[] = ['Normal', 'Elite', 'Ultimate'];
+
+/**
+ * Accept either spelling a user is likely to type: the name in any case, or the
+ * index the save file stores. Returns undefined for anything else, so the caller
+ * can report it rather than silently defaulting to Normal.
+ */
+export function parseDifficulty(input: string): Difficulty | undefined {
+  const byName = DIFFICULTIES.find((d) => d.toLowerCase() === input.trim().toLowerCase());
+  if (byName) return byName;
+  return /^[0-2]$/.test(input.trim()) ? DIFFICULTIES[Number(input.trim())] : undefined;
+}
+
 /**
  * Only the leading, positively-identified fields of the play-stats block. The
  * block's tail grows with every patch, so the rest is walked (and checksummed)

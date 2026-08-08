@@ -27,7 +27,7 @@ import {
 } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 8;
+export const DB_SCHEMA_VERSION = 9;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -275,7 +275,16 @@ const SOCKETABLE_CLASSES = new Set(['ItemRelic', 'ItemEnchantment']);
 /** Asset references — meaningless to an advisor, and they dominate the byte count. */
 const ASSET_VALUE = /\.(tex|msh|anm|wav|pfx|tpl|fnt|ssh|lua)$/i;
 /** Record references worth keeping despite pointing at another DBR. */
-const MEANINGFUL_RECORD_KEY = /skill|mastery|bonusTable|artifactName|reagent|conversion/i;
+const MEANINGFUL_RECORD_KEY = /skill|mastery|bonusTable|artifactName|reagent|conversion|petBonus/i;
+
+/**
+ * String arrays that *are* stats. Arrays are otherwise level tables and loot
+ * weights, but `racialBonusRace` names which enemy races the racial damage
+ * bonus beside it applies to, and it is written as a list whenever there is
+ * more than one — dropping it turns "+8% Damage to Aetherials and Aether
+ * Corruptions" into "+8% damage to something".
+ */
+const STRING_LIST_KEYS = new Set(['racialBonusRace']);
 
 /**
  * The item's stats as raw DBR keys, which is what the context document and the
@@ -295,8 +304,11 @@ function extractStats(fields: Record<string, unknown>): Record<string, number | 
       if (ASSET_VALUE.test(value)) continue;
       if (value.endsWith('.dbr') && !MEANINGFUL_RECORD_KEY.test(key)) continue;
       stats[key] = value;
+    } else if (Array.isArray(value) && STRING_LIST_KEYS.has(key)) {
+      const list = value.filter((entry): entry is string => typeof entry === 'string');
+      if (list.length) stats[key] = list.join(';');
     }
-    // Arrays are level tables and loot weights — not per-item stats.
+    // Every other array is a level table or a loot weight — not a per-item stat.
   }
   return stats;
 }

@@ -41,6 +41,14 @@ export interface ItemRequirements {
 }
 
 export interface ResolvedItem {
+  /**
+   * Short stable handle, derived from the saved instance (record + seeds +
+   * attachments). Names are ambiguous — two rings can read identically — so the
+   * context document prints this beside every item and the advisor's structured
+   * output keys on it. Derived, not stored, so the renderer and the UI arrive at
+   * the same string from the same save.
+   */
+  id: string;
   /** The base item's record path, as stored in the save. */
   record: string;
   /** Full name, e.g. "Thunderstruck Legion Warhammer of Alacrity". */
@@ -160,6 +168,7 @@ export function resolveItem(
   const augment = attachment(inst.augmentName);
 
   const item: ResolvedItem = {
+    id: itemId(inst),
     record: inst.baseName,
     display: [prefix.name, base?.name ?? recordStem(inst.baseName), suffix.name].filter(Boolean).join(' '),
     source,
@@ -212,6 +221,35 @@ function requirements(base: DbItem, prefix?: DbAffix, suffix?: DbAffix): ItemReq
     req[key] = Math.round(baseline + (base.attrReqPerStat?.[key] ?? 0) * extra);
   }
   return req;
+}
+
+/**
+ * A short handle for a saved item instance.
+ *
+ * FNV-1a over the fields that make an instance what it is: the base record, the
+ * roll seeds, the affix records and the fitted socketables. Four base-36
+ * characters is ~1.7M values against the ~150 items a character can reach, so a
+ * collision is rare — and the context builder still disambiguates the ones that
+ * do happen, because two genuinely identical stacked items hash the same.
+ */
+export function itemId(inst: ItemInstance): string {
+  const key = [
+    inst.baseName,
+    inst.seed,
+    inst.prefixName,
+    inst.suffixName,
+    inst.modifierName,
+    inst.relicName,
+    inst.relicSeed,
+    inst.augmentName,
+    inst.augmentSeed,
+  ].join('|');
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36).padStart(4, '0').slice(-4);
 }
 
 function recordStem(record: string): string {
