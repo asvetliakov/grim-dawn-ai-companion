@@ -64,6 +64,7 @@ import {
   allocatedDevotions,
   atRank,
   classify,
+  dualWieldFlag,
   effectiveRanks,
   emptyBonuses,
   EXCLUSION_REASONS,
@@ -205,12 +206,44 @@ export interface AttributeSummary {
   unspentPoints: number;
 }
 
+/** How the held weapon set is configured. */
+export type WieldingMode =
+  | 'dual-wield melee'
+  | 'dual-wield ranged'
+  | 'two-hander'
+  | 'weapon + shield'
+  | 'weapon + caster off-hand'
+  | 'single weapon'
+  | 'unarmed'
+  | 'mixed';
+
+export interface DualWieldEnabler {
+  name: string;
+  /** `skill` for an invested mastery passive, else `granted by <item>`. */
+  source: string;
+}
+
+export interface WieldingSummary {
+  mode: WieldingMode;
+  mainHand?: string;
+  offHand?: string;
+  /**
+   * What legalizes a dual-wield mode. Dual wielding needs an enabler — a
+   * mastery passive (Dual Blades, Ranged Expertise) or an item-granted skill —
+   * and the character *is* dual-wielding, so an empty list on a dual mode is a
+   * model gap, exactly like a failing equipped-requirements check. Non-dual
+   * modes always report an empty list.
+   */
+  enablers: DualWieldEnabler[];
+}
+
 export interface CharacterAggregate {
   name: string;
   level: number;
   difficulty: Difficulty;
   /** Which weapon set the aggregate was computed for. */
   weaponSet: 1 | 2;
+  wielding: WieldingSummary;
   resistances: ResistanceMatrix;
   damage: DamageProfile;
   defense: DefenseSummary;
@@ -281,6 +314,69 @@ export function equippedSlots(save: CharacterSave, db: GameDb): EquippedSlot[] {
   return out;
 }
 
+const MELEE_1H = /^WeaponMelee_(Sword|Axe|Mace|Dagger|Scepter)$/;
+const RANGED_1H = 'WeaponHunting_Ranged1h';
+
+/**
+ * How the held weapons are configured, and — for the dual-wield modes — what
+ * makes that legal.
+ *
+ * Dual wielding needs an enabler. The data marks enablement and
+ * DW-conditionality with the same flags (`dualWieldOnly` / `dualRangedOnly`,
+ * see `dualWieldFlag`), so telling the two apart is a documented heuristic:
+ * an *invested mastery skill* counts only when it is a plain passive (Dual
+ * Blades, Berserker's Implements of War; the flagged WPS attacks and
+ * transmuters beside them merely require dual wielding), while an
+ * *item-granted* flagged skill of any class counts — every item whose tooltip
+ * reads "Allows you to dual wield" grants one (Direwolf Claw, Mutilate,
+ * Slaughter's Bloodbath, Gunslinger's Talent), and no other item does.
+ */
+const ENABLER_PASSIVE = new Set(['Skill_Passive', 'SkillBuff_Passive', 'Skill_PassiveDualWieldWeapon']);
+
+function wieldingSummary(slots: EquippedSlot[], save: CharacterSave, db: GameDb): WieldingSummary {
+  const main = slots.find((s) => s.slot === 'Main hand')?.item;
+  const off = slots.find((s) => s.slot === 'Off hand')?.item;
+  const mainCls = main?.base?.slot ?? '';
+  const offCls = off?.base?.slot ?? '';
+
+  let mode: WieldingMode = 'mixed';
+  if (!main && !off) mode = 'unarmed';
+  else if (/2h$/i.test(mainCls)) mode = 'two-hander';
+  else if (offCls === 'WeaponArmor_Shield') mode = 'weapon + shield';
+  else if (offCls === 'WeaponArmor_Offhand') mode = 'weapon + caster off-hand';
+  else if (MELEE_1H.test(mainCls) && MELEE_1H.test(offCls)) mode = 'dual-wield melee';
+  else if (mainCls === RANGED_1H && offCls === RANGED_1H) mode = 'dual-wield ranged';
+  else if (main && !off) mode = 'single weapon';
+
+  const enablers: DualWieldEnabler[] = [];
+  const family = mode === 'dual-wield melee' ? 'melee' : mode === 'dual-wield ranged' ? 'ranged' : undefined;
+  if (family) {
+    for (const entry of save.skills) {
+      if (entry.level < 1) continue;
+      const skill = db.getSkill(entry.record);
+      if (!skill || dualWieldFlag(skill, db) !== family) continue;
+      if (!ENABLER_PASSIVE.has(statRecord(skill, db).class)) continue;
+      enablers.push({ name: skillLabel(skill, db), source: 'skill' });
+    }
+    for (const { item } of slots) {
+      for (const part of [item.base, item.component, item.augment]) {
+        const granted = part?.grantedSkill;
+        if (!granted) continue;
+        const skill = db.getSkill(granted.record);
+        if (!skill || dualWieldFlag(skill, db) !== family) continue;
+        enablers.push({ name: granted.name, source: `granted by ${item.base?.name ?? item.record}` });
+      }
+    }
+  }
+
+  return {
+    mode,
+    ...(main?.base ? { mainHand: main.base.name } : {}),
+    ...(off?.base ? { offHand: off.base.name } : {}),
+    enablers,
+  };
+}
+
 /** Every stat block the loadout contributes, one per swappable part. */
 function contributions(slots: EquippedSlot[], db: GameDb): Contribution[] {
   const out: Contribution[] = [];
@@ -341,14 +437,20 @@ function contributions(slots: EquippedSlot[], db: GameDb): Contribution[] {
 
   // Set bonuses: every numeric field on a set record is a table indexed by how
   // many pieces are worn, so the piece count is the "rank" it is read at.
-  const worn = new Map<string, number>();
+  // The engine counts *distinct* set members — a second copy of the same ring
+  // does not advance the counter (verified in game) — hence the Set, not a tally.
+  const worn = new Map<string, Set<string>>();
   for (const { item } of slots) {
     const set = item.base?.setRecord;
-    if (set) worn.set(set, (worn.get(set) ?? 0) + 1);
+    if (!set) continue;
+    const members = worn.get(set) ?? new Set<string>();
+    members.add(item.record);
+    worn.set(set, members);
   }
-  for (const [record, pieces] of worn) {
+  for (const [record, members] of worn) {
     const set = db.getSet(record);
     if (!set) continue;
+    const pieces = members.size;
     out.push({
       slot: 'Set',
       label: set.name,
@@ -372,6 +474,7 @@ export function aggregateCharacter(
 ): CharacterAggregate {
   const slots = equippedSlots(save, db);
   const gear = contributions(slots, db);
+  const wielding = wieldingSummary(slots, save, db);
 
   // Ranks first: every skill row below is read at the rank the *current* gear
   // puts the skill at, so the two halves of the aggregate agree with each other.
@@ -443,6 +546,14 @@ export function aggregateCharacter(
   for (const entry of save.skills) {
     const skill = db.getSkill(entry.record);
     if (!skill || entry.level < 1) continue;
+    // A dual-wield-conditional skill is inert unless the loadout matches its
+    // family — Dual Blades counts for a dual-wielder and contributes nothing
+    // behind a shield, whatever band it would otherwise land in.
+    const dwFamily = dualWieldFlag(skill, db);
+    if (dwFamily && wielding.mode !== `dual-wield ${dwFamily}`) {
+      excludedReasons.add('dualWield');
+      continue;
+    }
     const { band, reason } = classify(skill, db);
     if (band === 'rr') {
       collectRR(skill, db, ranks, entry.record, rrRows);
@@ -558,6 +669,7 @@ export function aggregateCharacter(
     level: save.level,
     difficulty,
     weaponSet: save.alternateWeaponSetActive ? 2 : 1,
+    wielding,
     resistances: {
       // Grouped by band so the two totals underneath can be read off the rows
       // above them; within a band the discovery order is the loadout order.
@@ -745,6 +857,7 @@ function exclusionList(reasons: Set<string>): string[] {
     'skills granted by items (named above, stats not summed)',
     'item skill modifiers (named above, stats not summed)',
     'attack and retaliation damage, which depend on what is being hit',
+    'the damage ranking sums raw modifiers and does not apply damage conversion — read the conversion lines beside it',
     'affix values are the record’s base numbers; the engine rolls each within its jitter',
     // The resistance matrix bands maintainable buffs separately; everything
     // else here is a permanent-sources sum, and saying so beats letting a

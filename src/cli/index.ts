@@ -10,7 +10,7 @@ import { copyFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { Command } from 'commander';
 
 import { loadGameDb } from '../core/db/index.js';
-import { REP_TIERS, type GameDb } from '../core/db/types.js';
+import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
 import { createIconService } from '../core/icons/index.js';
 import { aggregateCharacter, type CharacterAggregate } from '../core/mechanics/aggregate.js';
 import { RESIST_COLUMNS, type ResistVector } from '../core/mechanics/stats.js';
@@ -635,11 +635,22 @@ function resistCells(values: ResistVector, blankZero = true): string {
   }).join(' ');
 }
 
-function printAggregate(agg: CharacterAggregate): void {
+function printAggregate(agg: CharacterAggregate, caps: SpeedCaps): void {
   const r = agg.resistances;
   console.log(
     `${agg.name} — level ${agg.level}, ${agg.difficulty} (weapon set ${agg.weaponSet})`,
   );
+
+  const w = agg.wielding;
+  const hands = w.mainHand ? ` (${w.mainHand}${w.offHand ? ` + ${w.offHand}` : ''})` : '';
+  const enablers = w.enablers.length
+    ? ` — enabled by ${w.enablers.map((e) => (e.source === 'skill' ? e.name : `${e.name}, ${e.source}`)).join('; ')}`
+    : '';
+  console.log(`  wielding: ${w.mode}${hands}${enablers}`);
+  if (w.mode.startsWith('dual-wield') && w.enablers.length === 0) {
+    console.log('  ⚠ dual-wielding with no enabler found — model gap, investigate');
+  }
+  console.log(`  speed caps (game): attack ${caps.attack}% · cast ${caps.cast}% · run ${caps.run}%`);
 
   console.log(`\nResistances by source${' '.repeat(24)}${resistHeader()}`);
   let band: string | undefined;
@@ -830,7 +841,7 @@ program
       }
       aggregates.forEach((agg, i) => {
         if (i) console.log('\n' + '='.repeat(72));
-        printAggregate(agg);
+        printAggregate(agg, db.speedCaps());
       });
     });
   });

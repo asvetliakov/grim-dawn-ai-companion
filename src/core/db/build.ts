@@ -22,11 +22,12 @@ import {
   type DbSet,
   type DbSkill,
   type RepTier,
+  type SpeedCaps,
   type StatValue,
 } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 7;
+export const DB_SCHEMA_VERSION = 8;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -57,6 +58,8 @@ export interface NormalizedDb {
   difficultyPenalty: Record<string, Record<string, number>>;
   /** `armorDefensiveAbsorption` — the 70% every armour piece absorbs by default. */
   armorAbsorptionBase: number;
+  /** Player speed caps from the engine record — `+% speed` past these is wasted. */
+  speedCaps: SpeedCaps;
   factions: DbFaction[];
   /** faction id → market tier → item record paths. */
   vendor: Record<string, Partial<Record<RepTier, string[]>>>;
@@ -91,6 +94,14 @@ const WANTED_PREFIXES = [
  */
 const GAME_ENGINE_RECORD = 'records/game/gameengine.dbr';
 const DEFAULT_ARMOR_ABSORPTION = 70;
+
+/**
+ * The engine's player speed caps (`playerAttackSpeedCapMax` and friends):
+ * attack/cast 200, movement 135. An advisor that doesn't know them over-values
+ * speed affixes on a build already at cap. Defaults match the installed 1.3.0.6
+ * values in case the record ever goes missing.
+ */
+const DEFAULT_SPEED_CAPS = { attack: 200, cast: 200, run: 135 };
 
 const GAME_FACTIONS_RECORD = 'records/game/gamefactions.dbr';
 
@@ -580,6 +591,12 @@ export function buildDb(input: BuildInput): NormalizedDb {
   const difficultyPenalty = buildDifficultyPenalty(records);
   const armorAbsorptionBase =
     num(records.get(GAME_ENGINE_RECORD), 'armorDefensiveAbsorption') ?? DEFAULT_ARMOR_ABSORPTION;
+  const engine = records.get(GAME_ENGINE_RECORD);
+  const speedCaps: SpeedCaps = {
+    attack: num(engine, 'playerAttackSpeedCapMax') ?? DEFAULT_SPEED_CAPS.attack,
+    cast: num(engine, 'playerSpellCastSpeedCapMax') ?? DEFAULT_SPEED_CAPS.cast,
+    run: num(engine, 'playerRunSpeedCapMax') ?? DEFAULT_SPEED_CAPS.run,
+  };
   const { factions, vendor } = buildFactions(records, items, localize);
   const recipes = buildRecipes(records, items);
 
@@ -598,6 +615,7 @@ export function buildDb(input: BuildInput): NormalizedDb {
     sets,
     difficultyPenalty,
     armorAbsorptionBase,
+    speedCaps,
     factions,
     vendor,
     recipes,

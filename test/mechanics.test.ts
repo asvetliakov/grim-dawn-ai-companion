@@ -66,6 +66,7 @@ function stubDb(world: World): GameDb {
     skillName: (r) => world.skills?.[r]?.name,
     difficultyPenalty: (d) => world.penalty?.[d] ?? {},
     armorAbsorptionBase: () => 70,
+    speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
     factions: () => [],
     vendorItems: () => [],
     recipes: () => [],
@@ -774,6 +775,120 @@ describe.skipIf(!haveGameInstall())(`mechanics vs the game (${haveGameInstall() 
   });
 });
 
+describe('wielding modes, dual-wield enablement and set duplicates', () => {
+  const SWORD = 'records/items/left.dbr';
+  const SWORD2 = 'records/items/right.dbr';
+  const SHIELD = 'records/items/wall.dbr';
+  const RING = 'records/items/loop.dbr';
+  const RING_MATE = 'records/items/loop2.dbr';
+  const SET = 'records/items/twinloops.dbr';
+  const DW_PASSIVE = 'records/skills/dualblades.dbr';
+  const DW_WPS = 'records/skills/whirl.dbr';
+  const DW_TRANSMUTER = 'records/skills/breath1b.dbr';
+  const DW_MEDAL = 'records/items/direwolf.dbr';
+  const DW_MEDAL_SKILL = 'records/skills/direwolfclaw.dbr';
+
+  const db = stubDb({
+    items: {
+      [SWORD]: item(SWORD, { name: 'Left Fang', slot: 'WeaponMelee_Sword' }),
+      [SWORD2]: item(SWORD2, { name: 'Right Fang', slot: 'WeaponMelee_Sword' }),
+      [SHIELD]: item(SHIELD, { name: 'Wall', slot: 'WeaponArmor_Shield' }),
+      [RING]: item(RING, { name: 'Loop', slot: 'ArmorJewelry_Ring', setRecord: SET }),
+      [RING_MATE]: item(RING_MATE, { name: 'Other Loop', slot: 'ArmorJewelry_Ring', setRecord: SET }),
+      [DW_MEDAL]: item(DW_MEDAL, {
+        name: 'Direwolf Crest',
+        slot: 'ArmorJewelry_Medal',
+        grantedSkill: { record: DW_MEDAL_SKILL, name: 'Direwolf Claw' },
+      }),
+    },
+    skills: {
+      // The melee enabler shape: a flagged passive (Dual Blades). Its stats are
+      // dual-wield-conditional, which is what the banding test leans on.
+      [DW_PASSIVE]: skill(DW_PASSIVE, { name: 'Dual Blades', stats: { dualWieldOnly: 1, defensivePierce: [3, 5] } }),
+      // A flagged mastery WPS *requires* dual wielding but does not enable it.
+      [DW_WPS]: skill(DW_WPS, { name: 'Whirling Blades', class: 'Skill_WPAttack_BasicAttack', stats: { dualWieldOnly: 1 } }),
+      // So does a flagged transmuter (Breath of Belgothian's shape).
+      [DW_TRANSMUTER]: skill(DW_TRANSMUTER, { name: 'Breath', class: 'Skill_Transmuter', stats: { dualWieldOnly: 1 } }),
+      // The same WPS shape granted by an item DOES enable ("Allows you to dual wield").
+      [DW_MEDAL_SKILL]: skill(DW_MEDAL_SKILL, {
+        name: 'Direwolf Claw',
+        class: 'Skill_WPAttack_BasicAttack',
+        stats: { dualWieldOnly: 1 },
+      }),
+    },
+    sets: { [SET]: { record: SET, name: 'Twin Loops', members: [RING, RING_MATE], bonuses: { defensiveCold: [0, 20] } } },
+  });
+
+  const dual: (EquippedItem | null)[] = [instance({ baseName: SWORD }), instance({ baseName: SWORD2 })];
+
+  it('counts a duplicate set item once, and distinct members normally', () => {
+    const doubled: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    doubled[6] = instance({ baseName: RING });
+    doubled[7] = instance({ baseName: RING });
+    const one = aggregateCharacter(save({ equipment: doubled }), db);
+    // Two copies of the same ring are one set member — the in-game counter
+    // says 1, so the two-piece bonus must not fire. At one piece this set
+    // grants nothing, so it earns no matrix row at all.
+    expect(one.resistances.rows.find((r) => r.kind === 'set')).toBeUndefined();
+    expect(one.resistances.permanent.cold ?? 0).toBe(0);
+
+    const paired: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    paired[6] = instance({ baseName: RING });
+    paired[7] = instance({ baseName: RING_MATE });
+    const two = aggregateCharacter(save({ equipment: paired }), db);
+    expect(two.resistances.rows.find((r) => r.kind === 'set')?.note).toBe('2/2 pieces');
+    expect(two.resistances.permanent.cold).toBe(20);
+  });
+
+  it('reads the wielding mode off the held weapons', () => {
+    const modeOf = (weaponSet1: (EquippedItem | null)[]): string =>
+      aggregateCharacter(save({ weaponSet1 }), db).wielding.mode;
+    expect(modeOf(dual)).toBe('dual-wield melee');
+    expect(modeOf([instance({ baseName: SWORD }), instance({ baseName: SHIELD })])).toBe('weapon + shield');
+    expect(modeOf([instance({ baseName: SWORD }), null])).toBe('single weapon');
+    expect(modeOf([null, null])).toBe('unarmed');
+  });
+
+  it('names the invested passive as the dual-wield enabler, never the mastery WPS or a transmuter', () => {
+    const agg = aggregateCharacter(
+      save({
+        weaponSet1: dual,
+        skills: [characterSkill(DW_PASSIVE, 4), characterSkill(DW_WPS, 2), characterSkill(DW_TRANSMUTER, 1)],
+      }),
+      db,
+    );
+    expect(agg.wielding.enablers).toEqual([{ name: 'Dual Blades', source: 'skill' }]);
+    // And the flagged passive's stats count while dual wielding (rank 4 clamps
+    // to the table's end).
+    expect(agg.resistances.permanent.pierce).toBe(5);
+  });
+
+  it('counts an item-granted flagged skill as an enabler', () => {
+    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    equipment[10] = instance({ baseName: DW_MEDAL });
+    const agg = aggregateCharacter(save({ weaponSet1: dual, equipment }), db);
+    expect(agg.wielding.enablers).toEqual([{ name: 'Direwolf Claw', source: 'granted by Direwolf Crest' }]);
+  });
+
+  it('reports dual wielding with no enabler as exactly that', () => {
+    const agg = aggregateCharacter(save({ weaponSet1: dual }), db);
+    expect(agg.wielding.mode).toBe('dual-wield melee');
+    expect(agg.wielding.enablers).toEqual([]);
+  });
+
+  it('inerts a dual-wield-only skill when the loadout does not dual wield', () => {
+    const agg = aggregateCharacter(
+      save({
+        weaponSet1: [instance({ baseName: SWORD }), instance({ baseName: SHIELD })],
+        skills: [characterSkill(DW_PASSIVE, 4)],
+      }),
+      db,
+    );
+    expect(agg.resistances.permanent.pierce ?? 0).toBe(0);
+    expect(agg.exclusions.some((line) => line.includes('dual-wield-only'))).toBe(true);
+  });
+});
+
 describe.skipIf(!haveGameInstall() || !haveSaves())(
   `aggregates vs the live save (${haveGameInstall() && haveSaves() ? 'live' : MISSING_SAVES_MESSAGE})`,
   () => {
@@ -835,6 +950,28 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
           ).toBe(true);
         }
       }
+    });
+
+    it('wielding it proves it: a dual-wielding character has a named enabler', { timeout: TIMEOUT }, async () => {
+      const db = await gameDb();
+      for (const name of CHARACTERS) {
+        const path = characterSavePath(name);
+        const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
+        // The game let the character equip this loadout, so a dual-wield mode
+        // with no enabler is a model gap, not a character state.
+        if (agg.wielding.mode.startsWith('dual-wield')) {
+          expect(agg.wielding.enablers.length, `${name}: ${agg.wielding.mode} with no enabler`).toBeGreaterThan(0);
+        }
+      }
+
+      // And the known case: _Suchka dual-wields swords behind Dual Blades.
+      const path = characterSavePath(CHARACTERS[0]);
+      const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
+      expect(agg.wielding.mode).toBe('dual-wield melee');
+      expect(agg.wielding.enablers.map((e) => e.name)).toContain('Dual Blades');
+      // Dual Blades' conditional stats count for this character — the
+      // dual-wield exclusion line must not appear for an actual dual-wielder.
+      expect(agg.exclusions.some((line) => line.includes('dual-wield-only'))).toBe(false);
     });
 
     it('scales the totals by difficulty without touching the raw sums', { timeout: TIMEOUT }, async () => {

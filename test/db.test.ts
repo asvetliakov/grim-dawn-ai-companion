@@ -200,6 +200,9 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
     // Attribute requirements come from the cost equations, so coverage is a
     // property of the build, not of luck with the loot tables.
     expect(db.stats().itemsWithAttrReq).toBeGreaterThan(5_000);
+
+    // Player speed caps, from the engine record — +% speed past these is wasted.
+    expect(db.speedCaps()).toEqual({ attack: 200, cast: 200, run: 135 });
   });
 
   it('types the use-on restriction on components and augments', { timeout: BUILD_TIMEOUT }, async () => {

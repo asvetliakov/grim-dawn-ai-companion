@@ -41,6 +41,7 @@ export const EXCLUSION_REASONS: Readonly<Record<string, string>> = {
   potion: 'potions and consumables',
   pet: 'pet bonuses and pet-only skills',
   party: 'party buffs cast by other players',
+  dualWield: 'dual-wield-only skills — this loadout does not dual wield, so their stats are inert',
 };
 
 const TOGGLED = new Set([
@@ -124,6 +125,26 @@ export function modifierParent(record: string, db: GameDb): DbSkill | undefined 
     const parent = db.getSkill(candidate);
     if (parent) return parent;
   }
+  return undefined;
+}
+
+/**
+ * Which dual-wield family a skill is conditioned on, if any.
+ *
+ * `dualWieldOnly` / `dualRangedOnly` on the record (verified against 1.3.0.6)
+ * mark a skill as inert unless the character dual-wields melee / ranged
+ * weapons. The same flags double as the *enabler* marker: Nightblade's Dual
+ * Blades ("enables dual wield", per its own FileDescription) is a flagged
+ * `Skill_Passive`, and every item whose tooltip says "Allows you to dual
+ * wield" grants a flagged skill (Direwolf Claw, Mutilate, Gunslinger's
+ * Talent). There is no separate enable field anywhere in the data.
+ */
+export function dualWieldFlag(skill: DbSkill, db: GameDb): 'melee' | 'ranged' | undefined {
+  const stats = statRecord(skill, db);
+  const flagged = (key: string): boolean =>
+    Boolean(rankValue(skill.stats[key] ?? 0, 1) || rankValue(stats.stats[key] ?? 0, 1));
+  if (flagged('dualWieldOnly')) return 'melee';
+  if (flagged('dualRangedOnly')) return 'ranged';
   return undefined;
 }
 

@@ -44,6 +44,7 @@ function stubDb(items: Record<string, DbItem>, affixes: Record<string, string>):
     skillName: () => undefined,
     difficultyPenalty: () => ({}),
     armorAbsorptionBase: () => 70,
+    speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
     factions: () => [],
     vendorItems: () => [],
     recipes: () => [],

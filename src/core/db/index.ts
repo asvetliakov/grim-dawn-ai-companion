@@ -32,6 +32,7 @@ import {
   type DbStats,
   type GameDb,
   type RepTier,
+  type SpeedCaps,
 } from './types.js';
 
 export interface LoadDbOptions {
@@ -134,6 +135,10 @@ export class NormalizedGameDb implements GameDb {
 
   armorAbsorptionBase(): number {
     return this.db.armorAbsorptionBase;
+  }
+
+  speedCaps(): SpeedCaps {
+    return this.db.speedCaps;
   }
 
   factions(): DbFaction[] {

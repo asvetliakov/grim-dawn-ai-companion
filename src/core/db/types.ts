@@ -216,6 +216,17 @@ export interface DbRecipe {
   ironCost?: number;
 }
 
+/**
+ * Player speed caps as percentages of base speed, read from the engine record
+ * (`playerAttackSpeedCapMax` = 200, cast 200, run 135). `+% speed` past a cap
+ * does nothing — an advisor that doesn't know this over-values speed affixes.
+ */
+export interface SpeedCaps {
+  attack: number;
+  cast: number;
+  run: number;
+}
+
 export interface GameDb {
   /** e.g. "Version 1.3.0.0". */
   gameVersion: string;
@@ -254,6 +265,8 @@ export interface GameDb {
    * multiplies it — 70 × 1.2 = 84 — so reporting a resulting figure needs it.
    */
   armorAbsorptionBase(): number;
+  /** The engine's player speed caps (attack/cast 200, run 135). */
+  speedCaps(): SpeedCaps;
   factions(): DbFaction[];
   /** Everything a faction vendor stocks up to and including `maxTier`. */
   vendorItems(factionId: string, maxTier: RepTier): DbItem[];
