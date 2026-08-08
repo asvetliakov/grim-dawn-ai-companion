@@ -7,13 +7,13 @@
  *   settings.json
  *   cache/<fingerprint>/          one directory per game build
  *     l10n-en.js                  raw GrimTools download, kept for reproducibility
- *     itemdb.js                   ditto
  *     db.json                     normalized database — the fast startup path
  * ```
  *
  * The directory is keyed by a fingerprint of the game's `.arz` archives rather
- * than by version string, because the fingerprint is derivable offline: a cold
- * start with a warm cache never has to ask the network what version it is.
+ * than by version string, because a game patch rewrites the archives and so
+ * rotates the key on its own — which is what makes "fetch at most once per game
+ * version" fall out without anything having to know the version first.
  * `db.json` records the human-readable `gameVersion` inside itself.
  *
  * Nothing here is ever committed — it is all game-derived data.

@@ -3,16 +3,22 @@
  *
  * Two sources, one interface:
  *
- *  - the game's own `.arz` archives supply item identity — the DBR record path,
- *    which is the only thing saves store and the only thing that can be joined
- *    back to them;
- *  - GrimTools supplies the tag → text localization table (and the version label).
+ *  - the game's own files supply item identity — the DBR record path, which is
+ *    the only thing saves store and the only thing that can be joined back to
+ *    them — plus the installed game's version;
+ *  - GrimTools supplies exactly one thing: the tag → text localization table.
  *
  * First run parses the archives and downloads the localization; every run after
  * that reads one `db.json` and touches neither. `--refresh` forces both again.
  */
 
-import { archivesFingerprint, findGameDir, gameArchives, MISSING_GAME_DIR_MESSAGE } from './gamefiles.js';
+import {
+  archivesFingerprint,
+  findGameDir,
+  gameArchives,
+  readGameVersion,
+  MISSING_GAME_DIR_MESSAGE,
+} from './gamefiles.js';
 import { buildDb, cleanText, readGameRecords, type NormalizedDb } from './build.js';
 import {
   clearCachedBuild,
@@ -21,7 +27,7 @@ import {
   writeCachedDb,
   writeCachedRaw,
 } from './cache.js';
-import { download, ITEMDB_URL, l10nUrl, parseItemDb, parseL10n } from './grimtools.js';
+import { download, l10nUrl, parseL10n } from './grimtools.js';
 import { REP_TIERS, type DbFaction, type DbItem, type DbRecipe, type DbStats, type GameDb, type RepTier } from './types.js';
 
 export interface LoadDbOptions {
@@ -61,12 +67,12 @@ export async function loadNormalizedDb(opts: LoadDbOptions = {}): Promise<Normal
   const game = readGameRecords(archives);
   note(`${game.records.size} records`);
 
-  const { gameVersion, l10n } = await loadGrimtools(fingerprint, locale, opts.refresh === true, note);
+  const l10n = await loadLocalization(fingerprint, locale, opts.refresh === true, note);
 
   const db = buildDb({
     game,
     l10n,
-    gameVersion,
+    gameVersion: readGameVersion(gameDir) ?? 'unknown',
     fingerprint,
     archives: archives.map((a) => a.expansion),
   });
@@ -76,33 +82,25 @@ export async function loadNormalizedDb(opts: LoadDbOptions = {}): Promise<Normal
 }
 
 /**
- * The GrimTools half. Raw downloads are cached alongside `db.json`, so a rebuild
- * after e.g. a schema bump costs no network either — only a new game build (or
- * `--refresh`) goes back out to grimtools.com.
+ * The one thing we still fetch. The raw download is cached alongside `db.json`,
+ * so a rebuild after e.g. a schema bump costs no network either — only a new
+ * game build (or `--refresh`) goes back out to grimtools.com.
  */
-async function loadGrimtools(
+async function loadLocalization(
   fingerprint: string,
   locale: string,
   refresh: boolean,
   note: (message: string) => void,
-): Promise<{ gameVersion: string; l10n: Record<string, string> }> {
-  const l10nName = `l10n-${locale}.js`;
+): Promise<Record<string, string>> {
+  const name = `l10n-${locale}.js`;
 
-  let itemdbSrc = refresh ? undefined : readCachedRaw(fingerprint, 'itemdb.js');
-  let l10nSrc = refresh ? undefined : readCachedRaw(fingerprint, l10nName);
-
-  if (itemdbSrc === undefined) {
-    note(`downloading ${ITEMDB_URL}`);
-    itemdbSrc = await download(ITEMDB_URL);
-    writeCachedRaw(fingerprint, 'itemdb.js', itemdbSrc);
-  }
-  if (l10nSrc === undefined) {
+  let src = refresh ? undefined : readCachedRaw(fingerprint, name);
+  if (src === undefined) {
     note(`downloading ${l10nUrl(locale)}`);
-    l10nSrc = await download(l10nUrl(locale));
-    writeCachedRaw(fingerprint, l10nName, l10nSrc);
+    src = await download(l10nUrl(locale));
+    writeCachedRaw(fingerprint, name, src);
   }
-
-  return { gameVersion: parseItemDb(itemdbSrc).gameVersion, l10n: parseL10n(l10nSrc, locale) };
+  return parseL10n(src, locale);
 }
 
 /** `GameDb` over the cached JSON — every lookup is a plain object read. */

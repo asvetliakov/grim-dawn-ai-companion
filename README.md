@@ -26,11 +26,13 @@ either with `GD_GAME_DIR` / `GD_SAVE_DIR`, or pin them in
 Item identity lives in the game's own `database/*.arz` archives, which are the
 only place a save's DBR record paths can be looked up. Those archives are read
 from your local install and cached, normalized, under
-`~/Library/Application Support/gd-companion/cache/`.
+`~/Library/Application Support/gd-companion/cache/`. The game version is read
+from `Engine.dll`.
 
-Item and skill **names** come from the localization tables published by
-**[GrimTools](https://www.grimtools.com/) (Dammitt)** — thank you. They are
-fetched at most once per game version and cached locally.
+Item and skill **names** come from the localization table published by
+**[GrimTools](https://www.grimtools.com/) (Dammitt)** — thank you. That one ~1 MB
+file is the only thing fetched over the network, at most once per game version,
+and it is cached locally.
 
 **No game-derived data is committed to this repository**: no archive contents, no
 GrimTools downloads, no save files. The repo ships code only.

@@ -105,7 +105,9 @@ They do not. `itemdb.js` contains **zero** occurrences of `records/` (`grep -c "
 A hybrid, both halves behind the unchanged `GameDb` seam:
 
 - **Item identity and data — the game's own `.arz` archives** (`src/core/db/arz.ts`), keyed by record path, merged `database.arz` → `GDX1` → `GDX2` → `GDX3` last-wins. This is the post-v1 backend from the appendix below, pulled forward because nothing else can identify a save's items. It needed no new dependency: LZ4 *block* decompression is ~30 lines and `.arz` already stores the decompressed size.
-- **Localization — GrimTools `l10n/en.js`** (16,246 tags), which resolves 95.6% of all item name tags and 100% of the tags on real gear. The misses are dev placeholders (`*000_*` template records), DLC illusion transmutes and lore notes. `itemdb.js` is still fetched, but only for its `gameVersion` label.
+- **Localization — GrimTools `l10n/en.js`** (~1 MB, 16,246 tags), which resolves 95.6% of all item name tags and 100% of the tags on real gear. The misses are dev placeholders (`*000_*` template records), DLC illusion transmutes and lore notes. This is now the **only** network fetch.
+
+`itemdb.js` was briefly fetched for its `gameVersion` string and then dropped: 8.7 MB for one field, and the field is *wrong* — GrimTools reports the version of its own dump (`Version 1.3.0.0`) against a 1.3.0.6 install. The version now comes from a NUL-terminated `v1.3.0.6` marker in `Engine.dll`, which is unique in that binary under a version-shaped, NUL-terminated pattern; `readGameVersion` returns undefined rather than guessing if a future patch ever makes it ambiguous. (Steam's `appmanifest_219990.acf` only offers `buildid`, and `itemdb_diff.js` is 14 MB.)
 
 Vendor catalogs also come from the `.arz` rather than GrimTools, contrary to the approved sketch: GrimTools' faction lists are `it####` ids that cannot produce record paths, and `DbItem.record` (plus Stage 4's icons) needs them. `factionmarket.tpl` → four `factiontier.tpl` tables → `marketStaticItems` gives the same stock with real record paths — 15 vendor factions, 1,100 items.
 
@@ -126,7 +128,7 @@ Vendor catalogs also come from the `.arz` rather than GrimTools, contrary to the
 
 ### Numbers
 
-`Version 1.3.0.0` — 9,878 items, 7,984 affixes (6,196 named), 29 factions (15 with vendors, 1,100 items stocked), 927 blueprints. Cold build ≈ 3 s plus ~10 MB of downloads; warm start ≈ 0.4 s and zero network (asserted by a test with `fetch` stubbed to throw).
+`1.3.0.6` — 9,878 items, 7,984 affixes (6,196 named), 29 factions (15 with vendors, 1,100 items stocked), 927 blueprints. Cold build ≈ 3 s plus a single ~1 MB download; warm start ≈ 0.4 s and zero network (asserted by a test with `fetch` stubbed to throw).
 
 ### Notes for later stages
 

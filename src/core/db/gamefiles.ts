@@ -7,7 +7,7 @@
  * does for saves.
  */
 
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -106,6 +106,33 @@ export function gameArchives(gameDir: string): GameArchive[] {
  */
 export function archivesFingerprint(archives: GameArchive[]): string {
   return fingerprint(archives.map((a) => `${a.expansion}:${a.size}:${Math.round(a.mtimeMs)}`));
+}
+
+/**
+ * The engine stamps its build into `Engine.dll` as a NUL-terminated `v1.3.0.6`.
+ * A version-shaped, NUL-terminated token not preceded by other printable ASCII
+ * matches exactly once across the whole 3.6 MB binary, which is what makes this
+ * safe to grep for; if a future patch ever makes it ambiguous, we say we do not
+ * know rather than guess.
+ *
+ * This is the *accurate* source. GrimTools reports the version of its own data
+ * dump ("Version 1.3.0.0"), which lags the installed game.
+ */
+export function readGameVersion(gameDir: string): string | undefined {
+  let binary: string;
+  try {
+    // latin1 so byte offsets and characters line up; we are pattern-matching
+    // bytes, not decoding text.
+    binary = readFileSync(join(gameDir, 'Engine.dll'), 'latin1');
+  } catch {
+    return undefined;
+  }
+
+  const found = new Set<string>();
+  for (const match of binary.matchAll(/(?<![\x21-\x7e])v(\d+\.\d+\.\d+(?:\.\d+)?)\x00/g)) {
+    found.add(match[1]!);
+  }
+  return found.size === 1 ? [...found][0] : undefined;
 }
 
 export const MISSING_GAME_DIR_MESSAGE =

@@ -3,9 +3,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { decompressLz4Block, readArz } from '../src/core/db/arz.js';
 import { cleanText } from '../src/core/db/build.js';
-import { archivesFingerprint, findGameDir, gameArchives } from '../src/core/db/gamefiles.js';
+import { archivesFingerprint, findGameDir, gameArchives, readGameVersion } from '../src/core/db/gamefiles.js';
 import { loadGameDb } from '../src/core/db/index.js';
-import { parseItemDb, parseL10n } from '../src/core/db/grimtools.js';
+import { parseL10n } from '../src/core/db/grimtools.js';
 import { REP_TIERS } from '../src/core/db/types.js';
 import { MISSING_GAME_MESSAGE, gameDb, haveGameInstall } from './paths.js';
 
@@ -73,32 +73,7 @@ describe('readArz', () => {
 // GrimTools dump validation — synthetic, no network
 // ---------------------------------------------------------------------------
 
-describe('GrimTools dump validation', () => {
-  const goodItemDb = 'window.gameVersion="Version 1.3.0.0";window.allItems={it1:{}};window.factions={f5:{}};';
-
-  it('accepts a well-formed itemdb', () => {
-    expect(parseItemDb(goodItemDb).gameVersion).toBe('Version 1.3.0.0');
-  });
-
-  it('names the missing global when a key is gone', () => {
-    const altered = 'window.allItems={it1:{}};window.factions={f5:{}};';
-    expect(() => parseItemDb(altered)).toThrow(/window\.gameVersion/);
-  });
-
-  it('names the empty global rather than silently accepting it', () => {
-    const emptied = 'window.gameVersion="v";window.allItems={};window.factions={f5:{}};';
-    expect(() => parseItemDb(emptied)).toThrow(/window\.allItems: is empty/);
-  });
-
-  it('reports a truncated download instead of failing later', () => {
-    // A cut-off file assigns nothing; `window` stays empty.
-    expect(() => parseItemDb('window.gameVersi')).toThrow(/window\.gameVersion/);
-  });
-
-  it('reports a syntactically broken dump as an evaluation failure', () => {
-    expect(() => parseItemDb('window.allItems={it1:')).toThrow(/could not evaluate/);
-  });
-
+describe('GrimTools localization validation', () => {
   it('accepts a well-formed localization table', () => {
     const tags = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`tag${i}`, `text ${i}`]));
     const src = `db_l10n_texts['en']=${JSON.stringify(tags)};`;
@@ -111,6 +86,15 @@ describe('GrimTools dump validation', () => {
 
   it('rejects a localization table too small to be complete', () => {
     expect(() => parseL10n("db_l10n_texts['en']={a:'b'};", 'en')).toThrow(/too few tags/);
+  });
+
+  it('reports a truncated download instead of failing later', () => {
+    // A cut-off file assigns nothing, so the seeded global stays empty.
+    expect(() => parseL10n("db_l10n_texts['e", 'en')).toThrow(/could not evaluate/);
+  });
+
+  it('reports a syntactically broken dump as an evaluation failure', () => {
+    expect(() => parseL10n("db_l10n_texts['en']={a:", 'en')).toThrow(/could not evaluate/);
   });
 });
 
@@ -142,9 +126,16 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
     expect(relic?.fields['description']).toBe('tagRelicC003');
   });
 
+  it('reads the installed game version out of Engine.dll', () => {
+    // The marker has to be unambiguous, not merely present — `readGameVersion`
+    // returns undefined rather than guessing if a patch ever makes it plural.
+    expect(readGameVersion(findGameDir()!)).toMatch(/^\d+\.\d+\.\d+(\.\d+)?$/);
+    expect(readGameVersion('/definitely/not/a/game/dir')).toBeUndefined();
+  });
+
   it('resolves item records to localized names, rarity and level', { timeout: BUILD_TIMEOUT }, async () => {
     const db = await gameDb();
-    expect(db.gameVersion).toMatch(/^Version /);
+    expect(db.gameVersion).toMatch(/^\d+\.\d+\.\d+/);
 
     const relic = db.getItem('records/items/gearrelic/c003_relic.dbr');
     expect(relic?.name).toBe('Slaughter');

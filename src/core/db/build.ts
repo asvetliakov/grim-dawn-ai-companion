@@ -13,7 +13,7 @@ import type { GameArchive } from './gamefiles.js';
 import { REP_TIERS, type DbFaction, type DbItem, type DbRecipe, type RepTier } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 2;
+export const DB_SCHEMA_VERSION = 3;
 
 export interface NormalizedDb {
   schemaVersion: number;
