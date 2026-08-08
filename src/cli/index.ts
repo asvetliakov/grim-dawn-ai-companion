@@ -6,12 +6,21 @@
  * stage adds a command here. Run with `npm run cli -- <command>`.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { Command } from 'commander';
 
-import { formulasPath, transferStashPath } from '../core/paths.js';
+import { loadGameDb } from '../core/db/index.js';
+import { REP_TIERS, type GameDb } from '../core/db/types.js';
+import { characterSavePath, formulasPath, transferStashPath } from '../core/paths.js';
+import { CoverageTracker, resolveCharacter, type ResolvedItem } from '../core/resolve.js';
+import { listCharacters, resolveSettings } from '../core/settings.js';
 import { parseGdc } from '../core/save/gdc.js';
-import { parseFormulasFile, parseTransferStash, type TransferStash } from '../core/save/gst.js';
+import {
+  parseFormulasFile,
+  parseTransferStash,
+  type FormulasFile,
+  type TransferStash,
+} from '../core/save/gst.js';
 import { EQUIP_SLOT_NAMES, type BlockReport, type CharacterSave } from '../core/save/types.js';
 
 const program = new Command();
@@ -228,6 +237,171 @@ program
       console.log('\nWarnings');
       for (const w of file.warnings) console.log(`  ! ${w}`);
     }
+  });
+
+// ---------------------------------------------------------------------------
+// Stage 3 — the game database and the resolver
+// ---------------------------------------------------------------------------
+
+/** Turn a thrown Error into a one-line message; stack traces help nobody here. */
+async function withDb<T>(
+  opts: { refresh?: boolean; quiet?: boolean },
+  fn: (db: GameDb) => T | Promise<T>,
+): Promise<T> {
+  const settings = resolveSettings();
+  try {
+    const db = await loadGameDb({
+      ...(settings.gameDir ? { gameDir: settings.gameDir } : {}),
+      locale: settings.locale,
+      refresh: opts.refresh === true,
+      onProgress: opts.quiet ? () => {} : (m) => console.error(`… ${m}`),
+    });
+    return await fn(db);
+  } catch (err) {
+    console.error(`error: ${(err as Error).message}`);
+    process.exit(1);
+  }
+}
+
+program
+  .command('db')
+  .description('build or inspect the game item database (game .arz + GrimTools localization)')
+  .option('--refresh', 're-read the archives and re-download the localization table')
+  .option('--stats', 'print coverage and content counts')
+  .option('--faction <id>', 'list a faction vendor’s stock')
+  .option('--tier <tier>', `market tier for --faction (${REP_TIERS.join(' | ')})`, 'Revered')
+  .action(async (opts: { refresh?: boolean; stats?: boolean; faction?: string; tier?: string }) => {
+    await withDb({ refresh: opts.refresh }, (db) => {
+      const s = db.stats();
+      console.log(`${s.gameVersion} — ${s.items.toLocaleString('en-US')} items, ${s.affixes.toLocaleString('en-US')} affixes (${s.namedAffixes.toLocaleString('en-US')} named)`);
+      console.log(`  cache          ${s.fingerprint} (built ${s.builtAt})`);
+      console.log(`  archives       ${s.archives.join(', ')}`);
+      console.log(`  factions       ${s.factions} (${s.vendorFactions} with vendors, ${s.vendorItems} items stocked)`);
+      console.log(`  blueprints     ${s.recipes}`);
+
+      if (opts.stats) {
+        const pct = ((s.localizedNames / s.items) * 100).toFixed(1);
+        console.log('\nCoverage');
+        console.log(`  localization   ${s.l10nTags.toLocaleString('en-US')} tags`);
+        console.log(`  item names     ${s.localizedNames.toLocaleString('en-US')}/${s.items.toLocaleString('en-US')} localized (${pct}%)`);
+        console.log('\nFactions');
+        for (const f of db.factions()) {
+          const stock = f.hasVendor ? `${db.vendorItems(f.id, 'Revered').length} items` : '—';
+          console.log(`  ${f.id.padEnd(12)} ${f.name.padEnd(28)} ${stock}`);
+        }
+      }
+
+      if (opts.faction) {
+        const tier = REP_TIERS.find((t) => t.toLowerCase() === (opts.tier ?? '').toLowerCase());
+        if (!tier) {
+          console.error(`error: unknown tier ${JSON.stringify(opts.tier)}; expected one of ${REP_TIERS.join(', ')}`);
+          process.exitCode = 1;
+          return;
+        }
+        const stock = db.vendorItems(opts.faction, tier);
+        const faction = db.factions().find((f) => f.id === opts.faction);
+        console.log(`\n${faction?.name ?? opts.faction} — stock up to ${tier} (${stock.length} items)`);
+        for (const item of stock) {
+          const at = item.vendors?.find((v) => v.factionId === opts.faction)?.repTier ?? '';
+          console.log(`  ${at.padEnd(10)} lvl ${String(item.levelReq).padStart(3)}  ${item.name}  [${item.slot}]`);
+        }
+        if (stock.length === 0) {
+          console.log(`  (nothing — is ${JSON.stringify(opts.faction)} a faction id? try \`db --stats\`)`);
+        }
+      }
+    });
+  });
+
+function describeItem(item: ResolvedItem): string {
+  const bits: string[] = [];
+  if (item.base) bits.push(item.base.rarity, `lvl ${item.base.levelReq}`);
+  if (item.modifierName) bits.push(`modifier: ${item.modifierName}`);
+  if (item.component) bits.push(`component: ${item.component.name}`);
+  if (item.augment) bits.push(`augment: ${item.augment.name}`);
+  if (item.base?.setName) bits.push(`set: ${item.base.setName}`);
+  if (item.stackCount > 1) bits.push(`×${item.stackCount}`);
+  return bits.join(', ');
+}
+
+function readOptionalSave(path: string): Buffer | undefined {
+  return existsSync(path) ? readFileSync(path) : undefined;
+}
+
+program
+  .command('resolve')
+  .description('resolve every item a character can reach to names, rarity and level, with a coverage report')
+  .option('-c, --char <name>', 'character directory name under <saveDir>/main (default: all characters)')
+  .option('--source <source>', 'only show one of: equipped, inventory, stash, transfer')
+  .option('--refresh', 'rebuild the database first')
+  .option('--json', 'emit resolved items as JSON instead of a listing')
+  .action(async (opts: { char?: string; source?: string; refresh?: boolean; json?: boolean }) => {
+    const settings = resolveSettings();
+    const characters = opts.char ? [opts.char] : listCharacters(settings.saveDir);
+    if (characters.length === 0) {
+      console.error(`error: no characters found under ${settings.saveDir}/main`);
+      process.exit(1);
+    }
+
+    const stashBuf = readOptionalSave(transferStashPath(settings.saveDir));
+    const formulasBuf = readOptionalSave(formulasPath(settings.saveDir));
+    const stash: TransferStash | undefined = stashBuf ? parseTransferStash(stashBuf) : undefined;
+    const formulas: FormulasFile | undefined = formulasBuf ? parseFormulasFile(formulasBuf) : undefined;
+
+    await withDb({ refresh: opts.refresh, quiet: opts.json }, (db) => {
+      // One tracker across every character: coverage is about distinct records,
+      // and the two characters share plenty of them.
+      const track = new CoverageTracker();
+      const resolved = characters.map((name) => {
+        const path = characterSavePath(name, settings.saveDir);
+        // Only the first character gets the shared files attributed to it, so
+        // the transfer stash is not counted (or listed) once per character.
+        const first = name === characters[0];
+        return resolveCharacter(
+          parseGdc(readSave(path), { path }),
+          first ? stash : undefined,
+          first ? formulas : undefined,
+          db,
+          track,
+        );
+      });
+
+      if (opts.json) {
+        console.log(JSON.stringify({ characters: resolved, coverage: track.report() }, null, 2));
+        return;
+      }
+
+      for (const character of resolved) {
+        console.log(`\n${character.name} — level ${character.level}`);
+        for (const source of ['equipped', 'inventory', 'stash', 'transfer'] as const) {
+          if (opts.source && opts.source !== source) continue;
+          const items = character.items.filter((i) => i.source === source);
+          if (items.length === 0) continue;
+          console.log(`\n  ${source} (${items.length})`);
+          for (const item of items) {
+            const detail = describeItem(item);
+            console.log(`    ${item.location.padEnd(18)} ${item.display}${detail ? `  — ${detail}` : ''}`);
+            for (const miss of item.unresolved) console.log(`    ${' '.repeat(18)}   !! unresolved: ${miss}`);
+          }
+        }
+        if (character.recipes.length && !opts.source) {
+          const named = character.recipes.filter((r) => r.name).length;
+          console.log(`\n  blueprints: ${named}/${character.recipes.length} named`);
+        }
+      }
+
+      const c = track.report();
+      const pct = (n: number, total: number) => (total === 0 ? '100.0' : ((n / total) * 100).toFixed(1));
+      console.log(
+        `\nresolved ${c.baseResolved}/${c.baseTotal} base records (${pct(c.baseResolved, c.baseTotal)}%), ` +
+          `${c.affixResolved}/${c.affixTotal} affix records (${pct(c.affixResolved, c.affixTotal)}%)`,
+      );
+      if (c.affixUnnamed.length) {
+        console.log(`  ${c.affixUnnamed.length} affix record(s) are nameless by design (crafting bonuses)`);
+      }
+      for (const miss of c.baseMissing) console.log(`  unresolved base:  ${miss}`);
+      for (const miss of c.affixMissing) console.log(`  unresolved affix: ${miss}`);
+      if (c.baseResolved < c.baseTotal) process.exitCode = 1;
+    });
   });
 
 program.parse();

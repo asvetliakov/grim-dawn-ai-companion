@@ -12,6 +12,9 @@
 import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
+import { findGameDir } from '../src/core/db/gamefiles.js';
+import { loadGameDb } from '../src/core/db/index.js';
+import type { GameDb } from '../src/core/db/types.js';
 import {
   characterSavePath as coreCharacterSavePath,
   formulasPath as coreFormulasPath,
@@ -75,4 +78,32 @@ export function snapshotCharacterSave(name: string): string {
 /** Same idea for the account-wide files — the game rewrites those too. */
 export function snapshotSharedSave(path: string): string {
   return snapshot(path, basename(path));
+}
+
+// ---------------------------------------------------------------------------
+// The game install (Stage 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The database tests need Grim Dawn itself, because item identity lives in the
+ * game's `.arz` archives and nowhere else. They build the database once into the
+ * *real* cache directory rather than a temp one — the build is keyed on the game
+ * archives, and pointing it at a throwaway directory would re-download the
+ * GrimTools localization on every run, which is exactly the etiquette the plan
+ * says not to breach.
+ */
+export function haveGameInstall(): boolean {
+  return findGameDir() !== undefined;
+}
+
+export const MISSING_GAME_MESSAGE =
+  `Grim Dawn install not found — ` +
+  'set GD_GAME_DIR to a directory containing database/database.arz to run these tests';
+
+let dbPromise: Promise<GameDb> | undefined;
+
+/** The shared database, built at most once per test run. */
+export function gameDb(): Promise<GameDb> {
+  dbPromise ??= loadGameDb();
+  return dbPromise;
 }

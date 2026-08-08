@@ -16,8 +16,9 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
   Project scaffold; cipher + character save parser; CLI `parse`. Gate: all block checksums pass on both real saves.
 - [x] **Stage 2 — GST parsers** — [docs/plans/stage-02-gst-parsers.md](docs/plans/stage-02-gst-parsers.md)
   Transfer stash + learned blueprints; CLI `stash`, `formulas`. Gate: block 18 checksum passes on the live stash.
-- [ ] **Stage 3 — GrimTools DB + resolver + settings** — [docs/plans/stage-03-grimtools-db-resolver.md](docs/plans/stage-03-grimtools-db-resolver.md)
-  Fetch/cache/parse the item DB; resolve save items to names/stats; CLI `db`, `resolve`. Gate: ≥95% of item records resolve.
+- [x] **Stage 3 — Game DB + resolver + settings** — [docs/plans/stage-03-grimtools-db-resolver.md](docs/plans/stage-03-grimtools-db-resolver.md)
+  Parse/cache the item DB; resolve save items to names/stats; CLI `db`, `resolve`. Gate: ≥95% of item records resolve — **actual: 100%**.
+  Backend pivoted mid-stage: GrimTools publishes no DBR record paths, so item data comes from the game's own `.arz` archives; GrimTools supplies localization only. See the plan's Outcome.
 - [ ] **Stage 4 — Icon service** — [docs/plans/stage-04-icons.md](docs/plans/stage-04-icons.md)
   Sprite-sheet slicing to per-item PNGs; CLI `icon`.
 - [ ] **Stage 5 — Context document builder** — [docs/plans/stage-05-context-builder.md](docs/plans/stage-05-context-builder.md)
@@ -29,7 +30,7 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 
 ## Post-v1 backlog (not planned in detail yet)
 
-- Own `.arz`/`.arc`/`.tex` parser backend implementing `GameDb` — full offline independence from GrimTools, complete vendor/affix coverage from the user's own install. (Research pointers live in stage 3's plan appendix.)
+- ~~Own `.arz` parser backend~~ — **done early, in Stage 3**; it turned out to be the only way to identify save items at all. What remains of that item is an `.arc`/`.tex` reader for localization (`Text_EN.arc`), which would drop the last GrimTools dependency. Stage 4 needs an `.arc` reader for icons anyway, so this becomes cheap afterwards.
 - OpenAI provider behind `AdvisorProvider` (settings toggle).
 - electron-builder packaging (dev-mode `npm run dev` is fine until then).
 - Nice-to-haves: per-slot "shopping list" view, multi-character comparison, hardcore (`.gsh`) stash support if ever needed.
@@ -40,6 +41,7 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 |---|---|---|
 | Save format drift (1.3.0.6 vs 1.2-era specs) | Checksums catch misparses immediately; unknown blocks skipped; warn-not-throw on version fields | Settled empirically by Stage 1 |
 | Torn/partial save writes | Checksum + 3× retry + `player.g00` fallback | Designed in (Stage 1/7) |
-| GrimTools schema change or unavailability | zod fails loudly; raw download cached; .arz backend is the long-term hedge | Open |
-| Affix (prefix/suffix) name coverage in GrimTools dump unconfirmed | Stage 3 coverage report answers it; fallback: derive from record filename tail | Open until Stage 3 |
+| GrimTools schema change or unavailability | zod fails loudly; raw download cached; now only localization depends on it, and an `.arc` reader would remove even that | Much reduced (Stage 3) |
+| Affix (prefix/suffix) name coverage | Answered: the `.arz` names every affix that has a name (`lootRandomizerName`); only crafting bonuses are nameless, and they are nameless in game too | Closed (Stage 3) |
+| Requires a local Grim Dawn install | Unavoidable — record paths exist nowhere else. Auto-detected; `GD_GAME_DIR`/settings override; absence reports a plain message | Accepted (Stage 3) |
 | Resistance totals are item-sourced approximations | Labeled as lower bound in context doc; full engine simulation is a non-goal | Accepted |

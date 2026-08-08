@@ -12,12 +12,13 @@ Implementation runs in ordered stages, one focused session each. **Start every i
 - All logic lives in `src/core/` — **plain Node, zero Electron imports**. The dev CLI (`src/cli/index.ts`, run via `npm run cli -- <cmd>`) and vitest exercise it. Electron (`src/main`, `src/preload`, `src/renderer`) arrives only in Stage 7 and stays a thin consumer.
 - Native modules (sharp) are used only in Node contexts (CLI, Electron main). The renderer gets icons via the `gdicon://` custom protocol — never import sharp in the renderer.
 - Tests: vitest. Real save files are the fixtures (paths below); tests needing stability snapshot-copy them into git-ignored `test/fixtures/` on first run.
-- Key swap seams — keep these interfaces clean: `GameDb` (`src/core/db/types.ts`; GrimTools backend now, own .arz parser later) and `AdvisorProvider` (`src/core/ai/provider.ts`; claude-cli now, openai later).
+- Key swap seams — keep these interfaces clean: `GameDb` (`src/core/db/types.ts`; backed by the game's own `.arz` archives plus GrimTools localization) and `AdvisorProvider` (`src/core/ai/provider.ts`; claude-cli now, openai later).
 
 ## Machine-specific paths
 
-- Game install (v1.3.0.6, all 3 expansions):
+- Game install (v1.3.0.6, all 3 expansions) — **required**, it is the item database:
   `~/Library/Application Support/CrossOver/Bottles/Steam/drive_c/Program Files (x86)/Steam/steamapps/common/Grim Dawn`
+  Auto-detected; override with `GD_GAME_DIR` or `gameDir` in settings.json.
 - **Live saves** (Steam Cloud userdata path — this user's authoritative one):
   `~/Library/Application Support/CrossOver/Bottles/Steam/drive_c/Program Files (x86)/Steam/userdata/42909985/219990/remote/save/`
   - Characters: `main/_Suchka/player.gdc` (primary test fixture), `main/_abcdef/player.gdc`
@@ -31,7 +32,8 @@ Implementation runs in ordered stages, one focused session each. **Start every i
 - The cipher state advances over **ciphertext** bytes, not plaintext. Block lengths are read XOR-state **without** advancing.
 - `transfer.gst` item X/Y coordinates are **floats**; `player.gdc` inventory/stash X/Y are **i32**. This is the classic porting bug.
 - Faction reputation: array index = faction identity (no names in the save); tier thresholds Friendly ≥1501, Respected ≥5001, Honored ≥10001, Revered ≥25000. "Trusted" is a rep level but NOT a vendor market tier.
-- Items in saves are DBR record paths + a seed — all display names/stats/icons come from the game DB (GrimTools dump), resolved via `src/core/resolve.ts`.
+- Items in saves are DBR record paths + a seed — all display names/stats/icons come from the game DB, resolved via `src/core/resolve.ts`.
+- **GrimTools publishes no DBR record paths** (verified: zero `records/` strings in `itemdb.js`; its `bitmap` field is many-to-one because records reuse art). Item identity therefore comes from the game's own `database/*.arz` archives, merged base → gdx1 → gdx2 → gdx3 last-wins. GrimTools is used for the tag → text localization table only. Do not re-litigate; see stage 3's Outcome.
 - The game writes saves event-driven and non-atomically: on checksum failure, retry (torn write), then fall back to `player.g00` rotation backups.
 - **Never commit game-derived data** (GrimTools downloads, extracted assets, save copies) — `.gitignore` covers it; keep it that way. Ship code, not data. Credit GrimTools (Dammitt) in UI/README; fetch its dump at most once per game-version bump.
 - `claude` CLI invocation: pipe the context doc via **stdin**, use `-p --output-format json --tools "" --no-session-persistence`, cwd = tmpdir, 180s timeout. Never use `--bare` (it disables the subscription OAuth this tool depends on).
@@ -43,6 +45,7 @@ npm test                                  # vitest suite
 npm run typecheck                         # tsc --noEmit
 npm run cli -- parse  <path>/player.gdc   # stage 1: checksums + character summary
 npm run cli -- stash                      # stage 2
+npm run cli -- db --stats                 # stage 3: build/inspect the item DB
 npm run cli -- resolve --char _Suchka     # stage 3: resolution coverage report
 npm run cli -- context --char _Suchka     # stage 5: the LLM context doc
 npm run cli -- advise --char _Suchka      # stage 6: live AI recommendations

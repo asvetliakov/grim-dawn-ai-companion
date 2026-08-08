@@ -90,6 +90,49 @@ npm run cli -- resolve --char _abcdef
 git status --short   # no cache/fixture files
 ```
 
-## Appendix — post-v1 .arz backend pointers (do not build now)
+## Outcome
+
+**Built and verified 2026-08-08. The gate passes at 100% (366/366 base records for `_Suchka`, 299/299 for `_abcdef`), not the 95% floor — but the backend is not the one this plan specified.**
+
+### The plan's central premise was wrong
+
+> "The record path ↔ itemId mapping: inspect the dump — items carry their DBR record path."
+
+They do not. `itemdb.js` contains **zero** occurrences of `records/` (`grep -c "records/" itemdb.js` → 0), and `window.shortNameMapping` is only the short-key legend (`a`=itemNameTag, `n`=bitmap, `k`=levelRequirement, …). The one plausible join key, the `bitmap` filename, is **many-to-one**: `records/items/gearlegs/c109_legs.dbr` declares `bitmap: items/gearlegs/bitmaps/c103_legs.tex`, because records reuse art. Measured coverage of a bitmap-stem join against `_Suchka`'s real items was **15/89 base records (17%)** — nowhere near the gate, and wrong for most gear even where it "hit".
+
+### What was built instead (approved before implementing)
+
+A hybrid, both halves behind the unchanged `GameDb` seam:
+
+- **Item identity and data — the game's own `.arz` archives** (`src/core/db/arz.ts`), keyed by record path, merged `database.arz` → `GDX1` → `GDX2` → `GDX3` last-wins. This is the post-v1 backend from the appendix below, pulled forward because nothing else can identify a save's items. It needed no new dependency: LZ4 *block* decompression is ~30 lines and `.arz` already stores the decompressed size.
+- **Localization — GrimTools `l10n/en.js`** (16,246 tags), which resolves 95.6% of all item name tags and 100% of the tags on real gear. The misses are dev placeholders (`*000_*` template records), DLC illusion transmutes and lore notes. `itemdb.js` is still fetched, but only for its `gameVersion` label.
+
+Vendor catalogs also come from the `.arz` rather than GrimTools, contrary to the approved sketch: GrimTools' faction lists are `it####` ids that cannot produce record paths, and `DbItem.record` (plus Stage 4's icons) needs them. `factionmarket.tpl` → four `factiontier.tpl` tables → `marketStaticItems` gives the same stock with real record paths — 15 vendor factions, 1,100 items.
+
+### Answers to the plan's open questions
+
+- **Affix name coverage**: fully available, and from the game rather than a dump. Prefix/suffix records carry `lootRandomizerName`; 6,196 of 7,984 affix records are named. The unnamed 1,788 are all `records/items/lootaffixes/crafting/*` — the bonus a blacksmith rolls onto a crafted item, which has **no name in the game either** (its stats display inline). `GameDb.knowsAffix()` was added so "known but nameless" is distinguishable from "missing"; the resolver counts the former as resolved. No filename-tail fallback was needed.
+- **Faction identity**: `records/game/gamefactions.dbr` is the authoritative roster, and record filenames are *not* a reliable guide — `factiongdx3_dread.dbr` is registered as the **Traps** faction and `factiongdx3_traps.dbr` as **The Dread**. Ids are `f<n>` from that roster, which is very likely the same index the save's faction array uses (worth confirming in Stage 5 — it would replace the guessed table in `src/core/save/factions.ts`).
+
+### Deviations from the deliverables list
+
+- `src/core/db/grimtools.ts` no longer normalizes an item DB; it downloads, sandbox-evaluates and zod-validates the dumps. Item normalization lives in `src/core/db/build.ts`, archive reading in `arz.ts`, install discovery in `gamefiles.ts`.
+- Cache directories are keyed by a fingerprint of the archives' sizes and mtimes rather than by `gameVersion`, because the fingerprint is derivable **offline** — a cold start with a warm cache never has to ask the network what version it is. The version string is stored inside `db.json`.
+- `DbItem.factionId`/`repTier` became `DbItem.vendors: { factionId, repTier }[]`. Several factions stock the same consumables and component blueprints; singular fields silently dropped the cheaper source.
+- `ResolvedItem.base` is optional (the plan had it required), since an unresolvable record still has to produce a listing row.
+- `iconPath` reads four fields, not one: `bitmap` (gear, augments), `artifactBitmap` (relics), `relicBitmap` (components), `artifactFormulaBitmapName` (blueprints).
+- Localized text is stripped of the game's inline formatting escapes (`^k` tints tier-2 component names gold; `^n` is a line break) — `cleanText` in `build.ts`.
+- Added `test/settings.test.ts` and a `README.md` (the plan asks for GrimTools credit in README/UI; there was no README).
+
+### Numbers
+
+`Version 1.3.0.0` — 9,878 items, 7,984 affixes (6,196 named), 29 factions (15 with vendors, 1,100 items stocked), 927 blueprints. Cold build ≈ 3 s plus ~10 MB of downloads; warm start ≈ 0.4 s and zero network (asserted by a test with `fetch` stubbed to throw).
+
+### Notes for later stages
+
+- Stage 4 gets `iconPath` as an in-archive `.tex` path and will need an `.arc` reader; once that exists, `Text_EN.arc` removes the last GrimTools dependency.
+- `db.json` carries raw DBR stat keys per item (asset paths and zeros dropped), which is what Stage 5's context document wants.
+
+## Appendix — post-v1 .arz backend pointers (partly built in Stage 3 — see Outcome)
 
 Own-parse path for offline independence: `.arz` = header + string table + LZ4-compressed records (fields: u16 type, u16 count, u32 keyId, values; types 0=int 1=float 2=string-idx 3=bool). Merge `database/database.arz` → `gdx1/GDX1.arz` → `gdx2/GDX2.arz` → `gdx3/GDX3.arz` last-wins (model: https://github.com/gregates/lib-gddb). Record schemas: glacie `.gxmpi` templates (https://github.com/lixiss/glacie). Vendor stock: `factionmarket.tpl` records have exactly 4 tier slots (`friendly/respected/honored/revered*Table`) → `factiontier.tpl` records; `marketStaticItems` = deterministic augment/blueprint stock. Localization from `resources/Text_EN.arc`. Icons from `resources/Items.arc`: `.tex` = 12-byte header (`TEX\x02`, u32 size) wrapping a DDS whose magic reads `DDSR` — replace with `"DDS "`, uncompressed 32bpp BGRA at offset 128, keep alpha.
