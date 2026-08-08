@@ -13,6 +13,7 @@ Development is staged; see [RUNBOOK.md](RUNBOOK.md) for what is built and what i
 npm install
 npm run cli -- db --stats             # build/inspect the item database
 npm run cli -- resolve --char <name>  # resolve a character's gear
+npm run cli -- icon --check-all       # extract icons for everything you own
 npm test                              # vitest
 npm run typecheck
 ```
@@ -28,6 +29,10 @@ only place a save's DBR record paths can be looked up. Those archives are read
 from your local install and cached, normalized, under
 `~/Library/Application Support/gd-companion/cache/`. The game version is read
 from `Engine.dll`.
+
+Item **icons** come from the same install: `resources/Items.arc` holds one
+texture per icon, which is decoded to a PNG on first use and cached beside the
+database. Nothing is downloaded and no sprite sheet is involved.
 
 Item and skill **names** come from the localization table published by
 **[GrimTools](https://www.grimtools.com/) (Dammitt)** — thank you. That one ~1 MB

@@ -6,13 +6,19 @@
  * stage adds a command here. Run with `npm run cli -- <command>`.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { Command } from 'commander';
 
 import { loadGameDb } from '../core/db/index.js';
 import { REP_TIERS, type GameDb } from '../core/db/types.js';
+import { createIconService } from '../core/icons/index.js';
 import { characterSavePath, formulasPath, transferStashPath } from '../core/paths.js';
-import { CoverageTracker, resolveCharacter, type ResolvedItem } from '../core/resolve.js';
+import {
+  CoverageTracker,
+  resolveCharacter,
+  type ResolvedCharacter,
+  type ResolvedItem,
+} from '../core/resolve.js';
 import { listCharacters, resolveSettings } from '../core/settings.js';
 import { parseGdc } from '../core/save/gdc.js';
 import {
@@ -327,6 +333,45 @@ function readOptionalSave(path: string): Buffer | undefined {
   return existsSync(path) ? readFileSync(path) : undefined;
 }
 
+/**
+ * Resolve every character the user asked for (all of them by default), against
+ * one shared coverage tracker.
+ *
+ * The account-wide files are attributed to the first character only: the transfer
+ * stash and the blueprint list belong to the account, and counting them once per
+ * character would inflate every total that follows.
+ */
+function resolveAllCharacters(
+  db: GameDb,
+  char: string | undefined,
+): { characters: ResolvedCharacter[]; track: CoverageTracker } {
+  const settings = resolveSettings();
+  const names = char ? [char] : listCharacters(settings.saveDir);
+  if (names.length === 0) {
+    console.error(`error: no characters found under ${settings.saveDir}/main`);
+    process.exit(1);
+  }
+
+  const stashBuf = readOptionalSave(transferStashPath(settings.saveDir));
+  const formulasBuf = readOptionalSave(formulasPath(settings.saveDir));
+  const stash: TransferStash | undefined = stashBuf ? parseTransferStash(stashBuf) : undefined;
+  const formulas: FormulasFile | undefined = formulasBuf ? parseFormulasFile(formulasBuf) : undefined;
+
+  const track = new CoverageTracker();
+  const characters = names.map((name) => {
+    const path = characterSavePath(name, settings.saveDir);
+    const first = name === names[0];
+    return resolveCharacter(
+      parseGdc(readSave(path), { path }),
+      first ? stash : undefined,
+      first ? formulas : undefined,
+      db,
+      track,
+    );
+  });
+  return { characters, track };
+}
+
 program
   .command('resolve')
   .description('resolve every item a character can reach to names, rarity and level, with a coverage report')
@@ -335,35 +380,10 @@ program
   .option('--refresh', 'rebuild the database first')
   .option('--json', 'emit resolved items as JSON instead of a listing')
   .action(async (opts: { char?: string; source?: string; refresh?: boolean; json?: boolean }) => {
-    const settings = resolveSettings();
-    const characters = opts.char ? [opts.char] : listCharacters(settings.saveDir);
-    if (characters.length === 0) {
-      console.error(`error: no characters found under ${settings.saveDir}/main`);
-      process.exit(1);
-    }
-
-    const stashBuf = readOptionalSave(transferStashPath(settings.saveDir));
-    const formulasBuf = readOptionalSave(formulasPath(settings.saveDir));
-    const stash: TransferStash | undefined = stashBuf ? parseTransferStash(stashBuf) : undefined;
-    const formulas: FormulasFile | undefined = formulasBuf ? parseFormulasFile(formulasBuf) : undefined;
-
     await withDb({ refresh: opts.refresh, quiet: opts.json }, (db) => {
       // One tracker across every character: coverage is about distinct records,
       // and the two characters share plenty of them.
-      const track = new CoverageTracker();
-      const resolved = characters.map((name) => {
-        const path = characterSavePath(name, settings.saveDir);
-        // Only the first character gets the shared files attributed to it, so
-        // the transfer stash is not counted (or listed) once per character.
-        const first = name === characters[0];
-        return resolveCharacter(
-          parseGdc(readSave(path), { path }),
-          first ? stash : undefined,
-          first ? formulas : undefined,
-          db,
-          track,
-        );
-      });
+      const { characters: resolved, track } = resolveAllCharacters(db, opts.char);
 
       if (opts.json) {
         console.log(JSON.stringify({ characters: resolved, coverage: track.report() }, null, 2));
@@ -403,5 +423,175 @@ program
       if (c.baseResolved < c.baseTotal) process.exitCode = 1;
     });
   });
+
+// ---------------------------------------------------------------------------
+// Stage 4 — icons
+// ---------------------------------------------------------------------------
+
+/** A PNG's dimensions live in the IHDR chunk, at a fixed offset. */
+function pngSize(path: string): string {
+  const head = readFileSync(path).subarray(0, 24);
+  return `${head.readUInt32BE(16)}×${head.readUInt32BE(20)}`;
+}
+
+/**
+ * Every icon an item can contribute: its own, plus its fitted component and
+ * augment, both of which the UI draws as overlays. A part with an empty
+ * `iconPath` is kept — a record that declares no art at all is a different
+ * finding from one whose art is missing, and worth saying out loud.
+ */
+function iconPartsOf(item: ResolvedItem): { iconPath: string; label: string; record: string }[] {
+  const parts: { iconPath: string; label: string; record: string }[] = [];
+  if (item.base) parts.push({ iconPath: item.base.iconPath, label: item.display, record: item.base.record });
+  if (item.component) {
+    parts.push({ iconPath: item.component.iconPath, label: item.component.name, record: item.component.record });
+  }
+  if (item.augment) {
+    parts.push({ iconPath: item.augment.iconPath, label: item.augment.name, record: item.augment.record });
+  }
+  return parts;
+}
+
+program
+  .command('icon')
+  .description('extract item icons from the game’s .arc archives as PNGs')
+  .argument('[target]', 'icon path (items/…/x.tex) or item record path (records/items/…dbr)')
+  .option('-o, --out <file>', 'also write the PNG here')
+  .option('--check-all', 'resolve icons for every item both characters can reach')
+  .option('-c, --char <name>', 'with --check-all: one character instead of all of them')
+  .action(async (target: string | undefined, opts: { out?: string; checkAll?: boolean; char?: string }) => {
+    if (!target && !opts.checkAll) {
+      console.error('error: pass an icon path, an item record path, or --check-all');
+      process.exit(1);
+    }
+
+    const needsDb = opts.checkAll === true || (target?.startsWith('records/') ?? false) || (target?.endsWith('.dbr') ?? false);
+
+    const run = async (db: GameDb | undefined): Promise<void> => {
+      const icons = createIconService();
+      try {
+        if (opts.checkAll) await checkAllIcons(icons, db!, opts.char);
+        else await oneIcon(icons, db, target!, opts.out);
+      } finally {
+        icons.close();
+      }
+    };
+
+    if (needsDb) await withDb({ quiet: true }, run);
+    else {
+      try {
+        await run(undefined);
+      } catch (err) {
+        console.error(`error: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    }
+  });
+
+async function oneIcon(
+  icons: ReturnType<typeof createIconService>,
+  db: GameDb | undefined,
+  target: string,
+  out: string | undefined,
+): Promise<void> {
+  let iconPath = target;
+  let label = '';
+
+  if (target.startsWith('records/') || target.endsWith('.dbr')) {
+    const item = db?.getItem(target);
+    if (!item) {
+      console.error(`error: ${target} is not an item record in the database`);
+      process.exitCode = 1;
+      return;
+    }
+    if (!item.iconPath) {
+      console.error(`error: ${item.name} (${target}) declares no icon`);
+      process.exitCode = 1;
+      return;
+    }
+    iconPath = item.iconPath;
+    label = `${item.name} — `;
+  } else if (iconPath.endsWith('.png')) {
+    // The textures are `.tex`; accept the rendered extension so a path copied
+    // from a filename or a web tool still works.
+    iconPath = `${iconPath.slice(0, -4)}.tex`;
+  }
+
+  const png = await icons.getIconPng(iconPath);
+  if (!png) {
+    console.error(`error: no icon for ${iconPath} — ${icons.problems().get(iconPath) ?? 'unknown reason'}`);
+    process.exitCode = 1;
+    return;
+  }
+
+  const fresh = icons.stats().decoded > 0;
+  console.log(`${label}${iconPath}`);
+  console.log(`  ${pngSize(png)}, ${statSync(png).size} bytes  (${fresh ? 'extracted' : 'cached'})`);
+  console.log(`  ${png}`);
+  if (out) {
+    copyFileSync(png, out);
+    console.log(`  copied to ${out}`);
+  }
+}
+
+async function checkAllIcons(
+  icons: ReturnType<typeof createIconService>,
+  db: GameDb,
+  char: string | undefined,
+): Promise<void> {
+  const { characters } = resolveAllCharacters(db, char);
+
+  // One request per distinct icon path, but remember every place it came from so
+  // a miss can be reported against the item (and the source) that wanted it.
+  const wanted = new Map<string, { sources: Set<string>; label: string }>();
+  const artless = new Map<string, string>();
+  for (const character of characters) {
+    for (const item of character.items) {
+      for (const { iconPath, label, record } of iconPartsOf(item)) {
+        if (!iconPath) {
+          artless.set(record, label);
+          continue;
+        }
+        const entry = wanted.get(iconPath) ?? { sources: new Set<string>(), label };
+        entry.sources.add(item.source);
+        wanted.set(iconPath, entry);
+      }
+    }
+  }
+
+  const missing: { iconPath: string; label: string; sources: string[] }[] = [];
+  for (const [iconPath, { sources, label }] of wanted) {
+    if (await icons.getIconPng(iconPath)) continue;
+    missing.push({ iconPath, label, sources: [...sources] });
+  }
+
+  const s = icons.stats();
+  const found = s.requested - s.missing - s.failed;
+  console.log(
+    `${found}/${s.requested} icons found for ${characters.map((c) => c.name).join(', ')}` +
+      ` (${s.decoded} extracted, ${s.cached} already cached)`,
+  );
+  console.log(`  cache: ${icons.cacheDir}`);
+
+  if (artless.size) {
+    console.log(`\n${artless.size} record(s) declare no icon at all (lore notes and the like):`);
+    for (const [record, label] of artless) console.log(`  ${label} — ${record}`);
+  }
+
+  if (missing.length) {
+    console.log(`\n${missing.length} icon(s) not in the archives:`);
+    for (const m of missing.sort((a, b) => a.iconPath.localeCompare(b.iconPath))) {
+      console.log(`  [${m.sources.join(',')}] ${m.label}\n      ${m.iconPath} — ${icons.problems().get(m.iconPath)}`);
+    }
+  }
+
+  // Equipped gear is the gate: the UI can fall back to text for a stashed
+  // oddity, but a blank equipment grid is a broken window.
+  const equippedMisses = missing.filter((m) => m.sources.includes('equipped'));
+  if (equippedMisses.length) {
+    console.error(`\n${equippedMisses.length} equipped item(s) have no icon`);
+    process.exitCode = 1;
+  }
+}
 
 program.parse();

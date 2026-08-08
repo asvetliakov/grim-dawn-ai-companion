@@ -19,8 +19,9 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 - [x] **Stage 3 — Game DB + resolver + settings** — [docs/plans/stage-03-grimtools-db-resolver.md](docs/plans/stage-03-grimtools-db-resolver.md)
   Parse/cache the item DB; resolve save items to names/stats; CLI `db`, `resolve`. Gate: ≥95% of item records resolve — **actual: 100%**.
   Backend pivoted mid-stage: GrimTools publishes no DBR record paths, so item data comes from the game's own `.arz` archives; GrimTools supplies localization only. See the plan's Outcome.
-- [ ] **Stage 4 — Icon service** — [docs/plans/stage-04-icons.md](docs/plans/stage-04-icons.md)
-  Sprite-sheet slicing to per-item PNGs; CLI `icon`.
+- [x] **Stage 4 — Icon service** — [docs/plans/stage-04-icons.md](docs/plans/stage-04-icons.md)
+  Per-item PNGs, cached; CLI `icon`. Gate: 0 missing icons for equipped gear — **actual: 148/148 for everything both characters can reach**, 3,840/3,844 across the whole database.
+  Backend pivoted again, as Stage 3 predicted: icons come from the game's own `resources/Items.arc`, not the GrimTools sprite sheet, so the plan's `.png`-path/CSS scheme was moot. No network, and no `sharp` — see the plan's Outcome.
 - [ ] **Stage 5 — Context document builder** — [docs/plans/stage-05-context-builder.md](docs/plans/stage-05-context-builder.md)
   Character + DB → markdown context doc for the LLM; CLI `context`.
 - [ ] **Stage 6 — AI provider + advise** — [docs/plans/stage-06-ai-advise.md](docs/plans/stage-06-ai-advise.md)
@@ -30,7 +31,7 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 
 ## Post-v1 backlog (not planned in detail yet)
 
-- ~~Own `.arz` parser backend~~ — **done early, in Stage 3**; it turned out to be the only way to identify save items at all. What remains of that item is an `.arc`/`.tex` reader for localization (`Text_EN.arc`), which would drop the last GrimTools dependency. Stage 4 needs an `.arc` reader for icons anyway, so this becomes cheap afterwards.
+- ~~Own `.arz` parser backend~~ — **done early, in Stage 3**; it turned out to be the only way to identify save items at all. The `.arc`/`.tex` reader arrived with it in **Stage 4** (`src/core/db/arc.ts`), so all that is left of this item is pointing it at `resources/Text_EN.arc` for localization — a small job that would drop the last GrimTools dependency and make the tool fully offline.
 - OpenAI provider behind `AdvisorProvider` (settings toggle).
 - electron-builder packaging (dev-mode `npm run dev` is fine until then).
 - Nice-to-haves: per-slot "shopping list" view, multi-character comparison, hardcore (`.gsh`) stash support if ever needed.
