@@ -1,0 +1,28 @@
+# Dependencies / build
+node_modules/
+dist/
+out/
+*.tsbuildinfo
+
+# Game-derived data — NEVER commit (Crate's copyrighted content; ship code, not data)
+cache/
+test/fixtures/
+*.gdc
+*.gst
+*.gsh
+*.g0[0-9]
+*.arz
+*.arc
+*.tex
+itemdb.js
+itemdb.webp
+itemdb.css
+db.json
+
+# Local env / OS
+.env
+.env.*
+.DS_Store
+
+# Logs
+*.log
