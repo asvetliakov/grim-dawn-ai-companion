@@ -60,7 +60,7 @@ Dependency: `execa@^9`.
   4. Do not trade large damage modifiers matching the build's top damage types for marginal overcap beyond the target; conversely never leave an effective resistance under cap for damage.
   5. Account for set bonuses: a swap that breaks an active set must count the lost bonus in its math; completing a nearly-done set is a first-class move.
   6. Resistances that only reach cap inside the "+maintainable" band (duration buffs like Pneumatic Burst) count — the community plays them at full uptime — but flag any resistance leaning on them by >15 points as *fragile* (buffs drop on death/dispel).
-  7. Respect attribute/level requirements and the character's iron for purchases.
+  7. Requirements are a hard constraint on the **post-swap** loadout, not the current one: an outgoing item's +attributes or `-% Requirement` reduction leaves with it, so re-check every joint move against what remains. Then triage by deficit: (a) the post-swap loadout meets everything → the move is legal; (b) a small deficit another proposed item or the unspent attribute points (8 per point) can cover → propose the **enabler combo as one joint move** ("equip X *and* Y — Y's +25 Cunning is what makes X wearable") and list the enablers in the plan; (c) a level or attribute gap that levelling will close → HOLD with the number ("until level 84", "needs 42 more spirit"); (d) a requirement unreachable for this build's attribute line → not a candidate; say SELL if it has no other value. Respect the character's iron for purchases.
   8. CRAFT and upgrade verdicts must be *affordable now* per the dossier's materials-on-hand and iron; if an upgrade path exists but materials are missing (e.g. an awakened version needing Awakening Ashes the character lacks), the verdict is HOLD with what to farm — never assume unlisted materials. Ascension rolls a random affix at high cost: it may be mentioned as an option, never prescribed as "reroll until you get X".
   9. Weapon compatibility is a hard constraint: never recommend a weapon/off-hand/shield change that violates a pointed attack skill's stated weapon requirement, and treat a wielding-mode change (dual-wield ↔ two-hander ↔ weapon-and-shield) as a build decision to flag explicitly, not a routine swap.
   10. On hardcore characters, weight survivability higher: resist caps and health are non-negotiable before any damage optimization.
@@ -78,9 +78,10 @@ interface AdvisorPlan {
     itemId: string;               // dossier item ID of what's in the slot ('' if empty)
     verdict: 'KEEP' | 'EQUIP' | 'RE-AUGMENT' | 'ADD-COMPONENT' | 'BUY-AUGMENT' | 'CRAFT';
     target?: string;              // EQUIP: candidate's itemId; BUY/CRAFT/RE-AUGMENT: exact dossier name
+    enablers?: string[];          // itemIds whose joint equip satisfies this move's requirements
     reason: string;
   }[];
-  hold: { itemId: string; reason: string }[];
+  hold: { itemId: string; reason: string; until?: string }[];  // until: "level 84" / "42 more spirit"
   sell: string[];                 // itemIds
   projectedResistances?: Record<string, number>;
 }
@@ -95,7 +96,8 @@ Errors must be actionable: binary not found → "claude CLI not found — instal
 1. Unit tests (mock provider + mocked execa): prompt assembly (system prompt + stdin doc + question), JSON envelope parsing, each error path (missing binary, non-zero exit, timeout, malformed JSON).
 2. Live: `npm run cli -- advise --char _Suchka` completes in < ~3 min, prints per-slot verdicts + Key moves + HOLD + SELL referencing real items, and yields a valid `structured` plan (CLI prints "plan: N verdicts" or "plan: not parseable — text only").
 3. Reasoning quality (sanity-read, not scripted): the Key moves section cites actual numbers from the dossier's resistance matrix; the answer includes a projected resistance table; verdicts weigh damage-type fit (a pure stat-stick swap justified only by a small resist gain on an overcapped resistance should not appear).
-4. No hallucinated items — mechanically checked: every `itemId` in the structured plan exists in the context doc's ID set (the advise command verifies this and warns otherwise); spot-check free-text names too.
+4. No hallucinated items — mechanically checked: every `itemId` in the structured plan (verdicts, enablers, hold, sell) exists in the context doc's ID set (the advise command verifies this and warns otherwise); spot-check free-text names too.
+4b. Requirements respected — sanity-read: no EQUIP verdict targets a candidate whose dossier annotation says the post-swap requirements fail, unless the verdict lists enablers that cover the gap; anything annotated `needs level N` lands in HOLD with `until`, not in a verdict.
 5. `advise --provider openai` → clean "not configured" message, exit code 1.
 6. `advise --question "what should I farm next?"` visibly steers the answer.
 7. Usage/cost line printed after the answer when available.

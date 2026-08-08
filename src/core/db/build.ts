@@ -9,9 +9,11 @@
 import { readFileSync } from 'node:fs';
 
 import { num, readArz, str, strList, type ArzRecord, type ArzValue } from './arz.js';
+import { evaluateFormula } from './formula.js';
 import type { GameArchive } from './gamefiles.js';
 import {
   REP_TIERS,
+  type AttrRequirements,
   type DbAffix,
   type DbFaction,
   type DbItem,
@@ -24,7 +26,7 @@ import {
 } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 5;
+export const DB_SCHEMA_VERSION = 6;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -77,6 +79,8 @@ const WANTED_PREFIXES = [
   'records/game/gamefactions.dbr',
   'records/game/balancingadjustment_mp+difficulty_players01.dbr',
   'records/game/gameengine.dbr',
+  // The 13 itemcost records whose equations produce attribute requirements.
+  'records/game/itemcostformulas',
 ];
 
 /**
@@ -185,6 +189,12 @@ const NON_STAT_KEYS = new Set<string>([
   'itemSetName',
   'itemClassification',
   'levelRequirement',
+  'itemCostName',
+  // Present on ~10k records but zero everywhere except one quest item; the
+  // requirement model reads them, `stats` shouldn't.
+  'strengthRequirement',
+  'dexterityRequirement',
+  'intelligenceRequirement',
   ...ICON_KEYS,
   'shardBitmap',
   'baseTexture',
@@ -199,6 +209,20 @@ const NON_STAT_KEYS = new Set<string>([
   'cannotPickUpMultiple',
   'useMeshRadius',
   'droppable',
+  // Render/physics plumbing that survived the zero-drop rule. Besides being
+  // noise in the advisor context, anything left here inflates the stat count
+  // the ring/amulet requirement kicker is scaled by.
+  'maxTransparency',
+  'outlineThickness',
+  'physicsFriction',
+  'physicsMass',
+  'scale',
+  // Loot-table bookkeeping on affix records; `jitter` is modelled explicitly.
+  'lootRandomizerName',
+  'lootRandomizerCost',
+  'lootRandomizerJitter',
+  'lootRandomizerWeight',
+  'marketAdjustmentPercent',
 ]);
 
 /** Asset references — meaningless to an advisor, and they dominate the byte count. */
@@ -228,6 +252,108 @@ function extractStats(fields: Record<string, unknown>): Record<string, number | 
     // Arrays are level tables and loot weights — not per-item stats.
   }
   return stats;
+}
+
+// ---------------------------------------------------------------------------
+// Attribute requirements
+// ---------------------------------------------------------------------------
+
+/**
+ * Which equation family an item's `Class` reads in its `itemCostName` record —
+ * `chest` means `chestStrengthEquation`, `chestIntelligenceEquation` and so on.
+ * Requirements are *not* stored on item records: the explicit
+ * `strengthRequirement` fields are zero on every item but one quest item, and
+ * the real values are these equations evaluated at the item's `itemLevel`.
+ *
+ * Spears have no equations of their own anywhere (the `spear*` template keys
+ * are unpopulated in all 13 cost records), so `Spear2h` reads `melee2h` like
+ * the other two-handers. Medals map to a family that is likewise never
+ * populated — a medal genuinely requires nothing, and must not fall into any
+ * other bucket.
+ */
+const COST_EQUATION_PREFIX: Record<string, string> = {
+  ArmorProtective_Head: 'head',
+  ArmorProtective_Shoulders: 'shoulders',
+  ArmorProtective_Chest: 'chest',
+  ArmorProtective_Hands: 'hands',
+  ArmorProtective_Legs: 'legs',
+  ArmorProtective_Feet: 'feet',
+  ArmorProtective_Waist: 'waist',
+  ArmorJewelry_Amulet: 'amulet',
+  ArmorJewelry_Ring: 'ring',
+  ArmorJewelry_Medal: 'medal',
+  WeaponMelee_Axe: 'axe',
+  WeaponMelee_Mace: 'mace',
+  WeaponMelee_Sword: 'sword',
+  WeaponMelee_Dagger: 'dagger',
+  WeaponMelee_Scepter: 'scepter',
+  WeaponMelee_Axe2h: 'melee2h',
+  WeaponMelee_Mace2h: 'melee2h',
+  WeaponMelee_Sword2h: 'melee2h',
+  WeaponMelee_Spear2h: 'melee2h',
+  WeaponHunting_Ranged1h: 'ranged1h',
+  WeaponHunting_Ranged2h: 'ranged2h',
+  WeaponArmor_Shield: 'shield',
+  WeaponArmor_Offhand: 'offhand',
+};
+
+/** Data name → save-file name: strength is Physique, dexterity Cunning, intelligence Spirit. */
+const ATTR_EQUATION_KEYS = [
+  ['Strength', 'physique'],
+  ['Dexterity', 'cunning'],
+  ['Intelligence', 'spirit'],
+] as const;
+
+const round1 = (value: number): number => Math.round(value * 10) / 10;
+
+/**
+ * An item's attribute requirements: the explicit fields when non-zero (one
+ * quest item in the whole game), otherwise its cost record's equations at
+ * `totalAttCount = 1`. Ring and amulet equations also carry a `totalAttCount`
+ * term — per populated stat on the *rolled* item, which the DB cannot know —
+ * so its linear step is captured separately by evaluating at 2 and differencing,
+ * for the resolver to scale by the real stat count.
+ */
+function buildAttrRequirements(
+  rec: ArzRecord,
+  cls: string,
+  records: Map<string, ArzRecord>,
+): Pick<DbItem, 'attrReq' | 'attrReqPerStat'> {
+  const explicit: AttrRequirements = {};
+  for (const [attr, key] of ATTR_EQUATION_KEYS) {
+    const value = num(rec, `${attr.toLowerCase()}Requirement`);
+    if (value) explicit[key] = value;
+  }
+  if (Object.keys(explicit).length > 0) return { attrReq: explicit };
+
+  const costRef = str(rec, 'itemCostName');
+  const cost = costRef ? records.get(costRef) : undefined;
+  const prefix = COST_EQUATION_PREFIX[cls];
+  const itemLevel = num(rec, 'itemLevel');
+  if (!cost || !prefix || !itemLevel) return {};
+
+  const attrReq: AttrRequirements = {};
+  const perStat: AttrRequirements = {};
+  for (const [attr, key] of ATTR_EQUATION_KEYS) {
+    const equation = str(cost, `${prefix}${attr}Equation`);
+    if (!equation) continue;
+    let baseline: number;
+    try {
+      baseline = evaluateFormula(equation, { itemLevel, totalAttCount: 1 });
+    } catch {
+      continue; // an equation the evaluator can't read is a missing value, not a crash
+    }
+    if (baseline <= 0) continue;
+    attrReq[key] = round1(baseline);
+    if (equation.includes('totalAttCount')) {
+      const step = evaluateFormula(equation, { itemLevel, totalAttCount: 2 }) - baseline;
+      if (step > 0) perStat[key] = round1(step);
+    }
+  }
+  if (Object.keys(attrReq).length === 0) return {};
+  const result: Pick<DbItem, 'attrReq' | 'attrReqPerStat'> = { attrReq };
+  if (Object.keys(perStat).length > 0) result.attrReqPerStat = perStat;
+  return result;
 }
 
 /** Fields modelled explicitly on `DbSkill`, or pure UI/audio plumbing. */
@@ -361,6 +487,8 @@ export function buildDb(input: BuildInput): NormalizedDb {
       if (name) affix.name = name;
       const jitter = num(rec, 'lootRandomizerJitter');
       if (jitter) affix.jitter = jitter;
+      const affixLevelReq = num(rec, 'levelRequirement');
+      if (affixLevelReq) affix.levelReq = affixLevelReq;
       affixes[path] = affix;
       continue;
     }
@@ -382,6 +510,7 @@ export function buildDb(input: BuildInput): NormalizedDb {
       slot: cls,
       iconPath: ICON_KEYS.map((key) => str(rec, key)).find(Boolean) ?? '',
       stats: extractStats(rec.fields),
+      ...buildAttrRequirements(rec, cls, records),
     };
 
     const setRecord = str(rec, 'itemSetName');

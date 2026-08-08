@@ -282,6 +282,68 @@ export function armorAbsorption(base: number, percent: number): number {
 }
 
 // ---------------------------------------------------------------------------
+// Attributes
+// ---------------------------------------------------------------------------
+
+/** Save-file naming; the data calls them strength, dexterity, intelligence. */
+export type AttrKey = 'physique' | 'cunning' | 'spirit';
+
+export const ATTR_KEYS: readonly AttrKey[] = ['physique', 'cunning', 'spirit'];
+
+/** The DBR fields granting each attribute, flat and percent. */
+export const ATTR_FIELDS: Readonly<Record<AttrKey, { flat: string; percent: string }>> = {
+  physique: { flat: 'characterStrength', percent: 'characterStrengthModifier' },
+  cunning: { flat: 'characterDexterity', percent: 'characterDexterityModifier' },
+  spirit: { flat: 'characterIntelligence', percent: 'characterIntelligenceModifier' },
+};
+
+/**
+ * Attribute and OA/DA contributions from gear and skills. The character's own
+ * base (save attributes; the engine's level- and attribute-derived OA/DA floor)
+ * is added by the aggregate, not collected here.
+ */
+export interface AttributeSums {
+  flat: Record<AttrKey, number>;
+  percent: Record<AttrKey, number>;
+  oaFlat: number;
+  oaPercent: number;
+  daFlat: number;
+  daPercent: number;
+}
+
+export function emptyAttributes(): AttributeSums {
+  return {
+    flat: { physique: 0, cunning: 0, spirit: 0 },
+    percent: { physique: 0, cunning: 0, spirit: 0 },
+    oaFlat: 0,
+    oaPercent: 0,
+    daFlat: 0,
+    daPercent: 0,
+  };
+}
+
+export function addAttributes(
+  into: AttributeSums,
+  stats: Record<string, StatValue>,
+  resolve: (value: StatValue) => number,
+): AttributeSums {
+  const read = (field: string): number => {
+    const value = stats[field];
+    return value === undefined ? 0 : resolve(value);
+  };
+  for (const key of ATTR_KEYS) {
+    const fields = ATTR_FIELDS[key];
+    into.flat[key] += read(fields.flat);
+    into.percent[key] += read(fields.percent);
+  }
+  into.oaFlat += read('characterOffensiveAbility');
+  into.oaPercent += read('characterOffensiveAbilityModifier');
+  into.daFlat += read('characterDefensiveAbility');
+  into.daPercent += read('characterDefensiveAbilityModifier');
+  return into;
+}
+
+// ---------------------------------------------------------------------------
 // Damage
 // ---------------------------------------------------------------------------
 

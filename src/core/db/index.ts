@@ -191,6 +191,7 @@ export class NormalizedGameDb implements GameDb {
       skills: Object.keys(this.db.skills).length,
       skillNames: Object.keys(this.db.skillNames).length,
       sets: Object.keys(this.db.sets).length,
+      itemsWithAttrReq: Object.values(this.db.items).filter((i) => i.attrReq).length,
     };
   }
 }

@@ -26,10 +26,13 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 - [x] **Stage 5A — Game mechanics layer** — [docs/plans/stage-05a-mechanics.md](docs/plans/stage-05a-mechanics.md)
   DB learns skills/devotion/sets/affix-stats; per-character resistance matrix + build damage profile; CLI `aggregates`. Split out of Stage 5 after the 2026-08 plan review: holistic advice (augment slots as free variables, damage-vs-resist trade-offs, buff-aware totals) is impossible from item base stats alone.
   Gate: Elemental Awakening bands as maintainable at **effective rank 12** (11 invested + the relic's +1 to all Nightblade skills); the profile ranks **pierce then bleeding**. Four plan facts were wrong and the data won — most importantly **the difficulty penalty is in the game files and is not uniform** (Ultimate: −50 elemental/pierce/acid, −25 aether/chaos/vitality/bleeding, **0 physical**), read from `balancingadjustment_mp+difficulty_players01.dbr` rather than hardcoded; and **armour is localized, not pooled** — six body parts with hit weights, absorption multiplicative on a 70% base. See the plan's Outcome.
+- [x] **Stage 5A.2 — Item requirements & character attributes** — [docs/plans/stage-05a2-requirements.md](docs/plans/stage-05a2-requirements.md)
+  Attribute requirements are **equation-derived, not stored**: `itemCostName` → `records/game/itemcostformulas*.dbr`, evaluated at `itemLevel` per slot class (spears ride `melee2h`; medals require nothing); level gates are explicit and affix-inclusive (`max(base, prefix, suffix)`); `-% Requirement` reductions are a scope × attribute matrix. Aggregate gains attribute totals (save base + mastery bars + gear ± %), OA/DA contributions, and `checkRequirements`.
+  Gate: **every equipped item on both characters passes the check** — and the first run failed it, catching a real bug (jewelry's `totalAttCount` stat count inflated by non-stat keys). See the plan's Outcome.
 - [ ] **Stage 5B — Context document builder** — [docs/plans/stage-05-context-builder.md](docs/plans/stage-05-context-builder.md)
-  Character + DB + aggregates → markdown context doc for the LLM, self-contained incl. game rules; CLI `context`.
+  Character + DB + aggregates (incl. 5A.2 requirements/attributes) → markdown context doc for the LLM, self-contained incl. game rules; CLI `context`. Candidates carry requirement annotations (`meets` / `short 42 physique` / `needs level 84 (HOLD)`).
 - [ ] **Stage 6 — AI provider + advise** — [docs/plans/stage-06-ai-advise.md](docs/plans/stage-06-ai-advise.md)
-  Provider abstraction; claude-cli default provider; CLI `advise`.
+  Provider abstraction; claude-cli default provider; CLI `advise`. Requirement handling is a hard constraint on the post-swap loadout: enabler combos, HOLD-until-level/attribute, SELL only when build-unreachable.
 - [ ] **Stage 7 — Electron UI + watcher** — [docs/plans/stage-07-electron-ui.md](docs/plans/stage-07-electron-ui.md)
   Info window (equip grid w/ icons, candidates, Advise button, settings), live save watching.
 

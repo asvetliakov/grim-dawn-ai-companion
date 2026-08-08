@@ -407,6 +407,126 @@ describe('armour', () => {
 // The matrix over a whole (synthetic) loadout
 // ---------------------------------------------------------------------------
 
+describe('attributes and requirement checks', () => {
+  const CHEST = 'records/items/geartorso/chest.dbr';
+  const RING = 'records/items/gearaccessories/rings/ring.dbr';
+  const MEDAL = 'records/items/gearaccessories/medals/medal.dbr';
+  const PREFIX = 'records/items/lootaffixes/prefix/p.dbr';
+  const SUFFIX = 'records/items/lootaffixes/suffix/s.dbr';
+  const MASTERY = 'records/skills/playerclass01/_classtraining_class01.dbr';
+  const PASSIVE2 = 'records/skills/playerclass01/passive2.dbr';
+
+  const db = stubDb({
+    items: {
+      [CHEST]: item(CHEST, {
+        name: 'Warplate',
+        slot: 'ArmorProtective_Chest',
+        levelReq: 40,
+        attrReq: { physique: 600 },
+        stats: { characterStrength: 40, characterStrengthModifier: 10 },
+      }),
+      [RING]: item(RING, {
+        name: 'Loop',
+        slot: 'ArmorJewelry_Ring',
+        levelReq: 30,
+        attrReq: { spirit: 300 },
+        attrReqPerStat: { spirit: 2 },
+        stats: { characterIntelligence: 25, itemLevel: 30, attributeScalePercent: 40 },
+      }),
+      // The fifteen medals carrying a zeroed reduction field are why zeros are
+      // skipped; this one also grants a scoped reduction that must not reach
+      // the ring's Spirit check.
+      [MEDAL]: item(MEDAL, {
+        name: 'Badge',
+        slot: 'ArmorJewelry_Medal',
+        stats: { characterMeleeStrengthReqReduction: 15, characterWeaponStrengthReqReduction: 0 },
+      }),
+    },
+    affixes: {
+      [PREFIX]: { record: PREFIX, name: 'Stalwart', levelReq: 55, stats: { characterOffensiveAbility: 20 } },
+      [SUFFIX]: { record: SUFFIX, name: 'of the Squire', stats: { characterGlobalReqReduction: 10 } },
+    },
+    skills: {
+      [MASTERY]: skill(MASTERY, {
+        name: 'Soldier',
+        class: 'Skill_Mastery',
+        // Cumulative by rank, exactly as `_classtraining_class01.dbr` stores it.
+        stats: { characterStrength: [5, 10, 15, 20], characterDexterity: [3, 7, 10, 14] },
+      }),
+      [PASSIVE2]: skill(PASSIVE2, {
+        name: 'Fighting Spirit',
+        stats: { characterArmorStrengthReqReduction: [3, 5, 8] },
+      }),
+    },
+  });
+
+  const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+  equipment[2] = instance({ baseName: CHEST, prefixName: PREFIX, suffixName: SUFFIX });
+  equipment[7] = instance({ baseName: RING });
+  equipment[10] = instance({ baseName: MEDAL });
+
+  const base = save({
+    equipment,
+    // Above the prefix's level-55 gate, so the checks exercise attributes.
+    level: 60,
+    skills: [characterSkill(MASTERY, 3), characterSkill(PASSIVE2, 2)],
+  });
+  base.attributes.physique = 500;
+  base.attributes.cunning = 100;
+  base.attributes.spirit = 320;
+  base.attributes.attributePoints = 4;
+  const aggregate = aggregateCharacter(base, db);
+
+  it('totals attributes from the save base, mastery bar, gear and % modifiers', () => {
+    // (500 base + 15 mastery at rank 3 + 40 chest) × 1.10 from the chest's +10%.
+    expect(aggregate.attributes.physique).toEqual({
+      base: 500,
+      flat: 55,
+      percent: 10,
+      total: (500 + 55) * 1.1,
+    });
+    expect(aggregate.attributes.cunning.flat).toBe(10); // mastery only
+    expect(aggregate.attributes.spirit.flat).toBe(25); // ring only
+    expect(aggregate.attributes.offensiveAbility.flat).toBe(20); // prefix
+    expect(aggregate.attributes.unspentPoints).toBe(4);
+  });
+
+  it('collects reductions with their scopes and skips zero-valued fields', () => {
+    const rows = aggregate.requirementReductions.rows;
+    expect(rows).toContainEqual({ scope: 'Melee', attr: 'physique', percent: 15, source: 'Badge' });
+    expect(rows).toContainEqual({ scope: 'Global', percent: 10, source: 'of the Squire' });
+    // Fighting Spirit's per-rank array, read at rank 2.
+    expect(rows).toContainEqual({ scope: 'Armor', attr: 'physique', percent: 5, source: 'Fighting Spirit' });
+    // The medal's zeroed template field must not become a row.
+    expect(rows.some((r) => r.percent === 0)).toBe(false);
+  });
+
+  it('routes reductions by slot scope when checking an item', () => {
+    const chest = aggregate.equippedRequirements.find((e) => e.slot === 'Chest');
+    // Armor 5% + Global 10% apply to a chest; the Melee 15% does not.
+    expect(chest?.check.effective.physique).toBe(Math.floor(600 * 0.85));
+    expect(chest?.check.meets).toBe(true);
+
+    const ring = aggregate.equippedRequirements.find((e) => e.slot === 'Ring 2');
+    // Only Global reaches jewelry, and the ring's own Spirit need scales by its
+    // one counted stat key — itemLevel and attributeScalePercent must not count.
+    expect(ring?.check.effective.spirit).toBe(Math.floor(300 * 0.9));
+    expect(ring?.check.meets).toBe(true);
+  });
+
+  it('reports deficits with the numbers a reader needs', () => {
+    const poor = save({ equipment });
+    poor.attributes.physique = 300;
+    poor.level = 30;
+    const check = aggregateCharacter(poor, db).equippedRequirements.find((e) => e.slot === 'Chest')?.check;
+    expect(check?.meets).toBe(false);
+    // Level 55 comes from the prefix, not the base item's 40.
+    expect(check?.gaps).toContainEqual({ attr: 'level', have: 30, need: 55, deficit: 25 });
+    // "Have" is the character as dressed — the chest's own +40 and +10% count.
+    expect(check?.gaps).toContainEqual({ attr: 'physique', have: 374, need: 540, deficit: 166 });
+  });
+});
+
 describe('resistanceMatrix', () => {
   const LEGS = 'records/items/gearlegs/legs.dbr';
   const PREFIX = 'records/items/lootaffixes/prefix/p.dbr';
@@ -626,6 +746,32 @@ describe.skipIf(!haveGameInstall())(`mechanics vs the game (${haveGameInstall() 
       augmentSkillLevel1: 1,
     });
   });
+
+  it('derives attribute requirements from the cost equations', { timeout: TIMEOUT }, async () => {
+    const db = await gameDb();
+    // Level-75 legendary heavy chest: the heavy_legend file's chest equation.
+    expect(db.getItem('records/items/geartorso/d008_torso.dbr')?.attrReq).toEqual({ physique: 829.8 });
+    // Two-handed gun at 70 — a Cunning slot.
+    expect(db.getItem('records/items/gearweapons/guns2h/b008c_gun2h.dbr')?.attrReq).toEqual({ cunning: 479.5 });
+    // Jewelry carries the totalAttCount kicker as a per-stat step.
+    const amulet = db.getItem('records/items/gearaccessories/necklaces/c044_necklace.dbr');
+    expect(amulet?.attrReq).toEqual({ spirit: 312.1 });
+    expect(amulet?.attrReqPerStat).toEqual({ spirit: 2 });
+    // Medals genuinely require nothing — their equation family is never populated.
+    expect(db.getItem('records/items/gearaccessories/medals/d002_medal.dbr')?.attrReq).toBeUndefined();
+    // The one explicit override in the whole game.
+    expect(db.getItem('records/items/questitems/quest_areah_woodcarving_02.dbr')?.attrReq).toEqual({
+      physique: 800,
+    });
+  });
+
+  it('keeps the affixes’ own level gates', { timeout: TIMEOUT }, async () => {
+    const db = await gameDb();
+    // "of the Squire"-family suffix: a reduction affix with its own level gate.
+    const squire = db.getAffix('records/items/lootaffixes/suffix/b_ar001_to_c.dbr');
+    expect(squire?.levelReq).toBe(49);
+    expect(squire?.stats['characterGlobalReqReduction']).toBe(11);
+  });
 });
 
 describe.skipIf(!haveGameInstall() || !haveSaves())(
@@ -664,6 +810,31 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
         ...agg.damage.resistReduction.map((r) => r.source),
       ];
       expect(labels.filter((l) => l.includes('.dbr'))).toEqual([]);
+    });
+
+    it('proves every equipped item satisfiable — the wearing-it invariant', { timeout: TIMEOUT }, async () => {
+      const db = await gameDb();
+      for (const name of CHARACTERS) {
+        const path = characterSavePath(name);
+        const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
+
+        // Attribute totals must sit above the save's base — gear and mastery
+        // bars always add something on a levelled character.
+        for (const key of ['physique', 'cunning', 'spirit'] as const) {
+          expect(agg.attributes[key].total).toBeGreaterThanOrEqual(agg.attributes[key].base);
+        }
+
+        // The character is wearing all of it, so every check must hold. A
+        // failure here means the requirement model (equation routing, stat
+        // count, reduction scoping, attribute totals) is wrong — this is the
+        // end-to-end gate on the whole layer.
+        for (const entry of agg.equippedRequirements) {
+          expect(
+            entry.check.meets,
+            `${name} ${entry.slot} (${entry.item}): ${JSON.stringify(entry.check.gaps)}`,
+          ).toBe(true);
+        }
+      }
     });
 
     it('scales the totals by difficulty without touching the raw sums', { timeout: TIMEOUT }, async () => {

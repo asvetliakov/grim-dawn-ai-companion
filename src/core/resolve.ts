@@ -24,6 +24,22 @@ import {
 
 export type ItemSource = 'equipped' | 'inventory' | 'stash' | 'transfer';
 
+/**
+ * What this rolled item demands of a character, before any `-% Requirement`
+ * reduction (those depend on the rest of the loadout — the mechanics layer's
+ * `checkRequirements` applies them).
+ */
+export interface ItemRequirements {
+  /**
+   * Affixes gate the item too: the level shown in game is the max of the base
+   * item's and both affixes' requirements, not the base field alone.
+   */
+  level: number;
+  physique?: number;
+  cunning?: number;
+  spirit?: number;
+}
+
 export interface ResolvedItem {
   /** The base item's record path, as stored in the save. */
   record: string;
@@ -48,6 +64,8 @@ export interface ResolvedItem {
   component?: DbItem;
   augment?: DbItem;
   source: ItemSource;
+  /** Absent only when the base record didn't resolve. */
+  requirements?: ItemRequirements;
   /** Human-readable place: slot name, sack number, stash tab, grid position. */
   location: string;
   stackCount: number;
@@ -159,7 +177,41 @@ export function resolveItem(
   if (completion.affix) item.completion = completion.affix;
   if (component) item.component = component;
   if (augment) item.augment = augment;
+  if (base) item.requirements = requirements(base, prefix.affix, suffix.affix);
   return item;
+}
+
+/**
+ * Keys the engine's `totalAttCount` plausibly tallies: actual character,
+ * offensive, defensive, retaliation and skill-augment entries. Metadata that
+ * merely lives beside them (`itemLevel`, `attributeScalePercent`) must not
+ * count — every miscounted key adds a phantom ~3% of `itemLevel × 3` to a
+ * ring's Spirit requirement.
+ */
+const COUNTED_STAT_KEY = /^(character|offensive|defensive|retaliation|augment|skill)/;
+
+/**
+ * The rolled item's own requirements. Ring and amulet equations scale with the
+ * number of populated stat entries on the item; counting the base's and both
+ * affixes' stat keys approximates the engine's tally — the step is ~3% of
+ * `itemLevel × 3` per stat, so a miscount of one is a few points, and the DB's
+ * per-affix `jitter` note already frames these numbers as anchors, not rolls.
+ */
+function requirements(base: DbItem, prefix?: DbAffix, suffix?: DbAffix): ItemRequirements {
+  const req: ItemRequirements = {
+    level: Math.max(base.levelReq, prefix?.levelReq ?? 0, suffix?.levelReq ?? 0),
+  };
+  if (!base.attrReq) return req;
+  const statCount = [base, prefix, suffix]
+    .flatMap((part) => (part ? Object.entries(part.stats) : []))
+    .filter(([key, value]) => typeof value === 'number' && COUNTED_STAT_KEY.test(key)).length;
+  const extra = base.attrReqPerStat ? Math.max(0, statCount - 1) : 0;
+  for (const key of ['physique', 'cunning', 'spirit'] as const) {
+    const baseline = base.attrReq[key];
+    if (baseline === undefined) continue;
+    req[key] = Math.round(baseline + (base.attrReqPerStat?.[key] ?? 0) * extra);
+  }
+  return req;
 }
 
 function recordStem(record: string): string {

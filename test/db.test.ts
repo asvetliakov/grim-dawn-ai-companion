@@ -196,6 +196,10 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
     // Affix names — the open question Stage 3 was meant to answer.
     expect(db.getAffixName('records/items/lootaffixes/prefix/aa004b_cunmod_01.dbr')).toBe('Shrewd');
     expect(db.getAffixName('records/items/lootaffixes/suffix/a014b_ch_speedattack_03_je.dbr')).toBeTruthy();
+
+    // Attribute requirements come from the cost equations, so coverage is a
+    // property of the build, not of luck with the loot tables.
+    expect(db.stats().itemsWithAttrReq).toBeGreaterThan(5_000);
   });
 
   it('knows crafting-bonus affixes even though they have no name', { timeout: BUILD_TIMEOUT }, async () => {

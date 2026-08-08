@@ -300,6 +300,7 @@ program
         console.log('\nCoverage');
         console.log(`  localization   ${s.l10nTags.toLocaleString('en-US')} tags`);
         console.log(`  item names     ${s.localizedNames.toLocaleString('en-US')}/${s.items.toLocaleString('en-US')} localized (${pct}%)`);
+        console.log(`  attribute reqs ${s.itemsWithAttrReq.toLocaleString('en-US')} items (from cost equations; medals and cost-less gear have none)`);
         console.log('\nFactions');
         for (const f of db.factions()) {
           const stock = f.hasVendor ? `${db.vendorItems(f.id, 'Revered').length} items` : '—';
@@ -330,13 +331,24 @@ program
 
 function describeItem(item: ResolvedItem): string {
   const bits: string[] = [];
-  if (item.base) bits.push(item.base.rarity, `lvl ${item.base.levelReq}`);
+  if (item.base) bits.push(item.base.rarity, describeRequirements(item));
   if (item.modifierName) bits.push(`modifier: ${item.modifierName}`);
   if (item.component) bits.push(`component: ${item.component.name}`);
   if (item.augment) bits.push(`augment: ${item.augment.name}`);
   if (item.base?.setName) bits.push(`set: ${item.base.setName}`);
   if (item.stackCount > 1) bits.push(`×${item.stackCount}`);
   return bits.join(', ');
+}
+
+/** `req: lvl 84, 830 physique` — the rolled item's own demands, unreduced. */
+function describeRequirements(item: ResolvedItem): string {
+  const req = item.requirements;
+  if (!req) return `lvl ${item.base?.levelReq ?? 0}`;
+  const bits = [`lvl ${req.level}`];
+  for (const key of ['physique', 'cunning', 'spirit'] as const) {
+    if (req[key] !== undefined) bits.push(`${Math.round(req[key])} ${key}`);
+  }
+  return bits.length > 1 ? `req: ${bits.join(', ')}` : bits[0]!;
 }
 
 function readOptionalSave(path: string): Buffer | undefined {
@@ -685,6 +697,52 @@ function printAggregate(agg: CharacterAggregate): void {
     console.log(`  block ${Math.round(d.blockChance)}% chance, ${Math.round(d.blockAmount)} absorbed`);
   }
   if (d.lifeLeechPercent) console.log(`  ${d.lifeLeechPercent.toFixed(1)}% of attack damage converted to health`);
+
+  const a = agg.attributes;
+  console.log('\nAttributes');
+  for (const key of ['physique', 'cunning', 'spirit'] as const) {
+    const t = a[key];
+    const pieces = [
+      `${Math.round(t.base)} base`,
+      t.flat ? `+${Math.round(t.flat)} gear/skills` : '',
+      t.percent ? `+${Math.round(t.percent)}%` : '',
+    ].filter(Boolean);
+    console.log(`  ${key.padEnd(10)} ${String(Math.round(t.total)).padStart(5)}  (${pieces.join(', ')})`);
+  }
+  const ability = (label: string, v: { flat: number; percent: number }): void => {
+    if (v.flat || v.percent) {
+      const bits = [v.flat ? `+${Math.round(v.flat)}` : '', v.percent ? `+${Math.round(v.percent)}%` : ''];
+      console.log(`  ${label.padEnd(10)} ${bits.filter(Boolean).join(', ')}  (gear/skill contributions only)`);
+    }
+  };
+  ability('OA', a.offensiveAbility);
+  ability('DA', a.defensiveAbility);
+  if (a.unspentPoints) console.log(`  unspent    ${a.unspentPoints} attribute point(s) — 8 each`);
+
+  if (agg.requirementReductions.rows.length || agg.requirementReductions.levelFlat) {
+    console.log('\nRequirement reductions');
+    for (const row of agg.requirementReductions.rows) {
+      const what = row.attr ? `${row.attr} on ${row.scope}` : `all attributes on ${row.scope}`;
+      console.log(`  -${row.percent}% ${what}  (${row.source})`);
+    }
+    if (agg.requirementReductions.levelFlat) {
+      console.log(`  -${agg.requirementReductions.levelFlat} level requirement on items`);
+    }
+  }
+
+  const failing = agg.equippedRequirements.filter((e) => !e.check.meets);
+  if (failing.length === 0) {
+    console.log('\nEquipped items: all requirements satisfied');
+  } else {
+    // The character is wearing these, so a listed gap means the model missed a
+    // source — surfaced loudly precisely because it should never print.
+    console.log('\nEquipped items with UNMET requirements (model gap — investigate)');
+    for (const entry of failing) {
+      for (const gap of entry.check.gaps) {
+        console.log(`  ${entry.slot}: ${entry.item} — ${gap.attr} ${gap.have}/${gap.need}`);
+      }
+    }
+  }
 
   const dmg = agg.damage;
   console.log('\nDamage profile');

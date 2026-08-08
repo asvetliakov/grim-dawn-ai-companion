@@ -23,13 +23,16 @@ import type { DbItem, DbSkill, GameDb, StatValue } from '../db/types.js';
 import { resolveItem, type ResolvedItem } from '../resolve.js';
 import { EQUIP_SLOT_NAMES, type CharacterSave, type Difficulty } from '../save/types.js';
 import {
+  addAttributes,
   addDamage,
   addDefense,
   addVector,
   armorAbsorption,
   ARMOR_PARTS,
+  ATTR_KEYS,
   conversions,
   DAMAGE_TYPES,
+  emptyAttributes,
   emptyDamage,
   emptyDefense,
   maxResistContributions,
@@ -41,6 +44,7 @@ import {
   RR_FIELDS,
   SECONDARY_RESIST_FIELDS,
   vectorIsEmpty,
+  type AttrKey,
   type Conversion,
   type DamageContribution,
   type DamageKey,
@@ -48,6 +52,13 @@ import {
   type ResistKey,
   type ResistVector,
 } from './stats.js';
+import {
+  addReqReductions,
+  checkRequirements,
+  emptyReductions,
+  type RequirementCheck,
+  type RequirementReductions,
+} from './requirements.js';
 import {
   addSkillBonuses,
   allocatedDevotions,
@@ -170,6 +181,30 @@ export interface SkillModifierNote {
   modifier?: string;
 }
 
+export interface AttributeTotal {
+  /** From the save: starting 50 plus allocated points (8 each). */
+  base: number;
+  /** Flat bonuses from gear, sets, permanent skills and the mastery bars. */
+  flat: number;
+  /** `+% <Attribute>` bonuses, applied over base + flat. */
+  percent: number;
+  total: number;
+}
+
+export interface AttributeSummary {
+  physique: AttributeTotal;
+  cunning: AttributeTotal;
+  spirit: AttributeTotal;
+  /**
+   * OA/DA gear-and-skill contributions only. The engine derives a further base
+   * from level and attributes; that floor is not modelled, and the exclusions
+   * list says so.
+   */
+  offensiveAbility: { flat: number; percent: number };
+  defensiveAbility: { flat: number; percent: number };
+  unspentPoints: number;
+}
+
 export interface CharacterAggregate {
   name: string;
   level: number;
@@ -186,6 +221,15 @@ export interface CharacterAggregate {
   grantedSkills: { item: string; skill: string }[];
   /** Item skill modifiers — named, not summed. */
   skillModifiers: SkillModifierNote[];
+  attributes: AttributeSummary;
+  /** Every `-% Requirement` modifier the loadout and build carry. */
+  requirementReductions: RequirementReductions;
+  /**
+   * Every equipped item checked against the totals above. The character is
+   * wearing all of it, so every entry should hold — a failure means the model
+   * (not the character) is wrong, and the tests enforce exactly that.
+   */
+  equippedRequirements: { slot: string; item: string; check: RequirementCheck }[];
   /** Everything left out of the numbers above, stated rather than implied. */
   exclusions: string[];
 }
@@ -347,6 +391,8 @@ export function aggregateCharacter(
   const conversionRows: (Conversion & { source: string })[] = [];
   const rrRows: { source: string; effect: string; value: number }[] = [];
   const excludedReasons = new Set<string>();
+  const attrSums = emptyAttributes();
+  const reductions = emptyReductions();
 
   const fold = (
     slot: string,
@@ -371,6 +417,8 @@ export function aggregateCharacter(
       }
       addDefense(defense, stats, resolve, { protectionIsPieceRating: armorPart !== undefined });
       addDamage(damage, stats, resolve);
+      addAttributes(attrSums, stats, resolve);
+      addReqReductions(reductions, stats, resolve, label);
       for (const [field, name] of Object.entries(SECONDARY_RESIST_FIELDS)) {
         const value = stats[field] === undefined ? 0 : resolve(stats[field]!);
         if (value) secondary.set(name, (secondary.get(name) ?? 0) + value);
@@ -470,6 +518,41 @@ export function aggregateCharacter(
     if (amount) secondary.set(label, (secondary.get(label) ?? 0) + amount);
   }
 
+  // Attribute totals: the save's value is the engine's base (starting 50 plus
+  // allocated points); everything the fold collected sits on top, and the
+  // percent modifiers multiply the sum of both.
+  const attribute = (key: AttrKey): AttributeTotal => {
+    const base = save.attributes[key];
+    const flat = attrSums.flat[key];
+    const percent = attrSums.percent[key];
+    return { base, flat, percent, total: (base + flat) * (1 + percent / 100) };
+  };
+  const attributes: AttributeSummary = {
+    physique: attribute('physique'),
+    cunning: attribute('cunning'),
+    spirit: attribute('spirit'),
+    offensiveAbility: { flat: attrSums.oaFlat, percent: attrSums.oaPercent },
+    defensiveAbility: { flat: attrSums.daFlat, percent: attrSums.daPercent },
+    unspentPoints: save.attributes.attributePoints,
+  };
+
+  // Every equipped item re-checked against the finished totals. The character
+  // is wearing it all, so this is a model invariant, not a finding — but the
+  // per-item `effective` numbers are exactly what a swap candidate compares to.
+  const standing = {
+    level: save.level,
+    attributes: Object.fromEntries(ATTR_KEYS.map((key) => [key, attributes[key].total])) as Record<
+      AttrKey,
+      number
+    >,
+    reductions,
+  };
+  const equippedRequirements = slots.map(({ slot, item }) => ({
+    slot,
+    item: item.display,
+    check: checkRequirements(item, standing),
+  }));
+
   return {
     name: save.name,
     level: save.level,
@@ -494,6 +577,9 @@ export function aggregateCharacter(
     maintained,
     grantedSkills: grantedSkills(slots),
     skillModifiers: skillModifiers(slots, db),
+    attributes,
+    requirementReductions: reductions,
+    equippedRequirements,
     exclusions: exclusionList(excludedReasons),
   };
 }
@@ -663,7 +749,9 @@ function exclusionList(reasons: Set<string>): string[] {
     // The resistance matrix bands maintainable buffs separately; everything
     // else here is a permanent-sources sum, and saying so beats letting a
     // reader assume the buff's damage bonus is already in the ranking.
-    'the damage profile, armour, and non-damage resistances count permanent sources only — maintainable buffs add to the resistance bands and nothing else',
+    'the damage profile, armour, non-damage resistances, and attribute totals count permanent sources only — maintainable buffs add to the resistance bands and nothing else',
+    'OA/DA figures are gear-and-skill contributions; the level- and attribute-derived engine base is not modelled',
+    'requirement checks describe the character as currently dressed — a reduction or +attribute lost with an outgoing item changes what the incoming one needs',
     'a gear swap that changes +skills shifts every rank below, and with it the skill rows above; these numbers are the current loadout’s',
   );
   return [...new Set(out)].sort();

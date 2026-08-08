@@ -31,6 +31,17 @@ export interface VendorSource {
  */
 export type StatValue = number | string | number[];
 
+/**
+ * Attribute requirements in save-file naming: physique = the data's `strength`,
+ * cunning = `dexterity`, spirit = `intelligence`. An absent key means the item
+ * demands nothing of that attribute.
+ */
+export interface AttrRequirements {
+  physique?: number;
+  cunning?: number;
+  spirit?: number;
+}
+
 export interface DbItem {
   /** DBR record path — the key items are stored under in saves. */
   record: string;
@@ -65,6 +76,21 @@ export interface DbItem {
   vendors?: VendorSource[];
   /** Localized flavour/description text, when the record carries one. */
   description?: string;
+  /**
+   * Attribute requirements, evaluated at build time from the item's
+   * `itemCostName` cost equations (or the record's explicit override — one
+   * quest item in the whole game). Requirements are *not* stored on item
+   * records; they are a function of `itemLevel` and the item's slot class.
+   * Absent = the item genuinely has none (medals, gear without a cost record).
+   */
+  attrReq?: AttrRequirements;
+  /**
+   * Rings and amulets only: the extra requirement per populated stat entry
+   * beyond the first on the *rolled* item — their equations carry a
+   * `totalAttCount` term the other slots' don't. `attrReq` is the baseline at
+   * one stat; the resolver adds `attrReqPerStat × (statCount − 1)`.
+   */
+  attrReqPerStat?: AttrRequirements;
 }
 
 /**
@@ -137,6 +163,11 @@ export interface DbAffix {
   stats: Record<string, number | string>;
   /** `lootRandomizerJitter` — the ± percentage the roll varies by. */
   jitter?: number;
+  /**
+   * Affixes gate the rolled item's level: its effective requirement is
+   * `max(base, prefix, suffix)`, not the base item's field alone.
+   */
+  levelReq?: number;
 }
 
 export interface DbFaction {
@@ -250,4 +281,6 @@ export interface DbStats {
   /** Every `records/skills/` path, name-only — what `skillName` can answer for. */
   skillNames: number;
   sets: number;
+  /** Items whose cost equations produced an attribute requirement. */
+  itemsWithAttrReq: number;
 }
