@@ -27,7 +27,10 @@ export const settingsSchema = z.object({
   gameDir: z.string().min(1).optional(),
   /** Character whose `player.gdc` the UI opens by default. */
   activeCharacter: z.string().min(1).optional(),
-  /** GrimTools localization to fetch; also the language item names come out in. */
+  /**
+   * The language item and skill names come out in — one of the locales the
+   * install ships a `resources/Text_<LOCALE>.arc` for (`db --stats` lists them).
+   */
   locale: z.string().min(2).default('en'),
   /** Advisor backend — see `src/core/ai/provider.ts` (Stage 6). */
   provider: z.string().min(1).default('claude-cli'),

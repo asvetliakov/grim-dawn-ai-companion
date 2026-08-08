@@ -2,9 +2,10 @@
  * The `GameDb` seam.
  *
  * Everything downstream (resolver, context builder, UI) talks to this interface
- * and never to a backend. Today the only implementation merges the game's own
- * `.arz` archives with GrimTools' localization table; a fully self-contained
- * backend (own `Text_EN.arc` reader) can drop in behind it without a ripple.
+ * and never to a backend. The only implementation reads the installed game — its
+ * `.arz` record archives and its `Text_<LOCALE>.arc` text archives — so a
+ * different backend (a mod's database, a future dump format) can drop in behind
+ * this interface without a ripple.
  */
 
 /**
@@ -97,6 +98,10 @@ export interface GameDb {
 
 export interface DbStats {
   gameVersion: string;
+  /** The language these names are in. */
+  locale: string;
+  /** Every language the install could be rebuilt in — settings' `locale` field. */
+  locales: string[];
   /** Cache key for this game build. */
   fingerprint: string;
   builtAt: string;

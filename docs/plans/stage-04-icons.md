@@ -126,5 +126,13 @@ wrong art wherever records reuse a filename.
 - Stage 7's `gdicon://` handler is `createIconService()` plus `getIconPng`. Nothing
   in `src/core/icons/` is native, so the "sharp only in Node contexts" rule has
   nothing left to bite on.
-- `ArcArchive` + `Text_EN.arc` would drop the GrimTools localization fetch and make
-  the tool fully offline. That is now a small job, not a stage.
+- ~~`ArcArchive` + `Text_EN.arc` would drop the GrimTools localization fetch and make
+  the tool fully offline. That is now a small job, not a stage.~~ **Done immediately
+  after this stage** (`src/core/db/gametext.ts`): the game's text archives carry
+  20,322 tags against the download's 16,246, in 13 languages rather than one, and
+  current rather than dump-lagged — the 739 tags only the download had turned out to
+  be the publisher's own website UI strings. There is now no `fetch` in `src/` at
+  all. Two things fell out of it: the cache is keyed per language
+  (`db-<locale>.json`, icons shared), which fixed a latent bug where changing
+  `settings.locale` silently kept the old language; and `writeCachedDb` became an
+  atomic write-and-rename, because two processes can plausibly build at once.

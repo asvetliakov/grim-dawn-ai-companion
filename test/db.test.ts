@@ -1,11 +1,13 @@
-import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { decompressLz4Block, readArz } from '../src/core/db/arz.js';
 import { cleanText } from '../src/core/db/build.js';
 import { archivesFingerprint, findGameDir, gameArchives, readGameVersion } from '../src/core/db/gamefiles.js';
+import { availableLocales, parseTagFile, readGameText } from '../src/core/db/gametext.js';
 import { loadGameDb } from '../src/core/db/index.js';
-import { parseL10n } from '../src/core/db/grimtools.js';
 import { REP_TIERS } from '../src/core/db/types.js';
 import { MISSING_GAME_MESSAGE, gameDb, haveGameInstall } from './paths.js';
 
@@ -49,8 +51,20 @@ describe('cleanText', () => {
     expect(cleanText('"Flavour."^w^n(Applied to rings)')).toBe('"Flavour."\n(Applied to rings)');
   });
 
+  it('drops the grammatical gender marker gendered languages open a name with', () => {
+    expect(cleanText('[ms]стеклянный глаз снайпера')).toBe('стеклянный глаз снайпера');
+    expect(cleanText('[np]набедренники кровавого обряда')).toBe('набедренники кровавого обряда');
+  });
+
+  it('keeps one form of an adjective that spells out every declension', () => {
+    // Without this the name reads as all four forms run together.
+    expect(cleanText('[ms]искусный[fs]искусная[ns]искусное[np]искусные')).toBe('искусный');
+  });
+
   it('leaves ordinary text alone', () => {
     expect(cleanText("Kymon's Chosen")).toBe("Kymon's Chosen");
+    // Only a leading marker is markup; brackets in the body are the name.
+    expect(cleanText('Ugdenbog [Reinforced]')).toBe('Ugdenbog [Reinforced]');
   });
 });
 
@@ -70,31 +84,40 @@ describe('readArz', () => {
 });
 
 // ---------------------------------------------------------------------------
-// GrimTools dump validation — synthetic, no network
+// Localization files — synthetic, no game needed
 // ---------------------------------------------------------------------------
 
-describe('GrimTools localization validation', () => {
-  it('accepts a well-formed localization table', () => {
-    const tags = Object.fromEntries(Array.from({ length: 200 }, (_, i) => [`tag${i}`, `text ${i}`]));
-    const src = `db_l10n_texts['en']=${JSON.stringify(tags)};`;
-    expect(parseL10n(src, 'en')['tag7']).toBe('text 7');
+describe('tags_*.txt parsing', () => {
+  it('reads key=value pairs, ignoring comments and blank lines', () => {
+    const tags = parseTagFile('# Items\r\n\r\ntagRelicC003=Slaughter\r\ntagEmpty=\r\n');
+    expect(tags['tagRelicC003']).toBe('Slaughter');
+    // A tag with no text is still a tag: it is how the game blanks one out.
+    expect(tags['tagEmpty']).toBe('');
+    expect(Object.keys(tags)).toHaveLength(2);
   });
 
-  it('names the locale that is missing from the table', () => {
-    expect(() => parseL10n("db_l10n_texts['de']={};", 'en')).toThrow(/db_l10n_texts\['en'\] is missing/);
+  it('splits on the first = so values may contain their own', () => {
+    expect(parseTagFile('tagFormula=2 + 2 = 4')['tagFormula']).toBe('2 + 2 = 4');
   });
 
-  it('rejects a localization table too small to be complete', () => {
-    expect(() => parseL10n("db_l10n_texts['en']={a:'b'};", 'en')).toThrow(/too few tags/);
+  it('strips the byte-order mark the base archive opens with', () => {
+    // Left in place, the BOM rides along inside the first key and that one tag
+    // silently stops resolving.
+    expect(parseTagFile('﻿tagTitleScreenText=Grim Dawn')['tagTitleScreenText']).toBe('Grim Dawn');
   });
 
-  it('reports a truncated download instead of failing later', () => {
-    // A cut-off file assigns nothing, so the seeded global stays empty.
-    expect(() => parseL10n("db_l10n_texts['e", 'en')).toThrow(/could not evaluate/);
+  it('keeps the game’s formatting escapes for cleanText to deal with', () => {
+    expect(parseTagFile('tagX=^kDread Skull')['tagX']).toBe('^kDread Skull');
   });
 
-  it('reports a syntactically broken dump as an evaluation failure', () => {
-    expect(() => parseL10n("db_l10n_texts['en']={a:", 'en')).toThrow(/could not evaluate/);
+  it('merges files in order, later definitions winning', () => {
+    const tags = parseTagFile('tagA=base\ntagB=base');
+    parseTagFile('tagA=expansion', tags);
+    expect(tags).toEqual({ tagA: 'expansion', tagB: 'base' });
+  });
+
+  it('ignores lines that are not assignments', () => {
+    expect(parseTagFile('not a tag line\n=novalue\n')).toEqual({});
   });
 });
 
@@ -124,6 +147,29 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
     expect(relic?.type).toBe('ItemArtifact');
     // `description` is the name tag for relics; gear uses `itemNameTag`.
     expect(relic?.fields['description']).toBe('tagRelicC003');
+  });
+
+  it('reads the localization table out of the game’s own text archives', () => {
+    const gameDir = findGameDir()!;
+    const tags = readGameText(gameDir, 'en', gameArchives(gameDir));
+    expect(tags['tagRelicC003']).toBe('Slaughter');
+    // The download this replaced carried 16,246 tags; the game ships more, and
+    // a regression here would most likely be "only the base archive was read".
+    expect(Object.keys(tags).length).toBeGreaterThan(19_000);
+    // Expansion text merges on top of the base game's.
+    expect(tags['tagGDX3Class10SkillDescription01A']).toMatch(/werewolf/i);
+  });
+
+  it('offers every locale the install ships, and names them when one is absent', () => {
+    const gameDir = findGameDir()!;
+    const locales = availableLocales(gameDir);
+    expect(locales).toContain('EN');
+    // Locale codes are matched case-insensitively — settings say `en`, the file
+    // is `Text_EN.arc`.
+    expect(readGameText(gameDir, 'EN', gameArchives(gameDir))['tagRelicC003']).toBe('Slaughter');
+    expect(() => readGameText(gameDir, 'xx', gameArchives(gameDir))).toThrow(
+      new RegExp(`no Text_XX\\.arc.*this install ships: ${locales[0]}`, 's'),
+    );
   });
 
   it('reads the installed game version out of Engine.dll', () => {
@@ -204,19 +250,49 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
 
   describe('caching', () => {
     const realFetch = globalThis.fetch;
+    const realDataDir = process.env['GD_DATA_DIR'];
+    let dataDir: string;
+
+    beforeAll(() => {
+      dataDir = mkdtempSync(join(tmpdir(), 'gd-db-'));
+    });
     afterEach(() => {
       globalThis.fetch = realFetch;
+      // The shared cache is shared: the other test files build into it too, so
+      // a test that wipes and rebuilds has to do it somewhere of its own.
+      if (realDataDir === undefined) delete process.env['GD_DATA_DIR'];
+      else process.env['GD_DATA_DIR'] = realDataDir;
+    });
+    afterAll(() => {
+      rmSync(dataDir, { recursive: true, force: true });
     });
 
-    it('loads from db.json without touching the network', { timeout: BUILD_TIMEOUT }, async () => {
-      await gameDb(); // ensure the cache exists
-
+    it('builds and loads without touching the network at all', { timeout: BUILD_TIMEOUT }, async () => {
+      process.env['GD_DATA_DIR'] = dataDir;
+      // Not just the cached path: the database is derived entirely from the
+      // install now, so a *cold* build — into an empty data directory, with no
+      // cache of any kind — must be offline too.
       globalThis.fetch = (() => {
-        throw new Error('the cached database must not hit the network');
+        throw new Error('the database must not hit the network');
       }) as typeof fetch;
 
-      const db = await loadGameDb();
-      expect(db.getItem('records/items/gearrelic/c003_relic.dbr')?.name).toBe('Slaughter');
+      const built = await loadGameDb();
+      expect(built.getItem('records/items/gearrelic/c003_relic.dbr')?.name).toBe('Slaughter');
+      expect(existsSync(join(dataDir, 'cache', built.stats().fingerprint, 'db-en.json'))).toBe(true);
+
+      const cached = await loadGameDb();
+      expect(cached.getItem('records/items/gearrelic/c003_relic.dbr')?.name).toBe('Slaughter');
+    });
+
+    it('rebuilds rather than reading a database cached for another language', { timeout: BUILD_TIMEOUT }, async () => {
+      process.env['GD_DATA_DIR'] = dataDir;
+      const de = await loadGameDb({ locale: 'de' });
+      // Same records, different names, side by side in one build's cache — the
+      // icons underneath them are language-independent and stay shared.
+      expect(de.getItem('records/items/gearrelic/c003_relic.dbr')?.name).toBe('Gemetzel');
+      expect(de.stats().locale).toBe('de');
+      const en = await loadGameDb();
+      expect(en.getItem('records/items/gearrelic/c003_relic.dbr')?.name).toBe('Slaughter');
     });
   });
 });

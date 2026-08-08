@@ -2,9 +2,9 @@
  * Reader for Grim Dawn's `.arc` asset archives.
  *
  * Where `.arz` holds the game's records, `.arc` holds its files — textures,
- * meshes, animations, localization tables. Stage 4 needs `resources/Items.arc`
- * to turn a record's `bitmap` field into an actual icon; `resources/Text_EN.arc`
- * is the same reader away from dropping the last GrimTools dependency.
+ * meshes, animations, localization tables. Two callers: `icons/` reads
+ * `resources/Items.arc` to turn a record's `bitmap` field into an actual icon,
+ * and `gametext.ts` reads `resources/Text_<LOCALE>.arc` for the names.
  *
  * Layout, all little-endian:
  *

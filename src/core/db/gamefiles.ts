@@ -101,8 +101,8 @@ export function gameArchives(gameDir: string): GameArchive[] {
 
 /**
  * Cache key for a game build. Size + mtime of every archive: a patch rewrites
- * them, which rotates the key and so re-derives the database (and re-fetches the
- * localization table) exactly once per game version.
+ * them, which rotates the key and so re-derives the database exactly once per
+ * game version.
  */
 export function archivesFingerprint(archives: GameArchive[]): string {
   return fingerprint(archives.map((a) => `${a.expansion}:${a.size}:${Math.round(a.mtimeMs)}`));
@@ -115,8 +115,8 @@ export function archivesFingerprint(archives: GameArchive[]): string {
  * safe to grep for; if a future patch ever makes it ambiguous, we say we do not
  * know rather than guess.
  *
- * This is the *accurate* source. GrimTools reports the version of its own data
- * dump ("Version 1.3.0.0"), which lags the installed game.
+ * This is the *accurate* source, and the only one: a published database dump
+ * reports the version of the dump, which lags whatever is installed here.
  */
 export function readGameVersion(gameDir: string): string | undefined {
   let binary: string;

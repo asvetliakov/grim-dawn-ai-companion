@@ -13,11 +13,15 @@ import type { GameArchive } from './gamefiles.js';
 import { REP_TIERS, type DbFaction, type DbItem, type DbRecipe, type RepTier } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 3;
+export const DB_SCHEMA_VERSION = 4;
 
 export interface NormalizedDb {
   schemaVersion: number;
   gameVersion: string;
+  /** The language `l10n` (and so every name in here) is in. */
+  locale: string;
+  /** Every language this install could be rebuilt in. */
+  locales: string[];
   fingerprint: string;
   builtAt: string;
   archives: string[];
@@ -157,6 +161,8 @@ export interface BuildInput {
   game: GameRecords;
   l10n: Record<string, string>;
   gameVersion: string;
+  locale: string;
+  locales: string[];
   fingerprint: string;
   archives: string[];
   /** Injected so the cache carries a real timestamp without the build being impure. */
@@ -164,16 +170,29 @@ export interface BuildInput {
 }
 
 /**
- * Strip the game's inline formatting escapes.
+ * Strip the game's inline markup.
  *
  * Localized strings carry `^<letter>` codes — `^k` tints tier-2 component names
- * gold, `^n` is a line break, `^w` resets. They belong to the game's own text
- * renderer; a name handed to a UI or to a model should read as text.
+ * gold, `^n` is a line break, `^w` resets.
+ *
+ * Gendered languages add a declension system on top. A noun opens with the
+ * grammatical marker it *is* (`[ms]` masculine singular, `[np]` neuter plural;
+ * 3,215 of the Russian table's entries carry one), and an adjective spells out
+ * every form it *could take*, each behind its own marker:
+ * `[ms]искусный[fs]искусная[ns]искусное[np]искусные`. The engine picks the
+ * adjective form matching the noun.
+ *
+ * We drop the noun's marker and keep an adjective's first form. That is right in
+ * every ungendered language and readable in the rest; full agreement needs the
+ * noun's gender carried to the point where the affix is applied, which is a
+ * backlog item (see RUNBOOK.md) and affects only the 365 adjectival tags.
  */
 export function cleanText(text: string): string {
   return text
     .replace(/\^n/g, '\n')
     .replace(/\^[a-zA-Z]/g, '')
+    .replace(/^\s*\[[mfn][sp]\]/, '')
+    .replace(/\[[mfn][sp]\][\s\S]*$/, '')
     .trim();
 }
 
@@ -240,6 +259,8 @@ export function buildDb(input: BuildInput): NormalizedDb {
   return {
     schemaVersion: DB_SCHEMA_VERSION,
     gameVersion: input.gameVersion,
+    locale: input.locale,
+    locales: input.locales,
     fingerprint: input.fingerprint,
     builtAt: (input.now ?? new Date()).toISOString(),
     archives: input.archives,

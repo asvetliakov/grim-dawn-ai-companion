@@ -42,7 +42,7 @@ chokidar on the save dir; 2s debounce; on change: parse with up to 3 retries 1s 
 - Candidates: top filtered candidates per slot (reuse Stage 5 filters), tagged inv/stash/transfer.
 - Advise: button → spinner → markdown-rendered advice panel (verdict table, HOLD, SELL); "copy" button; optional question input field.
 - Settings pane: save dir (with auto-detect button), provider, model, locale.
-- Footer credit: "Item data & icons courtesy of GrimTools (grimtools.com) — data © Crate Entertainment".
+- Footer credit: "Item data & icons read from your Grim Dawn install — game data © Crate Entertainment". (The GrimTools credit this line used to carry is obsolete: nothing is downloaded any more. See stage 4's Outcome.)
 
 ## Acceptance criteria
 

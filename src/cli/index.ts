@@ -271,8 +271,8 @@ async function withDb<T>(
 
 program
   .command('db')
-  .description('build or inspect the game item database (game .arz + GrimTools localization)')
-  .option('--refresh', 're-read the archives and re-download the localization table')
+  .description('build or inspect the game item database (read from the installed game)')
+  .option('--refresh', 're-read the archives instead of using the cached database')
   .option('--stats', 'print coverage and content counts')
   .option('--faction <id>', 'list a faction vendor’s stock')
   .option('--tier <tier>', `market tier for --faction (${REP_TIERS.join(' | ')})`, 'Revered')
@@ -282,6 +282,7 @@ program
       console.log(`${s.gameVersion} — ${s.items.toLocaleString('en-US')} items, ${s.affixes.toLocaleString('en-US')} affixes (${s.namedAffixes.toLocaleString('en-US')} named)`);
       console.log(`  cache          ${s.fingerprint} (built ${s.builtAt})`);
       console.log(`  archives       ${s.archives.join(', ')}`);
+      console.log(`  language       ${s.locale} (installed: ${s.locales.join(', ').toLowerCase()})`);
       console.log(`  factions       ${s.factions} (${s.vendorFactions} with vendors, ${s.vendorItems} items stocked)`);
       console.log(`  blueprints     ${s.recipes}`);
 

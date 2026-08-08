@@ -22,6 +22,7 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 - [x] **Stage 4 — Icon service** — [docs/plans/stage-04-icons.md](docs/plans/stage-04-icons.md)
   Per-item PNGs, cached; CLI `icon`. Gate: 0 missing icons for equipped gear — **actual: 148/148 for everything both characters can reach**, 3,840/3,844 across the whole database.
   Backend pivoted again, as Stage 3 predicted: icons come from the game's own `resources/Items.arc`, not the GrimTools sprite sheet, so the plan's `.png`-path/CSS scheme was moot. No network, and no `sharp` — see the plan's Outcome.
+  Follow-on (same session): the `.arc` reader was pointed at `Text_<LOCALE>.arc`, which **removed the last download**. The tool is now fully offline, with 20,322 name tags instead of 16,246 and all 13 shipped languages instead of one.
 - [ ] **Stage 5 — Context document builder** — [docs/plans/stage-05-context-builder.md](docs/plans/stage-05-context-builder.md)
   Character + DB → markdown context doc for the LLM; CLI `context`.
 - [ ] **Stage 6 — AI provider + advise** — [docs/plans/stage-06-ai-advise.md](docs/plans/stage-06-ai-advise.md)
@@ -31,7 +32,9 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 
 ## Post-v1 backlog (not planned in detail yet)
 
-- ~~Own `.arz` parser backend~~ — **done early, in Stage 3**; it turned out to be the only way to identify save items at all. The `.arc`/`.tex` reader arrived with it in **Stage 4** (`src/core/db/arc.ts`), so all that is left of this item is pointing it at `resources/Text_EN.arc` for localization — a small job that would drop the last GrimTools dependency and make the tool fully offline.
+- ~~Own `.arz` parser backend~~ / ~~`.arc` reader~~ / ~~drop the last download~~ — **all done**, across Stages 3–4 and the follow-on after Stage 4. The tool now reads only the installed game and makes **no network requests at all**.
+- **Grammatical agreement in gendered locales.** The text files encode declension: a noun opens with the gender it *is* (`[ms]`, `[fs]`, `[ns]`, `[np]`), an adjective spells out every form it *could take* (`[ms]искусный[fs]искусная[ns]искусное[np]искусные`), and the engine matches them. `cleanText` currently keeps the first form, so Russian reads "искусный печатка" where the game says "искусная печатка". Doing it properly means carrying the base item's gender on `DbItem` and picking the affix variant in `resolve.ts` — ~25 lines, affects 365 adjectival tags, and nothing at all in English.
+- **Mod support.** With text and icons both coming from `.arc`/`.arz` files, a mod's `mods/<name>/database/*.arz` + `resources/*.arc` would slot into the same merge (the save files already record which mod they belong to). Untried; the Crucible (`survivalmode`) is the only mod installed here.
 - OpenAI provider behind `AdvisorProvider` (settings toggle).
 - electron-builder packaging (dev-mode `npm run dev` is fine until then).
 - Nice-to-haves: per-slot "shopping list" view, multi-character comparison, hardcore (`.gsh`) stash support if ever needed.
@@ -42,7 +45,7 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 |---|---|---|
 | Save format drift (1.3.0.6 vs 1.2-era specs) | Checksums catch misparses immediately; unknown blocks skipped; warn-not-throw on version fields | Settled empirically by Stage 1 |
 | Torn/partial save writes | Checksum + 3× retry + `player.g00` fallback | Designed in (Stage 1/7) |
-| GrimTools schema change or unavailability | zod fails loudly; raw download cached; now only localization depends on it, and an `.arc` reader would remove even that | Much reduced (Stage 3) |
+| ~~GrimTools schema change or unavailability~~ | Nothing is downloaded any more — names come from the game's own `Text_<LOCALE>.arc` | **Closed** (after Stage 4) |
 | Affix (prefix/suffix) name coverage | Answered: the `.arz` names every affix that has a name (`lootRandomizerName`); only crafting bonuses are nameless, and they are nameless in game too | Closed (Stage 3) |
 | Requires a local Grim Dawn install | Unavoidable — record paths exist nowhere else. Auto-detected; `GD_GAME_DIR`/settings override; absence reports a plain message | Accepted (Stage 3) |
 | Resistance totals are item-sourced approximations | Labeled as lower bound in context doc; full engine simulation is a non-goal | Accepted |

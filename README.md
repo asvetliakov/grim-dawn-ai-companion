@@ -24,20 +24,23 @@ either with `GD_GAME_DIR` / `GD_SAVE_DIR`, or pin them in
 
 ## Where the data comes from
 
-Item identity lives in the game's own `database/*.arz` archives, which are the
-only place a save's DBR record paths can be looked up. Those archives are read
-from your local install and cached, normalized, under
-`~/Library/Application Support/gd-companion/cache/`. The game version is read
-from `Engine.dll`.
+**Your Grim Dawn install, and nothing else.** The tool makes no network requests
+at all, so it works offline and always describes the build you actually have:
 
-Item **icons** come from the same install: `resources/Items.arc` holds one
-texture per icon, which is decoded to a PNG on first use and cached beside the
-database. Nothing is downloaded and no sprite sheet is involved.
+| What | Where it is read from |
+|---|---|
+| Item identity, stats, vendor stock | `database/*.arz` — the only place a save's DBR record paths can be looked up |
+| Item and skill **names** | `resources/Text_<LOCALE>.arc` (20,322 tags; 13 languages ship with the game) |
+| Item **icons** | `resources/Items.arc` — one texture per icon, decoded to PNG on first use |
+| Game version | the build string in `Engine.dll` |
 
-Item and skill **names** come from the localization table published by
-**[GrimTools](https://www.grimtools.com/) (Dammitt)** — thank you. That one ~1 MB
-file is the only thing fetched over the network, at most once per game version,
-and it is cached locally.
+The base game and each expansion contribute their own archives, merged in load
+order so an expansion's changes win. Everything derived is cached under
+`~/Library/Application Support/gd-companion/cache/<build>/`, keyed by a
+fingerprint of the archives, so a game patch re-derives it exactly once.
+
+Set `locale` in `settings.json` to any language the install ships —
+`npm run cli -- db --stats` lists them.
 
 **No game-derived data is committed to this repository**: no archive contents, no
-GrimTools downloads, no save files. The repo ships code only.
+extracted assets, no save files. The repo ships code only.

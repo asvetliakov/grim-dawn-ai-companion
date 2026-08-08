@@ -1,15 +1,14 @@
 /**
  * Loading the game database.
  *
- * Two sources, one interface:
+ * One source: the installed game. Its `.arz` archives supply item identity — the
+ * DBR record path, which is the only thing saves store and the only thing that
+ * can be joined back to them — its `Text_<LOCALE>.arc` archives supply the names,
+ * and `Engine.dll` supplies the version. Nothing is fetched, so the tool works
+ * offline and always describes the build that is actually installed.
  *
- *  - the game's own files supply item identity — the DBR record path, which is
- *    the only thing saves store and the only thing that can be joined back to
- *    them — plus the installed game's version;
- *  - GrimTools supplies exactly one thing: the tag → text localization table.
- *
- * First run parses the archives and downloads the localization; every run after
- * that reads one `db.json` and touches neither. `--refresh` forces both again.
+ * First run parses the archives; every run after that reads one `db.json`.
+ * `--refresh` forces the parse again.
  */
 
 import {
@@ -20,14 +19,8 @@ import {
   MISSING_GAME_DIR_MESSAGE,
 } from './gamefiles.js';
 import { buildDb, cleanText, readGameRecords, type NormalizedDb } from './build.js';
-import {
-  clearCachedBuild,
-  readCachedDb,
-  readCachedRaw,
-  writeCachedDb,
-  writeCachedRaw,
-} from './cache.js';
-import { download, l10nUrl, parseL10n } from './grimtools.js';
+import { clearCachedBuild, readCachedDb, writeCachedDb } from './cache.js';
+import { DEFAULT_LOCALE, availableLocales, readGameText } from './gametext.js';
 import { REP_TIERS, type DbFaction, type DbItem, type DbRecipe, type DbStats, type GameDb, type RepTier } from './types.js';
 
 export interface LoadDbOptions {
@@ -45,7 +38,7 @@ export async function loadGameDb(opts: LoadDbOptions = {}): Promise<GameDb> {
 }
 
 export async function loadNormalizedDb(opts: LoadDbOptions = {}): Promise<NormalizedDb> {
-  const locale = opts.locale ?? 'en';
+  const locale = opts.locale ?? DEFAULT_LOCALE;
   const note = opts.onProgress ?? (() => {});
 
   const gameDir = opts.gameDir ?? findGameDir();
@@ -56,9 +49,9 @@ export async function loadNormalizedDb(opts: LoadDbOptions = {}): Promise<Normal
 
   if (opts.refresh) clearCachedBuild(fingerprint);
   else {
-    const cached = readCachedDb(fingerprint);
+    const cached = readCachedDb(fingerprint, locale);
     if (cached) {
-      note(`database ${cached.gameVersion} loaded from cache (${fingerprint})`);
+      note(`database ${cached.gameVersion} loaded from cache (${fingerprint}, ${locale})`);
       return cached;
     }
   }
@@ -67,40 +60,21 @@ export async function loadNormalizedDb(opts: LoadDbOptions = {}): Promise<Normal
   const game = readGameRecords(archives);
   note(`${game.records.size} records`);
 
-  const l10n = await loadLocalization(fingerprint, locale, opts.refresh === true, note);
+  const l10n = readGameText(gameDir, locale, archives);
+  note(`${Object.keys(l10n).length} localized tags (${locale})`);
 
   const db = buildDb({
     game,
     l10n,
     gameVersion: readGameVersion(gameDir) ?? 'unknown',
+    locale,
+    locales: availableLocales(gameDir),
     fingerprint,
     archives: archives.map((a) => a.expansion),
   });
   writeCachedDb(db);
   note(`database built: ${Object.keys(db.items).length} items`);
   return db;
-}
-
-/**
- * The one thing we still fetch. The raw download is cached alongside `db.json`,
- * so a rebuild after e.g. a schema bump costs no network either — only a new
- * game build (or `--refresh`) goes back out to grimtools.com.
- */
-async function loadLocalization(
-  fingerprint: string,
-  locale: string,
-  refresh: boolean,
-  note: (message: string) => void,
-): Promise<Record<string, string>> {
-  const name = `l10n-${locale}.js`;
-
-  let src = refresh ? undefined : readCachedRaw(fingerprint, name);
-  if (src === undefined) {
-    note(`downloading ${l10nUrl(locale)}`);
-    src = await download(l10nUrl(locale));
-    writeCachedRaw(fingerprint, name, src);
-  }
-  return parseL10n(src, locale);
 }
 
 /** `GameDb` over the cached JSON — every lookup is a plain object read. */
@@ -165,6 +139,8 @@ export class NormalizedGameDb implements GameDb {
     );
     return {
       gameVersion: this.db.gameVersion,
+      locale: this.db.locale,
+      locales: this.db.locales,
       fingerprint: this.db.fingerprint,
       builtAt: this.db.builtAt,
       archives: this.db.archives,

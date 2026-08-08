@@ -6,22 +6,23 @@
  * ```
  *   settings.json
  *   cache/<fingerprint>/          one directory per game build
- *     l10n-en.js                  raw GrimTools download, kept for reproducibility
- *     db.json                     normalized database — the fast startup path
+ *     db-<locale>.json            normalized database — the fast startup path
+ *     icons/<flattened>.png       one PNG per texture, extracted on demand
  * ```
  *
  * The directory is keyed by a fingerprint of the game's `.arz` archives rather
  * than by version string, because a game patch rewrites the archives and so
- * rotates the key on its own — which is what makes "fetch at most once per game
+ * rotates the key on its own — which is what makes "rebuild exactly once per game
  * version" fall out without anything having to know the version first.
  * `db.json` records the human-readable `gameVersion` inside itself.
  *
- * Nothing here is ever committed — it is all game-derived data.
+ * Nothing here is ever committed — it is all game-derived data, and all of it is
+ * re-derivable from the install, so deleting the directory costs a few seconds.
  */
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { DB_SCHEMA_VERSION, type NormalizedDb } from './build.js';
 
@@ -43,35 +44,30 @@ export function ensureDir(dir: string): string {
   return dir;
 }
 
-export function rawPath(fingerprint: string, name: string): string {
-  return join(buildCacheDir(fingerprint), name);
-}
-
-export function readCachedRaw(fingerprint: string, name: string): string | undefined {
-  const path = rawPath(fingerprint, name);
-  return existsSync(path) ? readFileSync(path, 'utf8') : undefined;
-}
-
-export function writeCachedRaw(fingerprint: string, name: string, contents: string): void {
-  ensureDir(buildCacheDir(fingerprint));
-  writeFileSync(rawPath(fingerprint, name), contents);
-}
-
-export function dbPath(fingerprint: string): string {
-  return join(buildCacheDir(fingerprint), 'db.json');
+/**
+ * One database per language, sharing the build's icon directory — icons are the
+ * same picture whatever the item is called, and re-extracting 3,844 of them to
+ * read an item name in German would be silly.
+ */
+export function dbPath(fingerprint: string, locale: string): string {
+  return join(buildCacheDir(fingerprint), `db-${locale.toLowerCase()}.json`);
 }
 
 /**
- * Load the normalized database for a game build, or undefined if it is absent or
- * stale. A cache written by an older schema is treated as absent rather than
- * migrated — it costs a couple of seconds to rebuild and cannot be misread.
+ * Load the normalized database for a game build and language, or undefined if it
+ * is absent or stale. A cache written by an older schema is treated as absent
+ * rather than migrated — it costs a couple of seconds to rebuild and cannot be
+ * misread.
  */
-export function readCachedDb(fingerprint: string): NormalizedDb | undefined {
-  const path = dbPath(fingerprint);
+export function readCachedDb(fingerprint: string, locale: string): NormalizedDb | undefined {
+  const path = dbPath(fingerprint, locale);
   if (!existsSync(path)) return undefined;
   try {
     const db = JSON.parse(readFileSync(path, 'utf8')) as NormalizedDb;
     if (db.schemaVersion !== DB_SCHEMA_VERSION) return undefined;
+    // The filename already says the language; this catches a file that was
+    // copied or renamed by hand into claiming one it does not hold.
+    if (db.locale.toLowerCase() !== locale.toLowerCase()) return undefined;
     return db;
   } catch {
     // A half-written cache (interrupted build) reads as no cache.
@@ -79,9 +75,18 @@ export function readCachedDb(fingerprint: string): NormalizedDb | undefined {
   }
 }
 
+/**
+ * Written via a temporary file and renamed into place. Two processes can
+ * plausibly build at once — the CLI while the UI starts, or two vitest workers —
+ * and `rename` is atomic, so a reader sees either the old database or the new
+ * one and never a half-written file.
+ */
 export function writeCachedDb(db: NormalizedDb): void {
-  ensureDir(buildCacheDir(db.fingerprint));
-  writeFileSync(dbPath(db.fingerprint), JSON.stringify(db));
+  const dir = ensureDir(buildCacheDir(db.fingerprint));
+  const path = dbPath(db.fingerprint, db.locale);
+  const temp = join(dir, `.${basename(path)}.${process.pid}.tmp`);
+  writeFileSync(temp, JSON.stringify(db));
+  renameSync(temp, path);
 }
 
 /** Drop a build's cache directory — what `db --refresh` does before rebuilding. */

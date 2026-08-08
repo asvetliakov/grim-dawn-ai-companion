@@ -88,9 +88,8 @@ export function snapshotSharedSave(path: string): string {
  * The database tests need Grim Dawn itself, because item identity lives in the
  * game's `.arz` archives and nowhere else. They build the database once into the
  * *real* cache directory rather than a temp one — the build is keyed on the game
- * archives, and pointing it at a throwaway directory would re-download the
- * GrimTools localization on every run, which is exactly the etiquette the plan
- * says not to breach.
+ * archives, so reusing the real cache is what keeps a full run at a second
+ * instead of re-parsing 26k records for every test file.
  */
 export function haveGameInstall(): boolean {
   return findGameDir() !== undefined;
