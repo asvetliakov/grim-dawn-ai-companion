@@ -14,8 +14,8 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 
 - [x] **Stage 1 — Scaffold + player.gdc parser** — [docs/plans/stage-01-scaffold-gdc-parser.md](docs/plans/stage-01-scaffold-gdc-parser.md)
   Project scaffold; cipher + character save parser; CLI `parse`. Gate: all block checksums pass on both real saves.
-- [ ] **Stage 2 — GST parsers** — [docs/plans/stage-02-gst-parsers.md](docs/plans/stage-02-gst-parsers.md)
-  Transfer stash + learned blueprints; CLI `stash`, `formulas`.
+- [x] **Stage 2 — GST parsers** — [docs/plans/stage-02-gst-parsers.md](docs/plans/stage-02-gst-parsers.md)
+  Transfer stash + learned blueprints; CLI `stash`, `formulas`. Gate: block 18 checksum passes on the live stash.
 - [ ] **Stage 3 — GrimTools DB + resolver + settings** — [docs/plans/stage-03-grimtools-db-resolver.md](docs/plans/stage-03-grimtools-db-resolver.md)
   Fetch/cache/parse the item DB; resolve save items to names/stats; CLI `db`, `resolve`. Gate: ≥95% of item records resolve.
 - [ ] **Stage 4 — Icon service** — [docs/plans/stage-04-icons.md](docs/plans/stage-04-icons.md)

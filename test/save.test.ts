@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { ChecksumError, GdReader } from '../src/core/save/cipher.js';
 import { GDC_MAGIC, parseGdc } from '../src/core/save/gdc.js';
 import { factionTier } from '../src/core/save/factions.js';
+import { GdWriter, synthBlock } from './gdwriter.js';
 import {
   CHARACTERS,
   MISSING_SAVES_MESSAGE,
@@ -16,83 +17,6 @@ import {
 // Synthetic buffers — these exercise the cipher and block framing without
 // needing the game installed.
 // ---------------------------------------------------------------------------
-
-/**
- * The encoder side of the cipher, used only by tests: it lets us build a
- * synthetic save whose framing we control, so failures point at the reader
- * rather than at a guess about the real format.
- */
-class GdWriter {
-  private readonly out: number[] = [];
-  private readonly table: Uint32Array;
-  private state: number;
-
-  constructor(readonly seed: number) {
-    this.table = new Uint32Array(256);
-    let v = seed >>> 0;
-    for (let i = 0; i < 256; i++) {
-      v = ((v << 31) | (v >>> 1)) >>> 0;
-      v = Math.imul(v, 39916801) >>> 0;
-      this.table[i] = v;
-    }
-    this.state = seed >>> 0;
-    // The file starts with the seed, obfuscated but not enciphered.
-    const head = Buffer.alloc(4);
-    head.writeUInt32LE((seed ^ 0x55555555) >>> 0, 0);
-    this.out.push(...head);
-  }
-
-  private advance(cipherByte: number): void {
-    this.state = (this.state ^ this.table[cipherByte]!) >>> 0;
-  }
-
-  writeByte(plain: number): void {
-    const c = (plain ^ (this.state & 0xff)) & 0xff;
-    this.out.push(c);
-    this.advance(c);
-  }
-
-  writeU32(plain: number): void {
-    const c = ((plain >>> 0) ^ this.state) >>> 0;
-    const buf = Buffer.alloc(4);
-    buf.writeUInt32LE(c, 0);
-    for (const b of buf) {
-      this.out.push(b);
-      this.advance(b);
-    }
-  }
-
-  writeStr(s: string): void {
-    this.writeU32(s.length);
-    for (let i = 0; i < s.length; i++) this.writeByte(s.charCodeAt(i));
-  }
-
-  /** A length word is enciphered against the current state but does not advance it. */
-  writeLengthNoAdvance(plain: number): void {
-    const buf = Buffer.alloc(4);
-    buf.writeUInt32LE(((plain >>> 0) ^ this.state) >>> 0, 0);
-    this.out.push(...buf);
-  }
-
-  /** The trailing checksum is the raw current state, written verbatim. */
-  writeChecksum(corrupt = false): void {
-    const buf = Buffer.alloc(4);
-    buf.writeUInt32LE(corrupt ? (this.state ^ 0xdeadbeef) >>> 0 : this.state, 0);
-    this.out.push(...buf);
-  }
-
-  toBuffer(): Buffer {
-    return Buffer.from(this.out);
-  }
-}
-
-/** A block: id, length, body of `payload` words, trailing checksum. */
-function synthBlock(w: GdWriter, id: number, payload: number[], corrupt = false): void {
-  w.writeU32(id);
-  w.writeLengthNoAdvance(payload.length * 4);
-  for (const v of payload) w.writeU32(v);
-  w.writeChecksum(corrupt);
-}
 
 describe('GdReader cipher', () => {
   it('derives the key stream from the seed and round-trips values', () => {

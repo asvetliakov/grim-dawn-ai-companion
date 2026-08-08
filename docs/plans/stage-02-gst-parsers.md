@@ -60,3 +60,60 @@ npm test && npm run typecheck
 npm run cli -- stash
 npm run cli -- formulas
 ```
+
+## Outcome
+
+Done. All four acceptance criteria pass; 28 tests green, typecheck clean. The live
+`transfer.gst` parses with its single block 18 checksum-verified and no warnings
+(2 sacks of 10×19, 47 items); `formulas.gst` yields 231 blueprint records.
+
+### Deviations from the spec above
+
+Two of this plan's format claims were wrong against the live 1.3.0.6 files. Both
+were found the intended way — by the checksum refusing to match — and corrected:
+
+1. **`transfer.gst` sacks are nested blocks, not inline structs.** The spec said
+   each sack is `width`/`height`/`itemCount`/items laid out directly in block 18.
+   In reality each sack is a nested block (id 0) with its own length and checksum,
+   exactly like `player.gdc`'s personal-stash tabs, and carries the same **five
+   trailing zero words** after its items. Consequence: block 18 can never be
+   blind-skipped, which is why `skipBlockAndResync` matters here too.
+   The rest of the header spec held: magic `2`, the non-advancing quirk word after
+   `version`, then mod string and expansion byte.
+   `version` is **11** on 1.3.0.6 (the plan implied a 4/5-era value).
+
+2. **`formulas.gst` is not enciphered and has no checksums.** The plan assumed it
+   shares the cipher and block framing. It does not: it is a plaintext key/value
+   stream — `begin_block`/`0xb01dface` … `end_block`/`0xdeadc0de` — with values
+   typed by key (`formulasVersion` u32, `numEntries` u32, `expansionStatus` byte,
+   then `numEntries` × [`itemName` string, `formulaRead` u32]). Since values carry
+   no length of their own, an unrecognised key is unskippable, so the parser
+   throws on one rather than returning a list that merely *looks* complete.
+   Integrity checking is structural instead of cryptographic: the file must close
+   with `end_block` and its own `numEntries` must match what was read; both
+   become warnings.
+
+### Incidental refactors
+
+- `src/core/save/blocks.ts` (new) — the "decode, and let the checksum arbitrate"
+  block driver plus `finishNested`, lifted out of `gdc.ts` so both parsers share
+  one copy. `gdc.ts` behaviour is unchanged (Stage 1 tests still pass untouched).
+- `src/core/paths.ts` (new) — save-directory resolution (`GD_SAVE_DIR`-aware) now
+  lives in core, so the CLI's default arguments and `test/paths.ts` use the same
+  lookup instead of two copies. Stage 3's settings file replaces the default here.
+- `test/gdwriter.ts` (new) — the cipher's encoder side, extracted from
+  `save.test.ts` and extended with `writeFloat`, `beginBlock`/`endBlock`
+  (back-patching lengths) and `writeItem`, which is what makes a synthetic stash
+  buildable.
+- `GdReader.readU32NoAdvance` went from private to public for the stash header's
+  quirk word.
+
+### Notes for later stages
+
+- `parseFormulas(buf): string[]` is the plan's signature; `parseFormulasFile`
+  sits behind it and also returns version, expansion status and the per-blueprint
+  `read` flag (unread blueprints show as `*` in the CLI listing).
+- The save directory holds three more `.gst` files not covered by any stage:
+  `reagents.gst`, `transmutes.gst`, `potions.gst`. Unexamined so far — worth a
+  look if a later stage wants crafting-material or illusion data.
+- Still no hardcore (`.gsh`) files on this machine, so that path stays untested.

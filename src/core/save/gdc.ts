@@ -5,15 +5,15 @@
  * enumeration and then *verified empirically* against real 1.3.0.6 saves: every
  * block ends on a checksum equal to the running cipher state, so a block that
  * checksums is a block we consumed byte-for-byte correctly. That makes the
- * checksum, not the spec, the authority — see `parseBlock` below for how a
- * decoder that disagrees with the file is rejected rather than trusted.
+ * checksum, not the spec, the authority — see `parseBlock` in `blocks.js` for
+ * how a decoder that disagrees with the file is rejected rather than trusted.
  */
 
-import { GdReader, type BlockStart } from './cipher.js';
+import { finishNested, parseBlock } from './blocks.js';
+import { GdReader } from './cipher.js';
 import { factionName, factionTier } from './factions.js';
 import type {
   Attributes,
-  BlockReport,
   CharacterSave,
   CharacterSkill,
   Difficulty,
@@ -99,22 +99,6 @@ function readPositionedItem(r: GdReader, floatCoords: boolean): PositionedItem {
   return { ...item, x, y };
 }
 
-/**
- * Consume whatever is left of a nested block and verify its checksum. Trailing
- * fields we do not model (the game adds them per patch) are absorbed here
- * rather than guessed at, and the checksum still proves the whole block was
- * walked correctly.
- */
-function finishNested(r: GdReader, block: BlockStart, s: ParseState, label: string): void {
-  const left = block.bodyEnd - r.offset;
-  if (left < 0) throw new Error(`${label}: overran nested block by ${-left} byte(s)`);
-  if (left > 0) {
-    s.warn(`${label}: ${left} undecoded trailing byte(s)`);
-    r.skipBlockBody(left);
-  }
-  r.endBlock(block);
-}
-
 function readEquippedItem(r: GdReader): EquippedItem | null {
   const item = readItem(r);
   const attached = r.readBool();
@@ -192,7 +176,7 @@ function readBlock3(r: GdReader, s: ParseState): void {
     const itemCount = r.readU32();
     const items: PositionedItem[] = [];
     for (let j = 0; j < itemCount; j++) items.push(readPositionedItem(r, false));
-    finishNested(r, sackBlock, s, `inventory sack ${i}`);
+    finishNested(r, sackBlock, s.warn, `inventory sack ${i}`);
     sacks.push(items);
   }
   s.save.inventorySacks = sacks;
@@ -223,7 +207,7 @@ function readBlock4(r: GdReader, s: ParseState): void {
     // by the 1.2-era specs; read explicitly so a change in their size surfaces
     // as an "undecoded trailing byte(s)" warning rather than passing silently.
     for (let j = 0; j < 5; j++) r.readU32();
-    finishNested(r, tabBlock, s, `stash tab ${i}`);
+    finishNested(r, tabBlock, s.warn, `stash tab ${i}`);
     tabs.push({ width, height, items });
   }
   s.save.personalStash = tabs;
@@ -318,66 +302,6 @@ function readBlock16(r: GdReader, s: ParseState): void {
 // ---------------------------------------------------------------------------
 // Driver
 // ---------------------------------------------------------------------------
-
-/**
- * Decode one block, then reconcile with the file.
- *
- * The decoder must land exactly on the block's declared end; the trailing
- * checksum then proves it. If either fails we do not keep a half-trusted
- * result — we roll the reader back and fall through to skipping, so a spec
- * drift in one block degrades to "that block is missing" rather than corrupting
- * the whole parse.
- */
-function parseBlock(
-  r: GdReader,
-  block: BlockStart,
-  s: ParseState,
-  decode: ((r: GdReader) => void) | undefined,
-): BlockReport {
-  const start = r.mark();
-
-  if (decode) {
-    try {
-      decode(r);
-      if (r.offset > block.bodyEnd) {
-        throw new Error(`overran block body by ${r.offset - block.bodyEnd} byte(s)`);
-      }
-      // Trailing bytes we chose not to decode (e.g. block 16's patch-grown tail)
-      // still have to advance the cipher before the checksum can be checked.
-      if (r.offset < block.bodyEnd) r.skipBlockBody(block.bodyEnd - r.offset);
-      r.endBlock(block);
-      return { id: block.id, length: block.length, status: 'parsed', checksumOk: true };
-    } catch (err) {
-      s.warn(`block ${block.id}: decode failed, skipping (${(err as Error).message})`);
-      r.reset(start);
-    }
-  }
-
-  // Unknown or undecodable: try a plain skip first, which still verifies the
-  // checksum and so proves the block had no nested sub-blocks.
-  try {
-    r.skipBlockBody(block.length);
-    r.endBlock(block);
-    return {
-      id: block.id,
-      length: block.length,
-      status: 'skipped',
-      checksumOk: true,
-      note: decode ? 'decode failed' : 'unknown block id',
-    };
-  } catch {
-    // Contains nested blocks: resync exactly from the trailing checksum.
-    r.reset(start);
-    r.skipBlockAndResync(block);
-    return {
-      id: block.id,
-      length: block.length,
-      status: 'skipped',
-      checksumOk: false,
-      note: 'nested blocks; resynced from checksum',
-    };
-  }
-}
 
 export interface ParseGdcOptions {
   path?: string;
@@ -485,7 +409,7 @@ export function parseGdc(buf: Buffer, opts: ParseGdcOptions = {}): CharacterSave
       default: decode = undefined;
     }
 
-    save.blocks.push(parseBlock(r, block, state, decode));
+    save.blocks.push(parseBlock(r, block, decode, warn));
   }
 
   return save;

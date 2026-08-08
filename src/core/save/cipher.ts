@@ -147,8 +147,12 @@ export class GdReader {
     return view.getFloat32(0, true);
   }
 
-  /** Raw u32 that is consumed *without* advancing the cipher state. */
-  private readU32NoAdvance(): number {
+  /**
+   * A u32 deciphered against the current state but consumed *without* advancing
+   * it. Block lengths are written this way, and the transfer stash header has
+   * one more such word right after its version field.
+   */
+  readU32NoAdvance(): number {
     this.need(4);
     const c = this.buf.readUInt32LE(this.pos);
     this.pos += 4;
