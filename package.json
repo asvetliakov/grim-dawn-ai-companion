@@ -1,0 +1,22 @@
+{
+  "name": "gd-companion",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "macOS-native companion tool for Grim Dawn: save parsing, item DB, AI gear advice",
+  "scripts": {
+    "cli": "tsx src/cli/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^14.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

@@ -12,7 +12,7 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 
 ## Stages
 
-- [ ] **Stage 1 — Scaffold + player.gdc parser** — [docs/plans/stage-01-scaffold-gdc-parser.md](docs/plans/stage-01-scaffold-gdc-parser.md)
+- [x] **Stage 1 — Scaffold + player.gdc parser** — [docs/plans/stage-01-scaffold-gdc-parser.md](docs/plans/stage-01-scaffold-gdc-parser.md)
   Project scaffold; cipher + character save parser; CLI `parse`. Gate: all block checksums pass on both real saves.
 - [ ] **Stage 2 — GST parsers** — [docs/plans/stage-02-gst-parsers.md](docs/plans/stage-02-gst-parsers.md)
   Transfer stash + learned blueprints; CLI `stash`, `formulas`.

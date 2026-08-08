@@ -118,3 +118,69 @@ npm test && npm run typecheck
 npm run cli -- parse "$HOME/Library/Application Support/CrossOver/Bottles/Steam/drive_c/Program Files (x86)/Steam/userdata/42909985/219990/remote/save/main/_Suchka/player.gdc"
 npm run cli -- parse "$HOME/.../main/_abcdef/player.gdc"   # same base path
 ```
+
+## Outcome
+
+Done. Both real saves parse with **every block checksum passing** (15 blocks each,
+15/15 verified, zero warnings) and `npm test` / `npm run typecheck` are green.
+
+The 1.2-era specs the plan cites were right about the cipher and the framing but
+wrong about several 1.3.0.6 structures. What actually differs, all of it settled
+by checksum rather than by argument:
+
+- **Unknown blocks are not blind-skippable.** Blocks 3 and 4 contain *nested*
+  blocks, whose length and checksum words are read without advancing the cipher;
+  advancing over them desynchronizes everything downstream. Fixed exactly, not
+  heuristically: a block's trailing checksum *is* the writer's post-block cipher
+  state, so `GdReader.skipBlockAndResync` adopts it and resynchronizes perfectly
+  regardless of what the body held. This is what makes forward compat real —
+  a future patch can add nested-block-bearing blocks and we still parse the rest.
+- **Item struct is 18 fields, not 14.** Two extra words sit between
+  `relicCompletionLevel` and `stackCount`, two more after it. All four are zero
+  across every item on both characters, so their meaning is unknown (they may be
+  empty strings, which reads identically while empty). `stackCount` was pinned by
+  landing on real stack sizes (13 scavenged plating, 9 cracked lodestone, 1 for gear).
+- **Personal stash uses float X/Y**, not i32. The plan's gotcha ("`player.gdc`
+  inventory/stash X/Y are i32") holds for inventory sacks only — block 4's stash
+  tabs store floats, like `transfer.gst`. Worth carrying into Stage 2.
+- **Stash tabs have a 20-byte trailer** (five zero words) after their item list.
+- **Skill entries pad each bool to two bytes** — one extra zero byte after
+  `enabled` and after `active`, making the scalar payload 28 bytes.
+- **Block versions**: blocks 3 and 4 report version 11 (not 4/5/6); block 1 is 5,
+  block 2 and 8 are 8. Header v2, data v8.
+- **Block 1 tail** is a 42-entry loot-filter byte array after an empty
+  `playerTexture` string, which is what makes the block exactly 71 bytes.
+
+Deliberately *not* modelled, to avoid shipping unverifiable guesses:
+
+- **Item-granted skills.** Block 8 ends with five words: `masteriesAllowed`,
+  `skillReclamationPointsUsed`, `devotionReclamationPointsUsed` (all decoded, all
+  plausible — 2 / 29 / 2 for _Suchka, 2 / 0 / 0 for _abcdef), then two zero words.
+  One is probably the item-skill count, but with no non-empty sample on either
+  character a guess would parse silently and wrongly. Left undecoded.
+- **Block 16's tail.** Only `playTime`, `deaths`, `kills` are identified; the rest
+  of the play-stats block grows per patch and is walked-and-checksummed, not modelled.
+
+Corrections to the plan's own assumptions:
+
+- **Equipment slot 11 is the relic, not a weapon**, and slots 9/10 are
+  Shoulders/Medal (the plan's table order had them swapped). Weapons live only in
+  the alternate weapon sets. Confirmed by matching each slot against the item
+  category of the record it held on a fully-geared character.
+- **Faction index 0 is a locked placeholder**, so the array is 1-based; the plan
+  said index 0 = Devil's Crossing. Index 1 carries the Devil's-Crossing-shaped
+  value on both characters.
+
+**Open for Stage 5 — the faction name table is unverified past index 4.** The
+guessed ordering puts both Kymon's Chosen and Order of Death's Vigil at Honored on
+_Suchka, which the game makes mutually exclusive, so the ordering is wrong
+somewhere. Every guessed name is `?`-suffixed and unconfirmed slots render as
+`faction N`. Only `unlocked` + `tier` are relied on, which is all Stage 5 needs
+before vendor augments matter. Resolving this needs either an in-game spot-check
+or the DBR faction records.
+
+**Unexplained observation:** both characters report difficulty 2 (Ultimate) for
+current *and* greatest-completed, including _abcdef at level 25 with 51 minutes
+played and one faction unlocked. The byte positions are certain (the block
+checksums), so this is a semantics question, not a parse error — plausibly a
+Merit unlock (both characters have Crucible map folders), but not confirmed.
