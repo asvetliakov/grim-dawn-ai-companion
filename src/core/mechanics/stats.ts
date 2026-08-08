@@ -402,7 +402,7 @@ export const DAMAGE_TYPES: readonly DamageType[] = [
 export interface DamageContribution {
   /** Summed `+%` damage modifiers, per type. */
   percent: Partial<Record<DamageKey, number>>;
-  /** Summed flat damage (the `Min` end — the honest lower bound). */
+  /** Summed flat damage — the min–max midpoint (min alone when no max). */
   flat: Partial<Record<DamageKey, number>>;
   /**
    * `+% Total Damage`, kept apart from the per-type numbers on purpose. It
@@ -414,12 +414,16 @@ export interface DamageContribution {
 }
 
 const MODIFIER_TO_DAMAGE = new Map<string, DamageKey>();
+/** `Min` field → its damage key; the matching `Max` is read beside it for the midpoint. */
 const FLAT_TO_DAMAGE = new Map<string, DamageKey>();
 for (const type of DAMAGE_TYPES) {
   MODIFIER_TO_DAMAGE.set(`offensive${type.stem}Modifier`, type.key);
   FLAT_TO_DAMAGE.set(`offensive${type.stem}Min`, type.key);
   FLAT_TO_DAMAGE.set(`offensiveBase${type.stem}Min`, type.key);
 }
+// Flat bonus physical, a third spelling the weapon records use alongside the
+// base pair. There is no Bonus variant for any other type.
+FLAT_TO_DAMAGE.set('offensiveBonusPhysicalMin', 'physical');
 
 export function emptyDamage(): DamageContribution {
   return { percent: {}, flat: {}, totalPercent: 0 };
@@ -441,6 +445,14 @@ export function addDamage(
   const bump = (bucket: Partial<Record<DamageKey, number>>, key: DamageKey, amount: number): void => {
     if (amount) bucket[key] = (bucket[key] ?? 0) + amount;
   };
+  // A flat pair is worth its midpoint; a lone Min stands for itself. Reading
+  // only the lower bound skewed the type shares — a 165–268 weapon is not a
+  // 165 weapon next to a 200–200 one.
+  const midpoint = (minField: string, min: StatValue): number => {
+    const max = stats[minField.slice(0, -3) + 'Max'];
+    const low = resolve(min);
+    return max === undefined ? low : (low + resolve(max)) / 2;
+  };
 
   for (const [field, value] of Object.entries(stats)) {
     const modifier = MODIFIER_TO_DAMAGE.get(field);
@@ -450,13 +462,13 @@ export function addDamage(
     }
     const flat = FLAT_TO_DAMAGE.get(field);
     if (flat) {
-      bump(into.flat, flat, resolve(value));
+      bump(into.flat, flat, midpoint(field, value));
       continue;
     }
     if (field === 'offensiveElementalModifier') {
       for (const key of ELEMENTAL) bump(into.percent, key, resolve(value));
     } else if (field === 'offensiveElementalMin') {
-      for (const key of ELEMENTAL) bump(into.flat, key, resolve(value) / 3);
+      for (const key of ELEMENTAL) bump(into.flat, key, midpoint(field, value) / 3);
     } else if (field === 'offensiveTotalDamageModifier') {
       into.totalPercent += resolve(value);
     }
@@ -482,11 +494,73 @@ export const RR_FIELDS: Readonly<Record<string, string>> = {
  * Damage conversion, which redefines what a build actually deals. A profile that
  * ignores it misranks the build — 100% physical converted to vitality makes a
  * physical weapon a vitality weapon.
+ *
+ * The DBR type vocabulary is its own dialect: `Poison` is Acid, `Life` is
+ * Vitality, `Elemental` stands for fire *and* cold *and* lightning (each
+ * converted at the stated % as an in-type; an even three-way split as an
+ * out-type), and full-convert transmuters write a semicolon list of every type.
+ * Bleeding never appears on either side — no record in the game converts it.
  */
 export interface Conversion {
+  /** Display name, in the game's own terms (`Vitality`, not `Life`). */
   from: string;
   to: string;
   percent: number;
+  /** The instant types the in-side names — `Elemental` and lists expanded. */
+  fromKeys: DamageKey[];
+  /**
+   * The instant types the out-side names. More than one (out-`Elemental`)
+   * means the converted damage splits evenly between them.
+   */
+  toKeys: DamageKey[];
+}
+
+/** DBR conversion-type token → the instant damage keys it stands for. */
+const CONVERSION_TYPES: Readonly<Record<string, readonly DamageKey[]>> = {
+  Physical: ['physical'],
+  Pierce: ['pierce'],
+  Fire: ['fire'],
+  Cold: ['cold'],
+  Lightning: ['lightning'],
+  Poison: ['acid'],
+  Life: ['vitality'],
+  Aether: ['aether'],
+  Chaos: ['chaos'],
+  Elemental: ['fire', 'cold', 'lightning'],
+  // `Stun` appears in full-convert lists; stun "damage" is not a damage type
+  // the profile tracks, so the token maps to nothing.
+};
+
+/**
+ * When a type converts, its damage-over-time twin converts with it (Fire takes
+ * Burn along, Physical takes Internal Trauma). Pierce, Aether and Chaos have no
+ * twin: converting into them leaves the DoT part behind, unconverted.
+ */
+export const DOT_COUNTERPART: Partial<Record<DamageKey, DamageKey>> = {
+  physical: 'internalTrauma',
+  fire: 'burn',
+  cold: 'frostburn',
+  lightning: 'electrocute',
+  acid: 'poison',
+  vitality: 'vitalityDecay',
+};
+
+const DAMAGE_LABEL = new Map(DAMAGE_TYPES.map((t) => [t.key, t.label]));
+
+function conversionKeys(raw: string): DamageKey[] {
+  const keys: DamageKey[] = [];
+  for (const token of raw.split(';')) {
+    for (const key of CONVERSION_TYPES[token.trim()] ?? []) {
+      if (!keys.includes(key)) keys.push(key);
+    }
+  }
+  return keys;
+}
+
+function conversionLabel(raw: string, keys: DamageKey[]): string {
+  if (raw === 'Elemental') return 'Elemental';
+  if (keys.length >= 9) return 'All';
+  return keys.map((key) => DAMAGE_LABEL.get(key) ?? key).join('/');
 }
 
 export function conversions(
@@ -502,7 +576,62 @@ export function conversions(
     // Some records name a conversion and leave the percentage at zero; the
     // engine converts nothing, so neither does the profile.
     const amount = resolve(percent);
-    if (amount > 0) out.push({ from, to, percent: amount });
+    if (amount <= 0) continue;
+    const fromKeys = conversionKeys(from);
+    const toKeys = conversionKeys(to);
+    if (fromKeys.length === 0 || toKeys.length === 0) continue;
+    out.push({
+      from: conversionLabel(from, fromKeys),
+      to: conversionLabel(to, toKeys),
+      percent: amount,
+      fromKeys,
+      toKeys,
+    });
+  }
+  return out;
+}
+
+/**
+ * Apply a set of global conversions to a flat-damage pool, in place of the
+ * engine's own arithmetic: everything converts off the *pre-conversion* pool
+ * (damage is only ever converted once, never chained), an in-type converted
+ * past 100% splits the pool proportionally instead of over-draining it, and
+ * each moved amount takes its DoT twin along when the destination has one.
+ */
+export function applyConversions(
+  flat: Partial<Record<DamageKey, number>>,
+  rows: readonly Conversion[],
+): Partial<Record<DamageKey, number>> {
+  // Total % drawn from each in-type, to know when to scale down.
+  const drawn: Partial<Record<DamageKey, number>> = {};
+  for (const row of rows) {
+    for (const key of row.fromKeys) drawn[key] = (drawn[key] ?? 0) + row.percent;
+  }
+
+  const out: Partial<Record<DamageKey, number>> = { ...flat };
+  const move = (from: DamageKey, to: DamageKey, fraction: number): void => {
+    const pool = flat[from];
+    if (!pool) return;
+    const amount = pool * fraction;
+    out[from] = (out[from] ?? 0) - amount;
+    out[to] = (out[to] ?? 0) + amount;
+  };
+
+  for (const row of rows) {
+    for (const from of row.fromKeys) {
+      const total = drawn[from] ?? 0;
+      const fraction = (row.percent / 100) * (total > 100 ? 100 / total : 1);
+      for (const to of row.toKeys) {
+        const share = fraction / row.toKeys.length;
+        move(from, to, share);
+        const fromDot = DOT_COUNTERPART[from];
+        const toDot = DOT_COUNTERPART[to];
+        if (fromDot && toDot) move(fromDot, toDot, share);
+      }
+    }
+  }
+  for (const [key, value] of Object.entries(out) as [DamageKey, number][]) {
+    if (Math.abs(value) < 1e-9) delete out[key];
   }
   return out;
 }

@@ -757,14 +757,36 @@ function printAggregate(agg: CharacterAggregate, caps: SpeedCaps): void {
   }
 
   const dmg = agg.damage;
-  console.log('\nDamage profile');
+  console.log('\nDamage profile (flat figures are post-conversion midpoints)');
   for (const entry of dmg.ranked.slice(0, 12)) {
     const flat = entry.flat ? `, +${entry.flat} flat` : '';
     console.log(`  ${entry.label.padEnd(16)} +${entry.percent}%${flat}${entry.overTime ? '  (over time)' : ''}`);
   }
   if (dmg.totalDamagePercent) console.log(`  ${'Total Damage'.padEnd(16)} +${dmg.totalDamagePercent}%  (scales every type)`);
   for (const c of dmg.conversions) {
-    console.log(`  convert ${c.percent}% ${c.from} → ${c.to}  (${c.source})`);
+    console.log(`  convert ${c.percent}% ${c.from} → ${c.to}  (${c.source}, ${c.scope})`);
+  }
+  const top = dmg.ranked.slice(0, 2).map((entry) => entry.label);
+  if (top.length) console.log(`  build path: ${top.join(' + ')}`);
+
+  if (dmg.weaponAttack.composition.length) {
+    const shares = dmg.weaponAttack.composition
+      .map((s) => `${s.share}% ${s.label.toLowerCase()}${s.overTime ? ' (over time)' : ''}`)
+      .join(' · ');
+    console.log(`\nWeapon attack: ${shares}`);
+    if (dmg.weaponAttack.mainAttack) console.log(`  main attack: ${dmg.weaponAttack.mainAttack}`);
+  }
+  if (dmg.skillDamage.length) {
+    console.log('\nAttack skills (own damage at rank; conversions apply to that skill only)');
+    for (const s of dmg.skillDamage) {
+      const parts: string[] = [];
+      if (s.weaponDamagePct) parts.push(`${s.weaponDamagePct}% weapon dmg`);
+      parts.push(...s.flat.map((f) => `+${f.amount} ${f.label.toLowerCase()}${f.overTime ? '/time' : ''}`));
+      const conv = s.conversions.map((c) => `converts ${c.percent}% ${c.from} → ${c.to}`);
+      const detail = [...parts, ...conv].join(' · ') || 'utility';
+      const marker = s.isDefaultAttack ? '  [main attack]' : '';
+      console.log(`  ${s.skill} r${s.rank}: ${detail}${marker}`);
+    }
   }
   if (dmg.resistReduction.length) {
     console.log('\nResistance reduction (applies to enemies, not to the totals above)');

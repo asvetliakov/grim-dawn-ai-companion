@@ -27,6 +27,7 @@ import {
   addDamage,
   addDefense,
   addVector,
+  applyConversions,
   armorAbsorption,
   ARMOR_PARTS,
   ATTR_KEYS,
@@ -68,6 +69,7 @@ import {
   effectiveRanks,
   emptyBonuses,
   EXCLUSION_REASONS,
+  modifierParent,
   skillLabel,
   statRecord,
   type EffectiveRank,
@@ -130,12 +132,58 @@ export interface DamageEntry {
   overTime: boolean;
 }
 
+/**
+ * Where a collected conversion applies. Everything worn or permanently active
+ * converts the character's damage wholesale (`global`); a maintainable buff's
+ * conversion holds only while the buff does. Conversion on an attack skill's
+ * own record converts that skill alone and is reported on its `SkillDamage`
+ * row instead — it never appears in the global list.
+ */
+export type ConversionScope = 'global' | 'global (maintainable)';
+
+export interface ScopedConversion extends Conversion {
+  source: string;
+  scope: ConversionScope;
+}
+
+/** What one invested attack skill actually deals. */
+export interface SkillDamage {
+  skill: string;
+  rank: number;
+  /** `% Weapon Damage` at that rank — how much of the weapon's payload it inherits. */
+  weaponDamagePct?: number;
+  /** The skill's own flat damage at that rank (midpoint), before conversion. */
+  flat: { key: DamageKey; label: string; amount: number; overTime: boolean }[];
+  /** Conversions scoped to this skill: its own record plus its modifier/transmuter nodes. */
+  conversions: Conversion[];
+  /** True for a default-attack replacer (`Skill_WeaponPool_*`). */
+  isDefaultAttack: boolean;
+}
+
+/**
+ * The basic weapon attack's damage composition — post-conversion shares of the
+ * flat pools. Gear flat damage only ever lands through weapon attacks (or a
+ * skill's `% Weapon Damage`), so this is the one place those numbers describe.
+ */
+export interface WeaponAttackSummary {
+  composition: { key: DamageKey; label: string; share: number; overTime: boolean }[];
+  /** The invested default-attack replacer, when there is one. */
+  mainAttack?: string;
+}
+
 export interface DamageProfile {
-  /** Damage types the build actually invests in, strongest first. */
+  /**
+   * Damage types the build actually invests in, strongest first. Flat figures
+   * are post-conversion: every permanent global conversion has been applied to
+   * the pools (converted once, off the raw pool, DoT twins moved along).
+   */
   ranked: DamageEntry[];
   /** `+% Total Damage` — a multiplier over everything, so it ranks nothing. */
   totalDamagePercent: number;
-  conversions: (Conversion & { source: string })[];
+  conversions: ScopedConversion[];
+  weaponAttack: WeaponAttackSummary;
+  /** Per-skill damage typing for the invested attack skills, biggest sink first. */
+  skillDamage: SkillDamage[];
   resistReduction: { source: string; effect: string; value: number }[];
   /** Where the skill points went, biggest sink first. */
   skillPoints: EffectiveRank[];
@@ -289,6 +337,48 @@ interface Contribution {
 
 const SCALAR = (value: StatValue): number => (typeof value === 'number' ? value : 0);
 
+/** The three spellings a weapon's flat physical can arrive under. */
+const WEAPON_PHYSICAL_STEMS = ['offensivePhysical', 'offensiveBasePhysical', 'offensiveBonusPhysical'];
+
+/**
+ * `% Armor Piercing` is conversion wearing a weapon stat's clothes: the stated
+ * share of the weapon's physical damage is dealt as pierce instead — and only
+ * the physical; the weapon's other flats are untouched. The ratio is the base
+ * weapon record's own and nothing else's: no component, affix or skill in the
+ * installed data carries `offensivePierceRatioMin` (verified — 270 carriers,
+ * all weapons; the old "+% Armor Piercing" component bonuses left the game
+ * years ago, and stacked multiplicatively when they existed). It converts the
+ * weapon's whole physical payload, affix flats included, so it is applied here
+ * per part before the pools ever see the numbers. Min and Max move together,
+ * which keeps the midpoint arithmetic downstream exact.
+ */
+function applyPierceRatio(parts: Contribution[]): void {
+  const base = parts.find((c) => c.kind === 'base');
+  const ratio = Math.min(100, SCALAR(base?.stats['offensivePierceRatioMin'] ?? 0));
+  if (ratio <= 0) return;
+  const fraction = ratio / 100;
+  for (const c of parts) {
+    let stats: Record<string, StatValue> | undefined;
+    for (const stem of WEAPON_PHYSICAL_STEMS) {
+      const min = c.stats[`${stem}Min`];
+      if (typeof min !== 'number' || min === 0) continue;
+      // A lone Min means min = max; materialize both ends on both types so the
+      // moved range stays a range and never leaves a Max below its Min.
+      const rawMax = c.stats[`${stem}Max`];
+      const max = typeof rawMax === 'number' ? rawMax : min;
+      stats ??= { ...c.stats };
+      stats[`${stem}Min`] = min * (1 - fraction);
+      stats[`${stem}Max`] = max * (1 - fraction);
+      const pierceMin = SCALAR(stats['offensivePierceMin'] ?? 0);
+      const rawPierceMax = stats['offensivePierceMax'];
+      const pierceMax = typeof rawPierceMax === 'number' ? rawPierceMax : pierceMin;
+      stats['offensivePierceMin'] = pierceMin + min * fraction;
+      stats['offensivePierceMax'] = pierceMax + max * fraction;
+    }
+    if (stats) c.stats = stats;
+  }
+}
+
 export interface EquippedSlot {
   slot: string;
   item: ResolvedItem;
@@ -435,6 +525,10 @@ function contributions(slots: EquippedSlot[], db: GameDb): Contribution[] {
     push(slot, 'augment', item.augment?.name ?? '', item.augment?.stats);
   }
 
+  for (const hand of ['Main hand', 'Off hand']) {
+    applyPierceRatio(out.filter((c) => c.slot === hand));
+  }
+
   // Set bonuses: every numeric field on a set record is a table indexed by how
   // many pieces are worn, so the piece count is the "rank" it is read at.
   // The engine counts *distinct* set members — a second copy of the same ring
@@ -491,7 +585,7 @@ export function aggregateCharacter(
   /** Body part → the worn piece's own armour rating. */
   const armorPieces = new Map<string, number>();
   const damage = emptyDamage();
-  const conversionRows: (Conversion & { source: string })[] = [];
+  const conversionRows: ScopedConversion[] = [];
   const rrRows: { source: string; effect: string; value: number }[] = [];
   const excludedReasons = new Set<string>();
   const attrSums = emptyAttributes();
@@ -527,8 +621,16 @@ export function aggregateCharacter(
         if (value) secondary.set(name, (secondary.get(name) ?? 0) + value);
       }
     }
+    // Gear and permanent skills convert the character's damage wholesale; a
+    // maintainable buff's conversion only holds while the buff does. Attack
+    // skills never reach this fold — their conversions are skill-scoped and
+    // live on the SkillDamage rows.
     for (const conversion of conversions(stats, resolve)) {
-      conversionRows.push({ ...conversion, source: label });
+      conversionRows.push({
+        ...conversion,
+        source: label,
+        scope: band === 'maintainable' ? 'global (maintainable)' : 'global',
+      });
     }
     for (const [field, effect] of Object.entries(RR_FIELDS)) {
       const value = stats[field] === undefined ? 0 : resolve(stats[field]!);
@@ -543,6 +645,7 @@ export function aggregateCharacter(
   // --- skills -------------------------------------------------------------
 
   const maintained: CharacterAggregate['maintained'] = [];
+  const attackRows = new Map<string, AttackRow>();
   for (const entry of save.skills) {
     const skill = db.getSkill(entry.record);
     if (!skill || entry.level < 1) continue;
@@ -559,7 +662,12 @@ export function aggregateCharacter(
       collectRR(skill, db, ranks, entry.record, rrRows);
       continue;
     }
-    if (band === 'attack') continue;
+    if (band === 'attack') {
+      // Attack damage still depends on what is being hit and stays out of the
+      // global pools — but the skill's *types* are knowable, so type it.
+      collectAttackDamage(skill, db, ranks, entry, attackRows);
+      continue;
+    }
     if (band === 'excluded') {
       if (reason) excludedReasons.add(reason);
       continue;
@@ -683,7 +791,7 @@ export function aggregateCharacter(
       caps,
       secondary: [...secondary].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value),
     },
-    damage: damageProfile(damage, conversionRows, rrRows, ranks, save, db),
+    damage: damageProfile(damage, conversionRows, attackRows, rrRows, ranks, save, db),
     defense: defenseSummary(defense, armorPieces, slots, db.armorAbsorptionBase()),
     ranks: [...ranks.values()].sort((a, b) => b.invested - a.invested),
     maintained,
@@ -724,24 +832,139 @@ function collectRR(
   }
 }
 
+/** Interim per-attack-skill accumulator; finalized into `SkillDamage` rows. */
+interface AttackRow {
+  label: string;
+  rank: number;
+  invested: number;
+  weaponDamagePct: number;
+  flat: Partial<Record<DamageKey, number>>;
+  conversions: Conversion[];
+  isDefaultAttack: boolean;
+}
+
+/**
+ * Type what an invested attack skill deals: its own flat damage at rank, how
+ * much of the weapon it inherits, and the conversions scoped to it. Modifier
+ * and transmuter nodes fold into the skill they modify — their conversion is
+ * the classic transmuter mechanic ("this skill's damage becomes aether"), and
+ * attributing it anywhere else would turn it global, which it is not.
+ */
+function collectAttackDamage(
+  skill: DbSkill,
+  db: GameDb,
+  ranks: Map<string, EffectiveRank>,
+  entry: { record: string; level: number },
+  into: Map<string, AttackRow>,
+): void {
+  const stats = statRecord(skill, db);
+  const rank = ranks.get(entry.record)?.effective ?? entry.level;
+  const read = atRank(rank);
+
+  let key = entry.record;
+  let label = skillLabel(skill, db);
+  let isModifierNode = false;
+  if (stats.class === 'Skill_Modifier' || stats.class === 'Skill_Transmuter') {
+    const parent = modifierParent(entry.record, db);
+    if (parent) {
+      key = parent.record;
+      label = skillLabel(parent, db);
+      isModifierNode = true;
+    }
+  }
+
+  const row = into.get(key) ?? {
+    label,
+    rank: 0,
+    invested: 0,
+    weaponDamagePct: 0,
+    flat: {},
+    conversions: [],
+    isDefaultAttack: false,
+  };
+  row.invested += entry.level;
+  if (!isModifierNode) {
+    row.label = label;
+    row.rank = rank;
+    row.isDefaultAttack = stats.class.startsWith('Skill_WeaponPool_');
+  }
+  row.weaponDamagePct += read(stats.stats['weaponDamagePct'] ?? 0);
+  const own = addDamage(emptyDamage(), stats.stats, read);
+  for (const [dmgKey, amount] of Object.entries(own.flat) as [DamageKey, number][]) {
+    if (amount) row.flat[dmgKey] = (row.flat[dmgKey] ?? 0) + amount;
+  }
+  row.conversions.push(...conversions(stats.stats, read));
+  into.set(key, row);
+}
+
+const DAMAGE_TYPE_BY_KEY = new Map(DAMAGE_TYPES.map((t) => [t.key, t]));
+
 function damageProfile(
   damage: DamageContribution,
-  conversionRows: (Conversion & { source: string })[],
+  conversionRows: ScopedConversion[],
+  attackRows: Map<string, AttackRow>,
   rrRows: { source: string; effect: string; value: number }[],
   ranks: Map<string, EffectiveRank>,
   save: CharacterSave,
   db: GameDb,
 ): DamageProfile {
+  // The pools were collected pre-conversion; what the character deals is the
+  // post-conversion distribution. Only permanent global conversions apply —
+  // a maintainable buff's conversion is listed but not folded, same rule as
+  // its resistances.
+  const flat = applyConversions(
+    damage.flat,
+    conversionRows.filter((c) => c.scope === 'global'),
+  );
+
   const ranked: DamageEntry[] = DAMAGE_TYPES.map((type) => ({
     key: type.key,
     label: type.label,
     percent: Math.round(damage.percent[type.key] ?? 0),
-    flat: Math.round(damage.flat[type.key] ?? 0),
+    flat: Math.round(flat[type.key] ?? 0),
     overTime: type.overTime,
   }))
     .filter((entry) => entry.percent > 0 || entry.flat > 0)
     // Percent modifiers are what a build commits to; flat damage breaks ties.
     .sort((a, b) => b.percent - a.percent || b.flat - a.flat);
+
+  // The basic attack's payload: every flat pool lands there (and only there,
+  // unless a skill carries % weapon damage), so shares of the converted pools
+  // are exactly its composition.
+  const flatTotal = Object.values(flat).reduce((n, v) => n + v, 0);
+  const composition = (Object.entries(flat) as [DamageKey, number][])
+    .filter(([, amount]) => amount > 0.5)
+    .map(([dmgKey, amount]) => ({
+      key: dmgKey,
+      label: DAMAGE_TYPE_BY_KEY.get(dmgKey)?.label ?? dmgKey,
+      share: Math.round((amount / flatTotal) * 100),
+      overTime: DAMAGE_TYPE_BY_KEY.get(dmgKey)?.overTime ?? false,
+    }))
+    .sort((a, b) => b.share - a.share);
+  const replacer = [...attackRows.values()].find((row) => row.isDefaultAttack);
+  const weaponAttack: WeaponAttackSummary = {
+    composition,
+    ...(replacer ? { mainAttack: replacer.label } : {}),
+  };
+
+  const skillDamage: SkillDamage[] = [...attackRows.values()]
+    .sort((a, b) => b.invested - a.invested)
+    .map((row) => ({
+      skill: row.label,
+      rank: row.rank || 1,
+      ...(row.weaponDamagePct ? { weaponDamagePct: Math.round(row.weaponDamagePct) } : {}),
+      flat: (Object.entries(row.flat) as [DamageKey, number][])
+        .map(([dmgKey, amount]) => ({
+          key: dmgKey,
+          label: DAMAGE_TYPE_BY_KEY.get(dmgKey)?.label ?? dmgKey,
+          amount: Math.round(amount),
+          overTime: DAMAGE_TYPE_BY_KEY.get(dmgKey)?.overTime ?? false,
+        }))
+        .filter((f) => f.amount > 0)
+        .sort((a, b) => b.amount - a.amount),
+      conversions: row.conversions,
+      isDefaultAttack: row.isDefaultAttack,
+    }));
 
   const weaponRestrictions: DamageProfile['weaponRestrictions'] = [];
   for (const entry of save.skills) {
@@ -755,6 +978,8 @@ function damageProfile(
     ranked,
     totalDamagePercent: Math.round(damage.totalPercent),
     conversions: conversionRows,
+    weaponAttack,
+    skillDamage,
     resistReduction: rrRows,
     skillPoints: [...ranks.values()].filter((r) => r.invested > 0).sort((a, b) => b.invested - a.invested),
     weaponRestrictions,
@@ -857,7 +1082,8 @@ function exclusionList(reasons: Set<string>): string[] {
     'skills granted by items (named above, stats not summed)',
     'item skill modifiers (named above, stats not summed)',
     'attack and retaliation damage, which depend on what is being hit',
-    'the damage ranking sums raw modifiers and does not apply damage conversion — read the conversion lines beside it',
+    'permanent global conversions are folded into the flat damage figures; skill-scoped conversion is listed on the skill it converts and folded nowhere',
+    'flat damage figures are min–max midpoints, and gear flat damage reaches skills only through their % weapon damage — the weapon-attack composition is what it describes',
     'affix values are the record’s base numbers; the engine rolls each within its jitter',
     // The resistance matrix bands maintainable buffs separately; everything
     // else here is a permanent-sources sum, and saying so beats letting a

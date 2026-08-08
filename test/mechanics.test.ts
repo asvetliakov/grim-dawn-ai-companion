@@ -3,10 +3,13 @@ import { describe, expect, it } from 'vitest';
 import type { DbAffix, DbItem, DbSet, DbSkill, GameDb } from '../src/core/db/types.js';
 import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import {
+  addDamage,
   addDefense,
+  applyConversions,
   armorAbsorption,
   ARMOR_PARTS,
   conversions,
+  emptyDamage,
   emptyDefense,
   maxResistContributions,
   penaltyVector,
@@ -366,7 +369,9 @@ describe('resistance extraction', () => {
     expect(conversions({ conversionInType: 'Cold', conversionOutType: 'Pierce', conversionPercentage: 0 }, SCALAR)).toEqual([]);
     expect(
       conversions({ conversionInType: 'Elemental', conversionOutType: 'Pierce', conversionPercentage: 30 }, SCALAR),
-    ).toEqual([{ from: 'Elemental', to: 'Pierce', percent: 30 }]);
+    ).toEqual([
+      { from: 'Elemental', to: 'Pierce', percent: 30, fromKeys: ['fire', 'cold', 'lightning'], toKeys: ['pierce'] },
+    ]);
   });
 
   it('applies the difficulty penalty per resistance, not as one flat number', () => {
@@ -375,6 +380,98 @@ describe('resistance extraction', () => {
     const penalty = penaltyVector({ defensiveFire: -50, defensiveAether: -25 });
     expect(penalty).toEqual({ fire: -50, aether: -25 });
     expect(penalty.physical).toBeUndefined();
+  });
+});
+
+describe('damage conversion typing and arithmetic', () => {
+  it('speaks the player’s language, not the DBR dialect', () => {
+    const [row] = conversions(
+      { conversionInType: 'Life', conversionOutType: 'Poison', conversionPercentage: 25 },
+      SCALAR,
+    );
+    expect(row).toEqual({ from: 'Vitality', to: 'Acid', percent: 25, fromKeys: ['vitality'], toKeys: ['acid'] });
+  });
+
+  it('expands a full-convert transmuter’s semicolon list and drops Stun', () => {
+    const [row] = conversions(
+      {
+        conversionInType: 'Physical;Pierce;Elemental;Cold;Fire;Poison;Lightning;Life;Chaos;Aether;Stun',
+        conversionOutType: 'Aether',
+        conversionPercentage: 100,
+      },
+      SCALAR,
+    );
+    expect(row?.from).toBe('All');
+    expect(row?.fromKeys).toHaveLength(9);
+    expect(row?.fromKeys).not.toContain('bleeding');
+    expect(row?.toKeys).toEqual(['aether']);
+  });
+
+  it('converts off the raw pool exactly once — no chaining', () => {
+    // Physical → Fire and Fire → Cold together must not turn physical into
+    // cold: the fire that arrives from physical is already-converted damage.
+    const flat = applyConversions({ physical: 100, fire: 60 }, [
+      { from: 'Physical', to: 'Fire', percent: 50, fromKeys: ['physical'], toKeys: ['fire'] },
+      { from: 'Fire', to: 'Cold', percent: 100, fromKeys: ['fire'], toKeys: ['cold'] },
+    ]);
+    expect(flat).toEqual({ physical: 50, fire: 50, cold: 60 });
+  });
+
+  it('splits proportionally when an in-type is drawn past 100%', () => {
+    const flat = applyConversions({ physical: 100 }, [
+      { from: 'Physical', to: 'Fire', percent: 100, fromKeys: ['physical'], toKeys: ['fire'] },
+      { from: 'Physical', to: 'Acid', percent: 100, fromKeys: ['physical'], toKeys: ['acid'] },
+    ]);
+    expect(flat).toEqual({ fire: 50, acid: 50 });
+  });
+
+  it('takes the DoT twin along, and leaves it behind when the target has none', () => {
+    const pools = { fire: 100, burn: 40 };
+    const toCold = applyConversions(pools, [
+      { from: 'Fire', to: 'Cold', percent: 50, fromKeys: ['fire'], toKeys: ['cold'] },
+    ]);
+    expect(toCold).toEqual({ fire: 50, burn: 20, cold: 50, frostburn: 20 });
+    // Pierce has no DoT counterpart: the burn stays burn, unconverted.
+    const toPierce = applyConversions(pools, [
+      { from: 'Fire', to: 'Pierce', percent: 50, fromKeys: ['fire'], toKeys: ['pierce'] },
+    ]);
+    expect(toPierce).toEqual({ fire: 50, burn: 40, pierce: 50 });
+  });
+
+  it('spreads an Elemental in-type over all three elements and an out-type as a third each', () => {
+    const drained = applyConversions({ fire: 30, cold: 30, lightning: 30 }, [
+      { from: 'Elemental', to: 'Pierce', percent: 100, fromKeys: ['fire', 'cold', 'lightning'], toKeys: ['pierce'] },
+    ]);
+    expect(drained).toEqual({ pierce: 90 });
+    const emitted = applyConversions({ physical: 90 }, [
+      {
+        from: 'Physical',
+        to: 'Elemental',
+        percent: 100,
+        fromKeys: ['physical'],
+        toKeys: ['fire', 'cold', 'lightning'],
+      },
+    ]);
+    expect(emitted).toEqual({ fire: 30, cold: 30, lightning: 30 });
+  });
+
+  it('never converts bleeding — no record in the game does', () => {
+    const flat = applyConversions({ bleeding: 80, physical: 20 }, [
+      { from: 'Physical', to: 'Chaos', percent: 100, fromKeys: ['physical'], toKeys: ['chaos'] },
+    ]);
+    expect(flat.bleeding).toBe(80);
+  });
+
+  it('reads flat damage as the min–max midpoint, min alone standing for itself', () => {
+    const damage = addDamage(
+      emptyDamage(),
+      { offensivePhysicalMin: 100, offensivePhysicalMax: 200, offensiveColdMin: 30 },
+      SCALAR,
+    );
+    expect(damage.flat).toEqual({ physical: 150, cold: 30 });
+    // Flat Elemental splits a third each, midpoint first.
+    const elemental = addDamage(emptyDamage(), { offensiveElementalMin: 30, offensiveElementalMax: 60 }, SCALAR);
+    expect(elemental.flat).toEqual({ fire: 15, cold: 15, lightning: 15 });
   });
 });
 
@@ -889,6 +986,152 @@ describe('wielding modes, dual-wield enablement and set duplicates', () => {
   });
 });
 
+describe('damage-type path: piercing, conversion scope and per-skill typing', () => {
+  const SABRE = 'records/items/sabre.dbr';
+  const PLAIN_SWORD = 'records/items/plainsword.dbr';
+  const SPIKE = 'records/items/materia/spike.dbr';
+  const EPAULETS = 'records/items/epaulets.dbr';
+  const AURA = 'records/skills/class/brand1.dbr';
+  const STRIKE = 'records/skills/class/strike1.dbr';
+  const STRIKE_TRANSMUTER = 'records/skills/class/strike1b.dbr';
+  const REPLACER = 'records/skills/class/onslaught1.dbr';
+
+  const db = stubDb({
+    items: {
+      // 100% Armor Piercing: the whole 100–200 physical base is dealt as pierce.
+      [SABRE]: item(SABRE, {
+        name: 'Test Sabre',
+        slot: 'WeaponMelee_Sword',
+        stats: { offensivePhysicalMin: 100, offensivePhysicalMax: 200, offensivePierceRatioMin: 100 },
+      }),
+      [PLAIN_SWORD]: item(PLAIN_SWORD, {
+        name: 'Plain Sword',
+        slot: 'WeaponMelee_Sword',
+        stats: { offensivePhysicalMin: 40, offensivePierceRatioMin: 50 },
+      }),
+      // No component in the game carries a pierce ratio; one that claimed to
+      // must be ignored — the ratio is the weapon record's own, full stop.
+      [SPIKE]: item(SPIKE, { name: 'Test Spike', slot: 'ItemRelic', stats: { offensivePierceRatioMin: 80 } }),
+      // Global gear conversion, the Chosen Epaulets shape.
+      [EPAULETS]: item(EPAULETS, {
+        name: 'Test Epaulets',
+        slot: 'ArmorProtective_Shoulders',
+        stats: { conversionInType: 'Cold', conversionOutType: 'Pierce', conversionPercentage: 50, offensiveColdMin: 40 },
+      }),
+    },
+    skills: {
+      // A permanent buff whose conversion is global — it converts the character.
+      [AURA]: skill(AURA, {
+        name: 'Test Brand',
+        class: 'Skill_BuffSelfToggled',
+        stats: { conversionInType: 'Physical', conversionOutType: 'Life', conversionPercentage: [20, 40] },
+      }),
+      // An attack whose conversion is its own business, plus its transmuter.
+      [STRIKE]: skill(STRIKE, {
+        name: 'Test Strike',
+        class: 'Skill_AttackRadius',
+        stats: { weaponDamagePct: [100, 120], offensiveSlowBleedingMin: [50, 80] },
+      }),
+      [STRIKE_TRANSMUTER]: skill(STRIKE_TRANSMUTER, {
+        name: 'Test Strike Transmuter',
+        class: 'Skill_Transmuter',
+        stats: { conversionInType: 'Physical', conversionOutType: 'Aether', conversionPercentage: 100 },
+      }),
+      [REPLACER]: skill(REPLACER, {
+        name: 'Test Onslaught',
+        class: 'Skill_WeaponPool_BasicAttack',
+        stats: { weaponDamagePct: [110, 115], offensiveColdMin: [10, 20] },
+      }),
+    },
+  });
+
+  it('deals a piercing weapon’s physical as pierce, off the base record’s ratio alone', () => {
+    const full = aggregateCharacter(save({ weaponSet1: [instance({ baseName: SABRE }), null] }), db);
+    const entry = (agg: typeof full, key: string) => agg.damage.ranked.find((d) => d.key === key);
+    expect(entry(full, 'physical')).toBeUndefined();
+    expect(entry(full, 'pierce')?.flat).toBe(150); // midpoint of 100–200, all of it moved
+
+    // The component's claimed ratio is ignored: 50% (the sword's own) applies.
+    const socketed = aggregateCharacter(
+      save({ weaponSet1: [instance({ baseName: PLAIN_SWORD, relicName: SPIKE }), null] }),
+      db,
+    );
+    expect(entry(socketed, 'physical')?.flat).toBe(20);
+    expect(entry(socketed, 'pierce')?.flat).toBe(20);
+  });
+
+  it('folds a permanent buff’s conversion globally, at the skill’s rank', () => {
+    const agg = aggregateCharacter(
+      save({
+        weaponSet1: [instance({ baseName: PLAIN_SWORD }), null], // 40 phys, half → pierce
+        skills: [characterSkill(AURA, 2)], // 40% Physical → Vitality
+      }),
+      db,
+    );
+    expect(agg.damage.conversions).toEqual([
+      {
+        from: 'Physical',
+        to: 'Vitality',
+        percent: 40,
+        fromKeys: ['physical'],
+        toKeys: ['vitality'],
+        source: 'Test Brand',
+        scope: 'global',
+      },
+    ]);
+    const flatOf = (key: string) => agg.damage.ranked.find((d) => d.key === key)?.flat ?? 0;
+    expect(flatOf('pierce')).toBe(20);
+    expect(flatOf('physical')).toBe(12); // 20 after piercing, minus 40%
+    expect(flatOf('vitality')).toBe(8);
+  });
+
+  it('keeps an attack skill’s conversion on the skill, merged from its transmuter node', () => {
+    const agg = aggregateCharacter(
+      save({ skills: [characterSkill(STRIKE, 2), characterSkill(STRIKE_TRANSMUTER, 1)] }),
+      db,
+    );
+    // Nothing global: the transmuter rewrites Test Strike, not the character.
+    expect(agg.damage.conversions).toEqual([]);
+    expect(agg.damage.skillDamage).toEqual([
+      {
+        skill: 'Test Strike',
+        rank: 2,
+        weaponDamagePct: 120,
+        flat: [{ key: 'bleeding', label: 'Bleeding', amount: 80, overTime: true }],
+        conversions: [
+          { from: 'Physical', to: 'Aether', percent: 100, fromKeys: ['physical'], toKeys: ['aether'] },
+        ],
+        isDefaultAttack: false,
+      },
+    ]);
+  });
+
+  it('names the default-attack replacer and the weapon attack’s composition', () => {
+    const agg = aggregateCharacter(
+      save({
+        weaponSet1: [instance({ baseName: SABRE }), null],
+        equipment: (() => {
+          const eq: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+          eq[2] = instance({ baseName: EPAULETS });
+          return eq;
+        })(),
+        skills: [characterSkill(REPLACER, 1)],
+      }),
+      db,
+    );
+    expect(agg.damage.weaponAttack.mainAttack).toBe('Test Onslaught');
+    // Pools: 150 pierce (pierced sabre) + 40 cold, half of it converted:
+    // pierce 170, cold 20 → shares of 190.
+    expect(agg.damage.weaponAttack.composition).toEqual([
+      { key: 'pierce', label: 'Pierce', share: 89, overTime: false },
+      { key: 'cold', label: 'Cold', share: 11, overTime: false },
+    ]);
+    // The replacer is an attack skill: its own cold stays on its row, out of the pools.
+    expect(agg.damage.skillDamage[0]?.skill).toBe('Test Onslaught');
+    expect(agg.damage.skillDamage[0]?.isDefaultAttack).toBe(true);
+  });
+});
+
 describe.skipIf(!haveGameInstall() || !haveSaves())(
   `aggregates vs the live save (${haveGameInstall() && haveSaves() ? 'live' : MISSING_SAVES_MESSAGE})`,
   () => {
@@ -925,6 +1168,35 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
         ...agg.damage.resistReduction.map((r) => r.source),
       ];
       expect(labels.filter((l) => l.includes('.dbr'))).toEqual([]);
+    });
+
+    it('types the damage path: conversion applied, composition whole, attack skills typed', { timeout: TIMEOUT }, async () => {
+      const db = await gameDb();
+      const path = characterSavePath(CHARACTERS[0]);
+      const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
+
+      // The Chosen Epaulets' 30% Elemental → Pierce is real, global, and folded:
+      // with both swords at 100% armor piercing, no physical flat survives, and
+      // pierce out-flats every other type by a distance.
+      const conversion = agg.damage.conversions.find((c) => c.from === 'Elemental' && c.to === 'Pierce');
+      expect(conversion?.scope).toBe('global');
+      expect(conversion?.fromKeys).toEqual(['fire', 'cold', 'lightning']);
+      const flatOf = (key: string) => agg.damage.ranked.find((d) => d.key === key)?.flat ?? 0;
+      expect(flatOf('physical')).toBe(0);
+      expect(flatOf('pierce')).toBeGreaterThan(200);
+
+      // Shares are percentages of one whole.
+      const shares = agg.damage.weaponAttack.composition.reduce((n, s) => n + s.share, 0);
+      expect(shares).toBeGreaterThanOrEqual(98);
+      expect(shares).toBeLessThanOrEqual(102);
+      expect(agg.damage.weaponAttack.composition[0]?.key).toBe('pierce');
+
+      // Every invested attack skill gets typed, the main attack among them.
+      expect(agg.damage.skillDamage.length).toBeGreaterThan(2);
+      expect(agg.damage.weaponAttack.mainAttack).toBe('Onslaught');
+      const onslaught = agg.damage.skillDamage.find((s) => s.skill === 'Onslaught');
+      expect(onslaught?.isDefaultAttack).toBe(true);
+      expect(onslaught?.weaponDamagePct).toBeGreaterThan(100);
     });
 
     it('proves every equipped item satisfiable — the wearing-it invariant', { timeout: TIMEOUT }, async () => {
