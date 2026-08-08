@@ -71,3 +71,37 @@ npm test && npm run typecheck
 npm run cli -- aggregates --char _Suchka
 npm run cli -- aggregates --char _Suchka --difficulty ultimate   # totals drop by 50, cap math shown
 ```
+
+## Outcome
+
+Done, and every acceptance criterion met. 126 tests pass, `typecheck` clean, and stages 1–4 still verify (`resolve` 366/366 records, `icon --check-all` 148/148).
+
+**Four plan facts turned out to be wrong, and the code follows the data:**
+
+1. **The difficulty penalty is in the game data, and it is not uniform.** The plan said it was "engine-hardcoded, not in data: Elite −25, Ultimate −50 applied to the damage resistances". It is actually
+   `records/game/balancingadjustment_mp+difficulty_players01.dbr`, an `AttributePak` whose `defensive*` arrays are 12 long — three difficulties × four player counts, single-player being the first of each group of four. On Ultimate: Fire/Cold/Lightning/Pierce/Acid take **−50**, Aether/Chaos/Vitality/Bleeding take **−25**, and **Physical takes none at all**; on Elite only the first five take anything. `defensiveSlowLifeLeach` is penalised too. A flat −50 would have been wrong for six of the ten columns and would have reported an imaginary hole in every character's Aether and Chaos. `GameDb.difficultyPenalty(difficulty)` now reads the record; nothing is hardcoded.
+2. **There is no parent pointer for modifier nodes anywhere.** The plan expected one in `records/ui/skills/classNN/…`. Those records are skill *buttons* (bitmap, x/y, one `skillName`), and `_classtree_classNN.dbr` is a flat ordered list — neither encodes the tree. The stem-numbering fallback the plan named is what shipped (`veilofshadows2` → `veilofshadows1`), and it resolves every modifier on the mastery trees, though only 74 of 304 game-wide (the rest are pet and `_mod1`-suffixed records). What makes that safe is the second finding below.
+3. **The sign rule is absolute, so banding never depends on the heuristic being right.** Probing all 1,347 player passives and 3,405 modifiers: not one record has a *positive* `defensive<Type>` under a debuff parent, and every negative one is resistance reduction. So negative values can never enter a player total regardless of what the parent lookup says. Night's Chill lands in the RR list, Amatok's Pact's `defensiveLife`/`defensivePoison` land in the permanent band — same field, opposite meaning, correctly split.
+
+**A fourth correction, caught in review:** the plan asked for "total armor (sum across pieces; note the per-piece absorption approximation)", and both halves of that were wrong.
+
+- **Armour is localized.** Every physical hit rolls one body part (Head 12%, Shoulders 12%, Chest 24%, Hands 16%, Legs 20%, Feet 16%) and is met by that piece alone. A sum describes a character who does not exist, and — worse for an advisor — hides the weak slot: `_Suchka` summed to 4,605, which looks fine, while Hands sits at 945 against Chest's 1,723. The summary now reports per-part ratings, a hit-weighted mean, and names the weakest part. The game's own character sheet agrees: `charinfo_statsarmortotalrolloverstyle.dbr` has head/chest/shoulders/hands/legs/feet absorption fields.
+- **`+% Armor Absorption` multiplies the base, it does not add to it.** 70 × 1.2 = 84%, not 90%; capped at 100. Printing the bare `+28%` modifier implied the additive reading. The base comes from `records/game/gameengine.dbr` (`armorDefensiveAbsorption = 70`) — note `records/ingameui/gameengine.dbr` is a *different* record carrying a stale 66.
+- **`defensiveProtection` is context-dependent.** On an armour piece it is that piece's rating; on a ring, component, augment or skill it is a character-wide flat bonus the engine adds to **every** body part. Treating the two alike double-counted the first and under-valued the second.
+
+The hit weights are engine-side (`gameengine.dbr` carries the absorption constant and nothing about locations), so they are a named constant with the mechanics cited. Sources: [Armor](https://grimdawn.fandom.com/wiki/Armor), [Game Mechanics](https://grimdawn.fandom.com/wiki/Game_Mechanics).
+
+**Deviations from the deliverables as written:**
+
+- **One entry point, not two functions.** `aggregateCharacter(save, db, difficulty)` returns `{ resistances, damage, defense, ranks, maintained, grantedSkills, skillModifiers, exclusions }` rather than separate `resistanceMatrix(...)` / `damageProfile(...)` exports. They share the whole equipped-source walk *and* the effective-rank fold, and splitting them would have meant computing both twice or threading a context object between them. Stage 5B gets one call.
+- **Bleeding is a tenth resistance column.** The plan listed nine. Bleeding is a damage resistance in game, appears on 963 item records, and takes the difficulty penalty — omitting it would have hidden a real hole.
+- **`+% Total Damage` is reported on its own line, not spread across the sixteen damage types.** Spreading it made every damage type appear invested and buried which ones the build is actually built around.
+- **Pets are excluded from deep skill indexing**, on top of the plan's exclusion of pet *bonuses*. The `pets/` subtrees are four fifths of the skill bytes on their own — indexing them took `db.json` from 13 MB to 66 MB. Excluded, it is 21 MB (items 10.8, affix stats 4.1, skills 2.5, skill names 1.4, l10n 1.7, sets 0.2). Affix stats are the single biggest addition and the one that closes the largest gap.
+- **`CharacterSave.alternateWeaponSetActive`** was added (Stage 1's parser already read and discarded the bool). Only the *held* weapon set contributes; folding in both would inflate every total for anyone who swaps.
+- **Set bonuses index by piece count** as `array[pieces − 1]`, clamped — verified across all 203 set records: every numeric field is an array of exactly `setMembers.length` (14 records are shorter, hence the clamp), and the only scalars are record-path references.
+
+**Hand-checks** (against the DBR records themselves, which is what GrimTools dumps): Bloodrite Legguards `defensiveAether 38 / defensivePhysical 4`; Stealth Jacket `defensiveElementalResistance 26 → fire/cold/lightning 26` plus `defensiveChaos 22`; Impervious prefix `defensivePierce 48 / defensivePoison 60, jitter 10`; Wight Skin Powder augment `defensiveAether 15 / defensiveChaos 15` appearing once per each of the three slots it is fitted to. Ancient Armor Plate correctly produces **no** resistance row and instead feeds armour (+35 flat, +8%, +8% absorption).
+
+Elemental Awakening lands in the maintainable band at **effective rank 12** — 11 invested plus the +1 to all Nightblade skills from the Slaughter relic's `augmentMasteryName1` — which is criterion 1 exactly. The damage profile ranks **Pierce then Bleeding**, which is criterion 2. `Skill_Modifier` nodes inherit the maintainable band (so their resistances land in the right total) but are kept off the "buffs you must keep up" list, since only the parent is castable.
+
+**Backlog fallout:** `Skill_Transmuter` is banded like a modifier (parent's band) rather than modelled as the skill-rewriting mechanic it is; the damage profile, armour and non-damage-resistance figures cover permanent sources only. Both are stated in the output's exclusions list rather than left implicit.

@@ -12,6 +12,8 @@ import { Command } from 'commander';
 import { loadGameDb } from '../core/db/index.js';
 import { REP_TIERS, type GameDb } from '../core/db/types.js';
 import { createIconService } from '../core/icons/index.js';
+import { aggregateCharacter, type CharacterAggregate } from '../core/mechanics/aggregate.js';
+import { RESIST_COLUMNS, type ResistVector } from '../core/mechanics/stats.js';
 import { characterSavePath, formulasPath, transferStashPath } from '../core/paths.js';
 import {
   CoverageTracker,
@@ -27,7 +29,12 @@ import {
   type FormulasFile,
   type TransferStash,
 } from '../core/save/gst.js';
-import { EQUIP_SLOT_NAMES, type BlockReport, type CharacterSave } from '../core/save/types.js';
+import {
+  EQUIP_SLOT_NAMES,
+  type BlockReport,
+  type CharacterSave,
+  type Difficulty,
+} from '../core/save/types.js';
 
 const program = new Command();
 
@@ -285,6 +292,8 @@ program
       console.log(`  language       ${s.locale} (installed: ${s.locales.join(', ').toLowerCase()})`);
       console.log(`  factions       ${s.factions} (${s.vendorFactions} with vendors, ${s.vendorItems} items stocked)`);
       console.log(`  blueprints     ${s.recipes}`);
+      console.log(`  skills         ${s.skills.toLocaleString('en-US')} with per-rank stats, ${s.skillNames.toLocaleString('en-US')} named`);
+      console.log(`  item sets      ${s.sets}`);
 
       if (opts.stats) {
         const pct = ((s.localizedNames / s.items) * 100).toFixed(1);
@@ -594,5 +603,177 @@ async function checkAllIcons(
     process.exitCode = 1;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Stage 5A — the mechanics aggregates
+// ---------------------------------------------------------------------------
+
+const COLUMN_WIDTH = 6;
+
+function resistHeader(): string {
+  return RESIST_COLUMNS.map((c) => c.label.slice(0, COLUMN_WIDTH).padStart(COLUMN_WIDTH)).join(' ');
+}
+
+function resistCells(values: ResistVector, blankZero = true): string {
+  return RESIST_COLUMNS.map((c) => {
+    const value = values[c.key] ?? 0;
+    const text = blankZero && value === 0 ? '·' : String(Math.round(value));
+    return text.padStart(COLUMN_WIDTH);
+  }).join(' ');
+}
+
+function printAggregate(agg: CharacterAggregate): void {
+  const r = agg.resistances;
+  console.log(
+    `${agg.name} — level ${agg.level}, ${agg.difficulty} (weapon set ${agg.weaponSet})`,
+  );
+
+  console.log(`\nResistances by source${' '.repeat(24)}${resistHeader()}`);
+  let band: string | undefined;
+  for (const row of r.rows) {
+    if (row.band !== band) {
+      band = row.band;
+      console.log(`  — ${band} —`);
+    }
+    const where = `${row.slot}: ${row.label}`.slice(0, 40);
+    const note = row.note ? `  (${row.note})` : '';
+    console.log(`  ${where.padEnd(42)}${resistCells(row.values)}${note}`);
+  }
+
+  console.log(`\n  ${'permanent total'.padEnd(42)}${resistCells(r.permanent, false)}`);
+  console.log(`  ${'+ maintainable buffs'.padEnd(42)}${resistCells(r.withMaintainable, false)}`);
+  console.log(`  ${`${agg.difficulty} penalty`.padEnd(42)}${resistCells(r.penalty, false)}`);
+  console.log(`  ${'effective'.padEnd(42)}${resistCells(r.effective, false)}`);
+  console.log(`  ${'cap'.padEnd(42)}${resistCells(r.caps, false)}`);
+  const overcap: ResistVector = {};
+  for (const c of RESIST_COLUMNS) overcap[c.key] = (r.effective[c.key] ?? 0) - (r.caps[c.key] ?? 0);
+  console.log(`  ${'over / (under) cap'.padEnd(42)}${resistCells(overcap, false)}`);
+
+  if (r.secondary.length) {
+    console.log('\nOther resistances');
+    console.log(`  ${r.secondary.map((s) => `${s.label} ${Math.round(s.value)}%`).join(', ')}`);
+  }
+
+  const d = agg.defense;
+  console.log('\nDefensive skeleton');
+  // Armour is localized: one body part is rolled per hit and meets it alone, so
+  // there is no total to quote — only six alternatives and their hit weights.
+  console.log(
+    `  armour per body part (hit-weighted mean ${Math.round(d.armorAverage)}, ` +
+      `${d.armorClasses.join('/') || 'no armour class'}):`,
+  );
+  for (const slot of d.armorSlots) {
+    const flag = slot === d.weakestSlot ? '  << weakest' : '';
+    console.log(
+      `    ${slot.slot.padEnd(10)} ${String(Math.round(slot.effective)).padStart(5)}` +
+        `  (piece ${Math.round(slot.piece)}, ${slot.hitChance}% of hits)${flag}`,
+    );
+  }
+  const bonuses = [
+    d.bonusArmor ? `+${Math.round(d.bonusArmor)} flat to every part` : '',
+    d.armorPercent ? `+${Math.round(d.armorPercent)}%` : '',
+  ].filter(Boolean);
+  if (bonuses.length) console.log(`    character-wide: ${bonuses.join(', ')}`);
+  console.log(
+    `  absorption ${d.absorption.toFixed(1)}%` +
+      (d.absorptionPercent
+        ? `  (${d.absorptionBase}% base × 1 + ${Math.round(d.absorptionPercent)}%)`
+        : `  (base, no bonuses)`),
+  );
+  console.log(`  health +${Math.round(d.health)}${d.healthPercent ? ` +${Math.round(d.healthPercent)}%` : ''}`);
+  if (d.hasShield) {
+    console.log(`  block ${Math.round(d.blockChance)}% chance, ${Math.round(d.blockAmount)} absorbed`);
+  }
+  if (d.lifeLeechPercent) console.log(`  ${d.lifeLeechPercent.toFixed(1)}% of attack damage converted to health`);
+
+  const dmg = agg.damage;
+  console.log('\nDamage profile');
+  for (const entry of dmg.ranked.slice(0, 12)) {
+    const flat = entry.flat ? `, +${entry.flat} flat` : '';
+    console.log(`  ${entry.label.padEnd(16)} +${entry.percent}%${flat}${entry.overTime ? '  (over time)' : ''}`);
+  }
+  if (dmg.totalDamagePercent) console.log(`  ${'Total Damage'.padEnd(16)} +${dmg.totalDamagePercent}%  (scales every type)`);
+  for (const c of dmg.conversions) {
+    console.log(`  convert ${c.percent}% ${c.from} → ${c.to}  (${c.source})`);
+  }
+  if (dmg.resistReduction.length) {
+    console.log('\nResistance reduction (applies to enemies, not to the totals above)');
+    for (const rr of dmg.resistReduction) console.log(`  ${rr.source}: ${rr.effect} ${Math.round(rr.value)}`);
+  }
+  if (dmg.weaponRestrictions.length) {
+    console.log('\nWeapon-restricted skills');
+    for (const w of dmg.weaponRestrictions) console.log(`  ${w.skill}: ${w.weapons.join(', ')}`);
+  }
+
+  console.log('\nSkill ranks (invested + gear, clamped at ultimate)');
+  for (const rank of agg.ranks.slice(0, 15)) {
+    const bonus = rank.bonus ? ` +${rank.bonus}` : '';
+    console.log(`  ${rank.name.padEnd(30)} ${rank.invested}${bonus} → ${rank.effective}${rank.capped ? ' (capped)' : ''}`);
+  }
+  if (agg.maintained.length) {
+    console.log('\nCounted as maintainable');
+    for (const m of agg.maintained) {
+      console.log(`  ${m.name} (rank ${m.rank}, ${m.duration ?? '?'}s duration / ${m.cooldown ?? 0}s cooldown)`);
+    }
+  }
+  if (agg.grantedSkills.length) {
+    console.log('\nGranted skills (named, not summed)');
+    for (const g of agg.grantedSkills) console.log(`  ${g.item} → ${g.skill}`);
+  }
+  if (agg.skillModifiers.length) {
+    console.log('\nItem skill modifiers (named, not summed)');
+    for (const m of agg.skillModifiers) {
+      console.log(`  ${m.item}: modifies ${m.skill}${m.modifier ? ` (${m.modifier})` : ''}`);
+    }
+  }
+
+  console.log('\nNot counted in any total above');
+  for (const note of agg.exclusions) console.log(`  · ${note}`);
+}
+
+program
+  .command('aggregates')
+  .description('per-source resistance matrix and damage profile for a character')
+  .option('-c, --char <name>', 'character directory name under <saveDir>/main')
+  .option('--difficulty <d>', 'Normal | Elite | Ultimate (default: the character’s current one)')
+  .option('--refresh', 'rebuild the database first')
+  .option('--json', 'emit the aggregate as JSON instead of tables')
+  .action(async (opts: { char?: string; difficulty?: string; refresh?: boolean; json?: boolean }) => {
+    await withDb({ refresh: opts.refresh, quiet: opts.json }, (db) => {
+      const settings = resolveSettings();
+      const names = opts.char ? [opts.char] : listCharacters(settings.saveDir);
+      if (names.length === 0) {
+        console.error(`error: no characters found under ${settings.saveDir}/main`);
+        process.exit(1);
+      }
+
+      let difficulty: Difficulty | undefined;
+      if (opts.difficulty) {
+        const wanted = (['Normal', 'Elite', 'Ultimate'] as const).find(
+          (d) => d.toLowerCase() === opts.difficulty!.toLowerCase(),
+        );
+        if (!wanted) {
+          console.error(`error: unknown difficulty ${JSON.stringify(opts.difficulty)}; expected Normal, Elite or Ultimate`);
+          process.exit(1);
+        }
+        difficulty = wanted;
+      }
+
+      const aggregates = names.map((name) => {
+        const path = characterSavePath(name, settings.saveDir);
+        const save = parseGdc(readSave(path), { path });
+        return aggregateCharacter(save, db, difficulty ?? save.difficulty);
+      });
+
+      if (opts.json) {
+        console.log(JSON.stringify(aggregates, null, 2));
+        return;
+      }
+      aggregates.forEach((agg, i) => {
+        if (i) console.log('\n' + '='.repeat(72));
+        printAggregate(agg);
+      });
+    });
+  });
 
 program.parse();

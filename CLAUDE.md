@@ -41,6 +41,11 @@ Implementation runs in ordered stages, one focused session each. **Start every i
 - Game version comes from a NUL-terminated `v1.3.0.6` string in `Engine.dll` (unique under a version-shaped, NUL-terminated pattern). Any published dump reports *its own* version and lags the install.
 - The game writes saves event-driven and non-atomically: on checksum failure, retry (torn write), then fall back to `player.g00` rotation backups.
 - **Never commit game-derived data** (extracted assets, icon PNGs, save copies) — `.gitignore` covers it; keep it that way. Ship code, not data. Game data is © Crate Entertainment; credit them in the UI/README.
+- **The difficulty resistance penalty is in the game data and is not uniform.** `records/game/balancingadjustment_mp+difficulty_players01.dbr` (`AttributePak`) holds `defensive*` arrays 12 long = 3 difficulties × 4 player counts; single-player reads index 0/4/8. Ultimate is −50 to Fire/Cold/Lightning/Pierce/Acid, −25 to Aether/Chaos/Vitality/Bleeding, and **0 to Physical**; Elite penalises only the first five. The in-game "−25%/−50% to all resistances" blurb is a simplification — do not hardcode it. Read via `GameDb.difficultyPenalty`.
+- **Armour is localized, and absorption is multiplicative.** Every physical hit rolls one body part — Head 12%, Shoulders 12%, Chest 24%, Hands 16%, Legs 20%, Feet 16% — and is met by *that piece alone*, so summing the six ratings describes a character who does not exist and hides the weak slot. Flat `+Armor` (`defensiveBonusProtection`, and `defensiveProtection` from anything that is not itself an armour piece — rings, components, skills) is added to **every** part. `defensiveProtection` is therefore context-dependent: a piece's own rating on armour, a character-wide bonus everywhere else. Absorption is `base × (1 + modifier)` capped at 100 — 70 × 1.2 = **84%, not 90%** — with the base in `records/game/gameengine.dbr` (`armorDefensiveAbsorption = 70`; the `records/ingameui/` record of the same name carries a stale 66, ignore it). Hit weights are engine-side, not in the data.
+- **Negative `defensive<Type>` is always resistance *reduction*, never player defence.** Verified across every player passive and modifier in the game: zero counter-examples. Skill/modifier banding leans on this, which is what makes the parent-lookup heuristic safe (there is no parent pointer in the data — not on the record, not in `_classtree_classNN.dbr`, not in `records/ui/skills/`; stem numbering `veilofshadows2` → `veilofshadows1` is the fallback).
+- **Toggled auras and shouts are two records**: a thin activator holding only `buffSkillName`, and the buff that carries every stat *and the display name and max level*. Always follow the hop for stats **and** for naming — `bonechillingcry1.dbr` has neither a name nor a `skillMaxLevel` of its own.
+- **Pet skill subtrees (`records/skills/*/pets/`) are four fifths of the skill data** and are out of scope; indexing them takes `db.json` from 21 MB to 66 MB. Keep them excluded.
 - `claude` CLI invocation: pipe the context doc via **stdin**, use `-p --output-format json --tools "" --no-session-persistence`, cwd = tmpdir, 180s timeout. Never use `--bare` (it disables the subscription OAuth this tool depends on).
 
 ## Verification commands
@@ -53,7 +58,8 @@ npm run cli -- stash                      # stage 2
 npm run cli -- db --stats                 # stage 3: build/inspect the item DB
 npm run cli -- resolve --char _Suchka     # stage 3: resolution coverage report
 npm run cli -- icon --check-all           # stage 4: icon coverage for both characters
-npm run cli -- context --char _Suchka     # stage 5: the LLM context doc
+npm run cli -- aggregates --char _Suchka  # stage 5A: resistance matrix + damage profile
+npm run cli -- context --char _Suchka     # stage 5B: the LLM context doc
 npm run cli -- advise --char _Suchka      # stage 6: live AI recommendations
 npm run dev                               # stage 7: Electron window
 ```

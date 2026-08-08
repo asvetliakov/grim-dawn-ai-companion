@@ -12,7 +12,7 @@
  * the base values they are.
  */
 
-import type { DbItem, GameDb } from './db/types.js';
+import type { DbAffix, DbItem, GameDb } from './db/types.js';
 import type { FormulasFile } from './save/gst.js';
 import type { TransferStash } from './save/gst.js';
 import {
@@ -35,6 +35,16 @@ export interface ResolvedItem {
   suffixName?: string;
   /** Rare-monster / ascension modifier affix, when the item carries one. */
   modifierName?: string;
+  /**
+   * The affix records behind those names, with their stats. On magical and rare
+   * gear the affixes carry most of the resistances, so an aggregate built from
+   * `base` alone reads far too low.
+   */
+  prefix?: DbAffix;
+  suffix?: DbAffix;
+  modifier?: DbAffix;
+  /** The rolled completion bonus on a relic (`relicBonus` in the save). */
+  completion?: DbAffix;
   component?: DbItem;
   augment?: DbItem;
   source: ItemSource;
@@ -99,22 +109,26 @@ export function resolveItem(
   track?.base(inst.baseName, base !== undefined);
   if (!base && !isEmpty(inst.baseName)) unresolved.push(inst.baseName);
 
-  const affix = (record: string): string | undefined => {
-    if (isEmpty(record)) return undefined;
+  const affix = (record: string): { name?: string; affix?: DbAffix } => {
+    if (isEmpty(record)) return {};
     // Affixes live in the loot-randomizer table; a handful of item records are
     // used as modifiers too, so fall back to the item name before giving up.
-    const name = db.getAffixName(record) ?? db.getItem(record)?.name;
+    const entry = db.getAffix(record);
+    const name = entry?.name ?? db.getItem(record)?.name;
     // A crafting bonus is *known* even though it has no name, so it counts as
     // resolved — the alternative reports the game's own design as our failure.
     const known = name !== undefined || db.knowsAffix(record);
     track?.affix(record, known, name !== undefined);
     if (!known) unresolved.push(record);
-    return name;
+    return { ...(name !== undefined ? { name } : {}), ...(entry ? { affix: entry } : {}) };
   };
 
-  const prefixName = affix(inst.prefixName);
-  const suffixName = affix(inst.suffixName);
-  const modifierName = affix(inst.modifierName);
+  const prefix = affix(inst.prefixName);
+  const suffix = affix(inst.suffixName);
+  const modifier = affix(inst.modifierName);
+  // A relic's rolled completion bonus. It is an ordinary `LootRandomizer`
+  // record, so its stats come through the same path as a prefix's.
+  const completion = affix(inst.relicBonus);
 
   const attachment = (record: string): DbItem | undefined => {
     if (isEmpty(record)) return undefined;
@@ -129,16 +143,20 @@ export function resolveItem(
 
   const item: ResolvedItem = {
     record: inst.baseName,
-    display: [prefixName, base?.name ?? recordStem(inst.baseName), suffixName].filter(Boolean).join(' '),
+    display: [prefix.name, base?.name ?? recordStem(inst.baseName), suffix.name].filter(Boolean).join(' '),
     source,
     location,
     stackCount: inst.stackCount,
     unresolved,
   };
   if (base) item.base = base;
-  if (prefixName) item.prefixName = prefixName;
-  if (suffixName) item.suffixName = suffixName;
-  if (modifierName) item.modifierName = modifierName;
+  if (prefix.name) item.prefixName = prefix.name;
+  if (suffix.name) item.suffixName = suffix.name;
+  if (modifier.name) item.modifierName = modifier.name;
+  if (prefix.affix) item.prefix = prefix.affix;
+  if (suffix.affix) item.suffix = suffix.affix;
+  if (modifier.affix) item.modifier = modifier.affix;
+  if (completion.affix) item.completion = completion.affix;
   if (component) item.component = component;
   if (augment) item.augment = augment;
   return item;

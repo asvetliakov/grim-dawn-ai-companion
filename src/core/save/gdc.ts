@@ -181,7 +181,7 @@ function readBlock3(r: GdReader, s: ParseState): void {
   }
   s.save.inventorySacks = sacks;
 
-  r.readBool(); // use alternate weapon set
+  s.save.alternateWeaponSetActive = r.readBool();
   s.save.equipment = Array.from({ length: 12 }, () => readEquippedItem(r));
   r.readBool(); // alternate set 1 present
   s.save.weaponSet1 = Array.from({ length: 2 }, () => readEquippedItem(r));
@@ -371,6 +371,7 @@ export function parseGdc(buf: Buffer, opts: ParseGdcOptions = {}): CharacterSave
     equipment: Array.from({ length: 12 }, () => null),
     weaponSet1: [null, null],
     weaponSet2: [null, null],
+    alternateWeaponSetActive: false,
     inventorySacks: [],
     personalStash: [],
     factions: [],

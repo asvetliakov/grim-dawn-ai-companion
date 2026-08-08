@@ -35,6 +35,15 @@ function stubDb(items: Record<string, DbItem>, affixes: Record<string, string>):
     getItem: (record) => items[record],
     getAffixName: (record) => affixes[record] || undefined,
     knowsAffix: (record) => record in affixes,
+    getAffix: (record) =>
+      record in affixes
+        ? { record, stats: {}, ...(affixes[record] ? { name: affixes[record]! } : {}) }
+        : undefined,
+    getSkill: () => undefined,
+    getSet: () => undefined,
+    skillName: () => undefined,
+    difficultyPenalty: () => ({}),
+    armorAbsorptionBase: () => 70,
     factions: () => [],
     vendorItems: () => [],
     recipes: () => [],
@@ -212,9 +221,11 @@ describe.skipIf(!canRunLive)(`live saves (${canRunLive ? 'live' : skipReason})`,
     const coverage = track.report();
     expect(coverage.affixTotal).toBeGreaterThan(20);
     expect(coverage.affixMissing).toEqual([]);
-    // Informational: whatever is unnamed must be a crafting bonus, not a gap.
+    // Whatever is unnamed must be nameless by the game's design, not a gap: the
+    // blacksmith's crafting bonuses and a relic's rolled completion bonus are
+    // both shown as bare stat lines in game, with no name of their own.
     for (const record of coverage.affixUnnamed) {
-      expect(record).toMatch(/^records\/items\/lootaffixes\/crafting\//);
+      expect(record).toMatch(/^records\/items\/lootaffixes\/(crafting|completionrelics)\//);
     }
   });
 

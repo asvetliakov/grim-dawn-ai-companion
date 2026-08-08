@@ -23,6 +23,14 @@ export interface VendorSource {
   repTier: RepTier;
 }
 
+/**
+ * A stat value as the game data spells it. Numbers and strings are per-item
+ * constants; an array is a **per-rank table** — skills index it by learned rank,
+ * set bonuses by equipped-piece count. Arrays are the whole reason skills need
+ * their own extractor: the item extractor drops them.
+ */
+export type StatValue = number | string | number[];
+
 export interface DbItem {
   /** DBR record path — the key items are stored under in saves. */
   record: string;
@@ -39,6 +47,13 @@ export interface DbItem {
   stats: Record<string, number | string>;
   /** Localized set name, when the item belongs to one. */
   setName?: string;
+  /** The set's record path — the key into `getSet`. */
+  setRecord?: string;
+  /**
+   * The skill this item grants outright (`itemSkillName`): relics, runes and a
+   * few components. Name only — aggregating a granted skill's stats is backlog.
+   */
+  grantedSkill?: { record: string; name: string };
   /** Which archive supplied the record: `base`, `gdx1`, `gdx2`, `gdx3`. */
   expansion?: string;
   /**
@@ -52,6 +67,78 @@ export interface DbItem {
   description?: string;
 }
 
+/**
+ * A skill record — mastery skills, devotion nodes, and the buff records they
+ * hop to.
+ *
+ * `stats` keeps the raw DBR keys exactly as the item tables do, except that
+ * per-rank arrays survive: `characterOffensiveAbility = [10,20,29,…]` is the
+ * value at ranks 1,2,3… Read it at the *effective* rank (invested points plus
+ * every equipped `+N to <skill>`), clamped to the array's length.
+ */
+export interface DbSkill {
+  record: string;
+  /** Localized name. Absent on the plumbing records that carry no display tag. */
+  name?: string;
+  /** Template class: `Skill_Passive`, `Skill_BuffSelfDuration`, `SkillBuff_Debuf`, … */
+  class: string;
+  /** Position in the mastery tree; the tier gate, not a rank. */
+  tier?: number;
+  /** Highest rank reachable with plain skill points. */
+  maxLevel?: number;
+  /** Highest rank reachable at all — where `+N to <skill>` bonuses stop counting. */
+  ultimateLevel?: number;
+  /** Seconds. Together with `duration` this is what makes a buff maintainable. */
+  cooldown?: number;
+  duration?: number;
+  /**
+   * `buffSkillName`: toggled auras and shouts are two records — a thin activator
+   * and the buff that holds every number. Follow this before reading `stats`.
+   */
+  buffRecord?: string;
+  /** `_classtraining_classNN.dbr` — the target of a `+N to all <mastery> skills`. */
+  mastery?: string;
+  /**
+   * Weapons the skill will fire with, as DBR field names (`Sword2h`, `Ranged1h`).
+   * Empty means unrestricted; a non-empty list is a whitelist, and recommending
+   * a weapon outside it bricks the skill.
+   */
+  weapons?: string[];
+  stats: Record<string, StatValue>;
+  description?: string;
+}
+
+/**
+ * An item set. Every numeric bonus is an array indexed by *equipped piece count
+ * minus one* — `characterLifeModifier = [0,8,8]` is nothing for one piece and
+ * +8% from two onward. Record-path fields (`augmentSkillName1`) stay scalar and
+ * name the target of the indexed level array beside them.
+ */
+export interface DbSet {
+  record: string;
+  name: string;
+  members: string[];
+  bonuses: Record<string, StatValue>;
+}
+
+/**
+ * A prefix, suffix, rare-monster modifier, crafting bonus or relic completion
+ * bonus — the game models all of them as one `LootRandomizer` class.
+ *
+ * The stats are the record's base values; the engine rolls each one within
+ * ±`jitter` percent, so they are an anchor rather than the exact numbers on any
+ * one item. On magical and rare gear the affixes often *are* the resistances,
+ * which is why an item-only sum reads far too low.
+ */
+export interface DbAffix {
+  record: string;
+  /** Absent for the crafting bonuses the game deliberately leaves unnamed. */
+  name?: string;
+  stats: Record<string, number | string>;
+  /** `lootRandomizerJitter` — the ± percentage the roll varies by. */
+  jitter?: number;
+}
+
 export interface DbFaction {
   /** Stable id: `f<n>` for the game's numbered user factions, else a slug. */
   id: string;
@@ -63,6 +150,13 @@ export interface DbFaction {
   hasVendor: boolean;
 }
 
+export interface DbReagent {
+  record: string;
+  /** Localized name, when the reagent resolves to a known item. */
+  name?: string;
+  quantity: number;
+}
+
 export interface DbRecipe {
   /** Blueprint record path (as stored in `formulas.gst`). */
   record: string;
@@ -72,6 +166,16 @@ export interface DbRecipe {
   resultName?: string;
   /** Record path of the crafted item. */
   resultRecord?: string;
+  /** Materials consumed besides `baseReagent` — what makes CRAFT advice checkable. */
+  reagents: DbReagent[];
+  /**
+   * The item consumed and upgraded. Present on upgrade recipes — an awakened
+   * blueprint takes the ordinary item as its base — and it is what makes "an
+   * awakened version of this exists" derivable, which is a HOLD signal.
+   */
+  baseReagent?: DbReagent;
+  /** Iron cost of one craft (`artifactCreationCost`, which the DBR stores as text). */
+  ironCost?: number;
 }
 
 export interface GameDb {
@@ -87,6 +191,31 @@ export interface GameDb {
    * game data, so "known but nameless" is a correct answer, not a lookup failure.
    */
   knowsAffix(record: string): boolean;
+  /** The affix record with its stats, for summing an item's real contribution. */
+  getAffix(record: string): DbAffix | undefined;
+  /**
+   * A fully indexed skill. Only mastery skills, devotion nodes, the buff records
+   * they hop to, and the skill-modifier records items reference get one — every
+   * other `records/skills/` path is name-only, via `skillName`.
+   */
+  getSkill(record: string): DbSkill | undefined;
+  getSet(record: string): DbSet | undefined;
+  /**
+   * Localized name for *any* skill record, so a `+N to <skill>` line never has to
+   * render a raw DBR path. Undefined when the record carries no display tag.
+   */
+  skillName(record: string): string | undefined;
+  /**
+   * The resistance penalty a difficulty applies, as raw `defensive*` field →
+   * negative amount. Read from the game's balancing record rather than assumed:
+   * the penalty differs per resistance and Physical takes none.
+   */
+  difficultyPenalty(difficulty: string): Record<string, number>;
+  /**
+   * Base armour absorption as a percentage (70). `+% Armor Absorption`
+   * multiplies it — 70 × 1.2 = 84 — so reporting a resulting figure needs it.
+   */
+  armorAbsorptionBase(): number;
   factions(): DbFaction[];
   /** Everything a faction vendor stocks up to and including `maxTier`. */
   vendorItems(factionId: string, maxTier: RepTier): DbItem[];
@@ -116,4 +245,9 @@ export interface DbStats {
   vendorFactions: number;
   vendorItems: number;
   recipes: number;
+  /** Skill records indexed with full per-rank stats. */
+  skills: number;
+  /** Every `records/skills/` path, name-only — what `skillName` can answer for. */
+  skillNames: number;
+  sets: number;
 }

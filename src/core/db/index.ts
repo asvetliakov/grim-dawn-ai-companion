@@ -21,7 +21,18 @@ import {
 import { buildDb, cleanText, readGameRecords, type NormalizedDb } from './build.js';
 import { clearCachedBuild, readCachedDb, writeCachedDb } from './cache.js';
 import { DEFAULT_LOCALE, availableLocales, readGameText } from './gametext.js';
-import { REP_TIERS, type DbFaction, type DbItem, type DbRecipe, type DbStats, type GameDb, type RepTier } from './types.js';
+import {
+  REP_TIERS,
+  type DbAffix,
+  type DbFaction,
+  type DbItem,
+  type DbRecipe,
+  type DbSet,
+  type DbSkill,
+  type DbStats,
+  type GameDb,
+  type RepTier,
+} from './types.js';
 
 export interface LoadDbOptions {
   /** Defaults to auto-detection; see `findGameDir`. */
@@ -94,11 +105,35 @@ export class NormalizedGameDb implements GameDb {
   }
 
   getAffixName(record: string): string | undefined {
-    return this.db.affixes[record] || undefined;
+    return this.db.affixes[record]?.name;
   }
 
   knowsAffix(record: string): boolean {
     return record in this.db.affixes;
+  }
+
+  getAffix(record: string): DbAffix | undefined {
+    return this.db.affixes[record];
+  }
+
+  getSkill(record: string): DbSkill | undefined {
+    return this.db.skills[record];
+  }
+
+  getSet(record: string): DbSet | undefined {
+    return this.db.sets[record];
+  }
+
+  skillName(record: string): string | undefined {
+    return this.db.skillNames[record]?.[0] || undefined;
+  }
+
+  difficultyPenalty(difficulty: string): Record<string, number> {
+    return this.db.difficultyPenalty[difficulty] ?? {};
+  }
+
+  armorAbsorptionBase(): number {
+    return this.db.armorAbsorptionBase;
   }
 
   factions(): DbFaction[] {
@@ -146,13 +181,16 @@ export class NormalizedGameDb implements GameDb {
       archives: this.db.archives,
       items: Object.keys(this.db.items).length,
       affixes: Object.keys(this.db.affixes).length,
-      namedAffixes: Object.values(this.db.affixes).filter((n) => n !== '').length,
+      namedAffixes: Object.values(this.db.affixes).filter((a) => a.name).length,
       localizedNames: this.db.localizedNames,
       l10nTags: Object.keys(this.db.l10n).length,
       factions: this.db.factions.length,
       vendorFactions: vendorFactions.length,
       vendorItems: vendorItems.size,
       recipes: this.db.recipes.length,
+      skills: Object.keys(this.db.skills).length,
+      skillNames: Object.keys(this.db.skillNames).length,
+      sets: Object.keys(this.db.sets).length,
     };
   }
 }

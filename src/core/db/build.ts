@@ -8,12 +8,23 @@
 
 import { readFileSync } from 'node:fs';
 
-import { num, readArz, str, strList, type ArzRecord } from './arz.js';
+import { num, readArz, str, strList, type ArzRecord, type ArzValue } from './arz.js';
 import type { GameArchive } from './gamefiles.js';
-import { REP_TIERS, type DbFaction, type DbItem, type DbRecipe, type RepTier } from './types.js';
+import {
+  REP_TIERS,
+  type DbAffix,
+  type DbFaction,
+  type DbItem,
+  type DbReagent,
+  type DbRecipe,
+  type DbSet,
+  type DbSkill,
+  type RepTier,
+  type StatValue,
+} from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 4;
+export const DB_SCHEMA_VERSION = 5;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -27,10 +38,23 @@ export interface NormalizedDb {
   archives: string[];
   items: Record<string, DbItem>;
   /**
-   * Affix record path → localized name. The value is `''` for affixes the game
-   * leaves unnamed (crafting bonuses); the key's presence still means "known".
+   * Affix record path → the affix. `name` is absent for the ones the game leaves
+   * unnamed (crafting bonuses); the key's presence still means "known".
    */
-  affixes: Record<string, string>;
+  affixes: Record<string, DbAffix>;
+  /** Fully indexed skills — mastery trees, devotion, and the records they point at. */
+  skills: Record<string, DbSkill>;
+  /**
+   * Every `records/skills/` path → `[localized name, template class]`, so a
+   * `+N to <skill>` reference always renders as a name. Two strings per record
+   * is cheap enough to hold all of them; full stats are the `skills` subset.
+   */
+  skillNames: Record<string, [string, string]>;
+  sets: Record<string, DbSet>;
+  /** Difficulty name → raw `defensive*` field → the (negative) penalty it takes. */
+  difficultyPenalty: Record<string, Record<string, number>>;
+  /** `armorDefensiveAbsorption` — the 70% every armour piece absorbs by default. */
+  armorAbsorptionBase: number;
   factions: DbFaction[];
   /** faction id → market tier → item record paths. */
   vendor: Record<string, Partial<Record<RepTier, string[]>>>;
@@ -42,22 +66,75 @@ export interface NormalizedDb {
 
 /**
  * Only these subtrees are decompressed. The archives hold ~82k records; items,
- * merchants and factions are the ~27k we have any use for, and skipping the rest
- * is most of the parse time.
+ * skills, merchants and factions are the ~41k we have any use for, and skipping
+ * the rest is most of the parse time.
  */
 const WANTED_PREFIXES = [
   'records/items/',
+  'records/skills/',
   'records/creatures/npcs/merchants/',
   'records/controllers/factions/',
   'records/game/gamefactions.dbr',
+  'records/game/balancingadjustment_mp+difficulty_players01.dbr',
+  'records/game/gameengine.dbr',
 ];
 
+/**
+ * Base armour absorption, as a percentage. `+% Armor Absorption` multiplies this
+ * rather than adding to it — 70 × 1.2 = 84, not 90 — so the base has to be known
+ * to report a resulting figure at all. Note `records/ingameui/gameengine.dbr` is
+ * a different record carrying a stale 66; this one is the live engine record.
+ */
+const GAME_ENGINE_RECORD = 'records/game/gameengine.dbr';
+const DEFAULT_ARMOR_ABSORPTION = 70;
+
 const GAME_FACTIONS_RECORD = 'records/game/gamefactions.dbr';
+
+/**
+ * The difficulty resistance penalty. It is *not* the flat "−25 / −50 to all
+ * resistances" the difficulty-select screen implies: this record spells out a
+ * different penalty per resistance, and Physical takes none at all. Reading it
+ * beats hardcoding a number that would be wrong for six of the ten columns.
+ */
+const DIFFICULTY_ADJUSTMENT_RECORD = 'records/game/balancingadjustment_mp+difficulty_players01.dbr';
+
+/**
+ * Its arrays are 12 long: three difficulties × four player counts (the record's
+ * name, `mp+difficulty`, says as much). Single-player is the first entry of each
+ * group of four; multiplayer scaling is not something this tool models.
+ */
+const DIFFICULTY_ROWS: readonly { difficulty: string; index: number }[] = [
+  { difficulty: 'Normal', index: 0 },
+  { difficulty: 'Elite', index: 4 },
+  { difficulty: 'Ultimate', index: 8 },
+];
 
 /** Template classes that represent something a character can actually hold. */
 const ITEM_CLASS = /^(Armor|Weapon|Item|OneShot_|QuestItem)/;
 /** Prefixes and suffixes; their display name lives in `lootRandomizerName`. */
 const AFFIX_CLASS = 'LootRandomizer';
+/** Set records leave `Class` empty, so the template is the only thing to key on. */
+const ITEM_SET_TEMPLATE = 'database/templates/itemset.tpl';
+
+/**
+ * Skill subtrees indexed with their full per-rank stats: the two mastery trees a
+ * character can pick and the devotion constellation. Everything else under
+ * `records/skills/` (monster skills, the potion tables) is name-only — plus
+ * whatever items point at, which `buildSkills` pulls in below.
+ */
+const DEEP_SKILL_PREFIX = /^records\/skills\/(playerclass\d+|devotion)\//;
+
+/**
+ * Pets are out of scope (see the stage plan's exclusion list) and they are also
+ * most of the data: the `pets/` subtrees carry a per-pet copy of every summon's
+ * scaling table and account for four fifths of the skill bytes on their own.
+ */
+const PET_SKILL_PATH = /\/pets\//;
+/** …and `SkillTree`, which is an ordered list of buttons with no stats at all. */
+const UNINDEXED_SKILL_CLASS = /^(Pet|PetPlayerScaling|SkillTree|Skill.*Pet.*)$/;
+
+/** Fields on an item or affix that name a skill record worth indexing deeply. */
+const SKILL_REFERENCE_KEYS = /^(itemSkillName|augmentSkillName\d*|augmentMasteryName\d*|modifiedSkillName\d*|modifierSkillName\d*)$/;
 
 export interface GameRecords {
   records: Map<string, ArzRecord>;
@@ -153,6 +230,58 @@ function extractStats(fields: Record<string, unknown>): Record<string, number | 
   return stats;
 }
 
+/** Fields modelled explicitly on `DbSkill`, or pure UI/audio plumbing. */
+const NON_SKILL_STAT_KEYS = new Set<string>([
+  'templateName',
+  'Class',
+  'FileDescription',
+  'ActorName',
+  'skillDisplayName',
+  'skillBaseDescription',
+  'skillTier',
+  'skillMaxLevel',
+  'skillUltimateLevel',
+  'skillCooldownTime',
+  'skillActiveDuration',
+  'buffSkillName',
+  'characterBaseAttackSpeedTag',
+  'distanceProfile',
+  'skillConnectionOn',
+  'skillConnectionOff',
+]);
+
+/** Presentation keys, matched by shape because the game names them freely. */
+const SKILL_PRESENTATION_KEY = /(bitmap|sound|texture|animation|anim$|^camera|particle|^charFxPak|^skillCastAura|fxpak)/i;
+
+/**
+ * A skill's stats, keeping the per-rank arrays the item extractor drops.
+ *
+ * The arrays *are* the point: `characterOffensiveAbility = [10,20,29,…]` is
+ * worth nothing collapsed to a scalar, because a skill's contribution to a
+ * resistance total depends on the rank the character actually has it at.
+ * All-zero arrays go the way of zero scalars — the template declaring a field is
+ * not the skill granting it.
+ */
+export function extractSkillStats(fields: Record<string, ArzValue>): Record<string, StatValue> {
+  const stats: Record<string, StatValue> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (NON_SKILL_STAT_KEYS.has(key)) continue;
+    if (SKILL_PRESENTATION_KEY.test(key)) continue;
+    if (typeof value === 'number') {
+      if (value !== 0) stats[key] = value;
+    } else if (typeof value === 'string') {
+      if (value === '' || ASSET_VALUE.test(value)) continue;
+      if (value.endsWith('.dbr') && !MEANINGFUL_RECORD_KEY.test(key)) continue;
+      stats[key] = value;
+    } else if (Array.isArray(value) && typeof value[0] === 'number') {
+      const ranks = value as number[];
+      if (ranks.some((v) => v !== 0)) stats[key] = ranks;
+    }
+    // String arrays at this point are asset lists; nothing numeric to aggregate.
+  }
+  return stats;
+}
+
 // ---------------------------------------------------------------------------
 // Build
 // ---------------------------------------------------------------------------
@@ -205,19 +334,34 @@ export function buildDb(input: BuildInput): NormalizedDb {
     return text === undefined ? undefined : cleanText(text);
   };
 
+  const skillNames = buildSkillNames(records, localize);
+
   const items: Record<string, DbItem> = {};
-  const affixes: Record<string, string> = {};
+  const affixes: Record<string, DbAffix> = {};
+  // Skill records items and affixes point at. They are indexed deeply too, so an
+  // awakened item's modifier payload or a rune's granted skill is renderable.
+  const referencedSkills = new Set<string>();
   let localizedNames = 0;
 
   for (const [path, rec] of records) {
     if (!path.startsWith('records/items/')) continue;
     const cls = str(rec, 'Class') ?? rec.type;
 
+    for (const [key, value] of Object.entries(rec.fields)) {
+      if (!SKILL_REFERENCE_KEYS.test(key)) continue;
+      if (typeof value === 'string' && value.startsWith('records/skills/')) referencedSkills.add(value);
+    }
+
     if (cls === AFFIX_CLASS) {
       // Crafting-bonus affixes have no `lootRandomizerName` at all — the game
-      // shows their stats inline rather than a name. Recording them as `''`
+      // shows their stats inline rather than a name. Recording them without one
       // keeps "nameless by design" distinguishable from "missing".
-      affixes[path] = localize(str(rec, 'lootRandomizerName')) ?? '';
+      const affix: DbAffix = { record: path, stats: extractStats(rec.fields) };
+      const name = localize(str(rec, 'lootRandomizerName'));
+      if (name) affix.name = name;
+      const jitter = num(rec, 'lootRandomizerJitter');
+      if (jitter) affix.jitter = jitter;
+      affixes[path] = affix;
       continue;
     }
     if (!ITEM_CLASS.test(cls)) continue;
@@ -243,6 +387,11 @@ export function buildDb(input: BuildInput): NormalizedDb {
     const setRecord = str(rec, 'itemSetName');
     const setName = setRecord ? localize(str(records.get(setRecord), 'setName')) : undefined;
     if (setName) item.setName = setName;
+    if (setRecord && records.has(setRecord)) item.setRecord = setRecord;
+
+    const granted = str(rec, 'itemSkillName');
+    const grantedName = granted ? skillNames[granted]?.[0] : undefined;
+    if (granted && grantedName) item.grantedSkill = { record: granted, name: grantedName };
 
     const expansion = expansions.get(path);
     if (expansion) item.expansion = expansion;
@@ -253,6 +402,11 @@ export function buildDb(input: BuildInput): NormalizedDb {
     items[path] = item;
   }
 
+  const skills = buildSkills(records, skillNames, referencedSkills, localize);
+  const sets = buildSets(records, localize);
+  const difficultyPenalty = buildDifficultyPenalty(records);
+  const armorAbsorptionBase =
+    num(records.get(GAME_ENGINE_RECORD), 'armorDefensiveAbsorption') ?? DEFAULT_ARMOR_ABSORPTION;
   const { factions, vendor } = buildFactions(records, items, localize);
   const recipes = buildRecipes(records, items);
 
@@ -266,6 +420,11 @@ export function buildDb(input: BuildInput): NormalizedDb {
     archives: input.archives,
     items,
     affixes,
+    skills,
+    skillNames,
+    sets,
+    difficultyPenalty,
+    armorAbsorptionBase,
     factions,
     vendor,
     recipes,
@@ -276,6 +435,197 @@ export function buildDb(input: BuildInput): NormalizedDb {
 
 function recordStem(path: string): string {
   return path.split('/').pop()?.replace(/\.dbr$/, '') ?? path;
+}
+
+// ---------------------------------------------------------------------------
+// Skills
+// ---------------------------------------------------------------------------
+
+type Localize = (tag: string | undefined) => string | undefined;
+
+/**
+ * Name and class for every skill record in the game.
+ *
+ * Two strings per record is cheap, and holding all of them is what guarantees
+ * that a `+N to <skill>` line — which may point anywhere, including another
+ * mastery the character has not taken — renders as a name rather than a path.
+ */
+function buildSkillNames(
+  records: Map<string, ArzRecord>,
+  localize: Localize,
+): Record<string, [string, string]> {
+  const names: Record<string, [string, string]> = {};
+  for (const [path, rec] of records) {
+    if (!path.startsWith('records/skills/')) continue;
+    const name = localize(str(rec, 'skillDisplayName')) ?? '';
+    names[path] = [name, str(rec, 'Class') ?? rec.type];
+  }
+  return names;
+}
+
+/**
+ * `records/skills/playerclass04/x.dbr` → that mastery's training record, which
+ * is what a `+N to all <mastery> skills` bonus names.
+ */
+function masteryOf(path: string): string | undefined {
+  const match = /^records\/skills\/(playerclass(\d+))\//.exec(path);
+  return match ? `records/skills/${match[1]}/_classtraining_class${match[2]}.dbr` : undefined;
+}
+
+/**
+ * Weapon fields on a skill record. When *any* of them is set the skill is
+ * restricted to those weapons; all-zero means it fires with anything. Only a
+ * dozen or so player skills are restricted, but they are build-defining ones,
+ * and advising a weapon swap that silently disables the main attack is the worst
+ * answer this tool could give.
+ */
+const WEAPON_FIELDS = [
+  'Axe',
+  'Axe2h',
+  'Dagger',
+  'Mace',
+  'Mace2h',
+  'Magical',
+  'Offhand',
+  'Ranged1h',
+  'Ranged2h',
+  'Scepter',
+  'Shield',
+  'Spear',
+  'Staff',
+  'Sword',
+  'Sword2h',
+] as const;
+
+/**
+ * Index the skills worth full per-rank stats: the mastery trees, devotion, every
+ * record an item or affix points at, and — one hop further — the `buffSkillName`
+ * target of each of those. That last hop is not optional: a toggled aura's
+ * activator record holds nothing but the pointer, so without it Veil of Shadows
+ * and every other toggle would contribute zero.
+ */
+function buildSkills(
+  records: Map<string, ArzRecord>,
+  skillNames: Record<string, [string, string]>,
+  referenced: Set<string>,
+  localize: Localize,
+): Record<string, DbSkill> {
+  const inScope = (path: string): boolean =>
+    !PET_SKILL_PATH.test(path) && !UNINDEXED_SKILL_CLASS.test(skillNames[path]?.[1] ?? '');
+
+  const wanted = new Set<string>([...referenced].filter(inScope));
+  for (const path of Object.keys(skillNames)) {
+    if (DEEP_SKILL_PREFIX.test(path) && inScope(path)) wanted.add(path);
+  }
+  for (const path of [...wanted]) {
+    const buff = str(records.get(path), 'buffSkillName');
+    if (buff) wanted.add(buff);
+  }
+
+  const skills: Record<string, DbSkill> = {};
+  for (const path of wanted) {
+    const rec = records.get(path);
+    if (!rec) continue;
+
+    const skill: DbSkill = {
+      record: path,
+      class: str(rec, 'Class') ?? rec.type,
+      stats: extractSkillStats(rec.fields),
+    };
+    const name = skillNames[path]?.[0];
+    if (name) skill.name = name;
+
+    const assign = <K extends 'tier' | 'maxLevel' | 'ultimateLevel' | 'cooldown' | 'duration'>(
+      key: K,
+      value: number | undefined,
+    ): void => {
+      if (value !== undefined && value !== 0) skill[key] = value;
+    };
+    assign('tier', num(rec, 'skillTier'));
+    assign('maxLevel', num(rec, 'skillMaxLevel'));
+    assign('ultimateLevel', num(rec, 'skillUltimateLevel'));
+    assign('cooldown', num(rec, 'skillCooldownTime'));
+    assign('duration', num(rec, 'skillActiveDuration'));
+
+    const buff = str(rec, 'buffSkillName');
+    if (buff) skill.buffRecord = buff;
+
+    const mastery = masteryOf(path);
+    if (mastery && records.has(mastery)) skill.mastery = mastery;
+
+    const weapons = WEAPON_FIELDS.filter((field) => num(rec, field));
+    if (weapons.length) skill.weapons = [...weapons];
+
+    const description = localize(str(rec, 'skillBaseDescription'));
+    if (description) skill.description = description;
+
+    skills[path] = skill;
+  }
+  return skills;
+}
+
+// ---------------------------------------------------------------------------
+// Item sets
+// ---------------------------------------------------------------------------
+
+/** Set-record fields that describe the set rather than grant anything. */
+const NON_SET_BONUS_KEYS = new Set<string>([
+  'templateName',
+  'Class',
+  'FileDescription',
+  'setName',
+  'setMembers',
+  'setDescription',
+  'setSize',
+  'itemLevel',
+  'characterBaseAttackSpeedTag',
+]);
+
+function buildSets(records: Map<string, ArzRecord>, localize: Localize): Record<string, DbSet> {
+  const sets: Record<string, DbSet> = {};
+  for (const [path, rec] of records) {
+    if (str(rec, 'templateName') !== ITEM_SET_TEMPLATE) continue;
+    const members = strList(rec, 'setMembers');
+    const bonuses: Record<string, StatValue> = {};
+    for (const [key, value] of Object.entries(rec.fields)) {
+      if (NON_SET_BONUS_KEYS.has(key)) continue;
+      if (typeof value === 'number') {
+        if (value !== 0) bonuses[key] = value;
+      } else if (typeof value === 'string') {
+        if (value !== '' && !ASSET_VALUE.test(value)) bonuses[key] = value;
+      } else if (Array.isArray(value) && typeof value[0] === 'number') {
+        const byPieces = value as number[];
+        if (byPieces.some((v) => v !== 0)) bonuses[key] = byPieces;
+      }
+    }
+    sets[path] = {
+      record: path,
+      name: localize(str(rec, 'setName')) ?? str(rec, 'FileDescription') ?? recordStem(path),
+      members,
+      bonuses,
+    };
+  }
+  return sets;
+}
+
+/**
+ * The per-difficulty resistance penalty, straight from the game's own balancing
+ * record. Every negative entry is kept; a resistance the table leaves at zero
+ * genuinely takes no penalty.
+ */
+function buildDifficultyPenalty(records: Map<string, ArzRecord>): Record<string, Record<string, number>> {
+  const rec = records.get(DIFFICULTY_ADJUSTMENT_RECORD);
+  const out: Record<string, Record<string, number>> = {};
+  for (const { difficulty, index } of DIFFICULTY_ROWS) {
+    const row: Record<string, number> = {};
+    for (const [key, value] of Object.entries(rec?.fields ?? {})) {
+      if (!key.startsWith('defensive') || !Array.isArray(value)) continue;
+      const amount = value[index];
+      if (typeof amount === 'number' && amount !== 0) row[key] = amount;
+    }
+    out[difficulty] = row;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,19 +740,48 @@ function factionName(
 // Blueprints
 // ---------------------------------------------------------------------------
 
+/**
+ * Blueprints, with what they consume.
+ *
+ * `ItemAscensionFormula` is deliberately not here: it crafts nothing specific,
+ * rolling a random affix from weighted per-slot tables instead, so it has no
+ * "result" to name and no advice to support beyond "ascension is a gamble".
+ */
 function buildRecipes(records: Map<string, ArzRecord>, items: Record<string, DbItem>): DbRecipe[] {
   const recipes: DbRecipe[] = [];
   for (const [path, rec] of records) {
     if ((str(rec, 'Class') ?? rec.type) !== 'ItemArtifactFormula') continue;
     const item = items[path];
     if (!item) continue;
+
+    const reagent = (prefix: string): DbReagent | undefined => {
+      const record = str(rec, `${prefix}BaseName`);
+      if (!record) return undefined;
+      const entry: DbReagent = { record, quantity: num(rec, `${prefix}Quantity`) ?? 1 };
+      const name = items[record]?.name;
+      if (name) entry.name = name;
+      return entry;
+    };
+
     const resultRecord = str(rec, 'artifactName');
-    const recipe: DbRecipe = { record: path, name: item.name };
+    const recipe: DbRecipe = { record: path, name: item.name, reagents: [] };
     if (resultRecord) {
       recipe.resultRecord = resultRecord;
       const result = items[resultRecord];
       if (result) recipe.resultName = result.name;
     }
+
+    const base = reagent('reagentBase');
+    if (base) recipe.baseReagent = base;
+    for (let i = 1; ; i++) {
+      const next = reagent(`reagent${i}`);
+      if (!next) break;
+      recipe.reagents.push(next);
+    }
+    // The DBR stores the iron cost as text ("200000"), not a number.
+    const cost = Number(str(rec, 'artifactCreationCost') ?? num(rec, 'artifactCreationCost'));
+    if (Number.isFinite(cost) && cost > 0) recipe.ironCost = cost;
+
     recipes.push(recipe);
   }
   recipes.sort((a, b) => a.name.localeCompare(b.name));

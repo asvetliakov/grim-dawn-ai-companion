@@ -176,6 +176,12 @@ export interface CharacterSave {
   equipment: (EquippedItem | null)[];
   weaponSet1: (EquippedItem | null)[];
   weaponSet2: (EquippedItem | null)[];
+  /**
+   * Which weapon set the character is holding: false = set 1, true = set 2.
+   * Only the held set contributes to any stat total, so an aggregate that
+   * assumed set 1 would be wrong for every player who swaps.
+   */
+  alternateWeaponSetActive: boolean;
   inventorySacks: PositionedItem[][];
   personalStash: StashTab[];
   factions: FactionRep[];
