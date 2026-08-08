@@ -11,12 +11,15 @@ Stage 5B produces the markdown context document (with item IDs). This stage send
 **Verified invocation contract** (do not deviate without re-verifying against `claude --help`):
 
 ```
-claude -p --output-format json --model sonnet \
+claude -p --output-format json --model opus --effort high \
   --tools "" --no-session-persistence \
   --system-prompt "<advisor persona>"
 ```
 
-- Context doc goes over **stdin** (a 20k-token doc exceeds ARG_MAX comfort as an argument).
+- **Pin both `--model` and `--effort`.** Without them the subprocess inherits whatever the user's interactive session or settings happen to specify, which makes two runs of `advise` on the same save silently incomparable. `opus` / `high` are the defaults for this tool (confirmed against `claude --help` on v2.1.220: `--effort <low|medium|high|xhigh|max>`); both belong in `settings.json` (`model`, `effort`) so they are changeable without a code edit, and `advise --model` / `--effort` override per run. Record the resolved pair in `AdvisorResult` so the output says what produced it.
+- `xhigh` is worth *measuring* against `high` on the same document rather than assuming: this is a lookup-and-compare task over facts §2–§10 already state, not a search problem. If the recommendations do not change, `high` is the right default.
+- Context doc goes over **stdin** (a ~36k-token doc far exceeds ARG_MAX as an argument).
+- Stage 5B's builder takes a token budget; **pass one explicitly** rather than inheriting the default, so the prompt size is a property of this stage's contract.
 - `--output-format json` → single JSON envelope on stdout; the answer is its `result` field (also has cost/usage fields — surface them).
 - `--tools ""` disables tool use → pure one-shot completion. `--no-session-persistence` avoids polluting session history.
 - **Never use `--bare`** — it disables the OAuth/keychain auth the subscription depends on.

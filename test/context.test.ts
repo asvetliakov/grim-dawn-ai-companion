@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-import { buildContextDoc, type ContextInput } from '../src/core/context/builder.js';
+import { buildContextDoc, DEFAULT_MAX_TOKENS, type ContextInput } from '../src/core/context/builder.js';
 import { damageIdentity, equipGroup, estimateTokens, selectCandidates } from '../src/core/context/filters.js';
 import { describeSlots, formatStats } from '../src/core/context/statfmt.js';
 import type { DbItem, GameDb } from '../src/core/db/types.js';
@@ -339,8 +339,13 @@ const skipReason = !haveSaves()
     ? MISSING_GAME_MESSAGE
     : 'transfer.gst / formulas.gst not found';
 
-/** The budget the plan sets, and what the CLI defaults to. */
-const TOKEN_BUDGET = 30_000;
+/**
+ * The plan's original ceiling. It is no longer the default — the document is
+ * bounded by the candidate level window rather than by a budget — but the
+ * builder must still be able to hit it on demand, because a tighter budget is
+ * exactly what a smaller-context provider would ask for.
+ */
+const PLAN_TOKEN_BUDGET = 30_000;
 
 async function context(character: string, difficulty?: 'Normal' | 'Elite' | 'Ultimate'): Promise<ContextInput> {
   const db = await gameDb();
@@ -366,14 +371,25 @@ function tableRow(markdown: string, label: string): number[] | undefined {
 }
 
 describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReason})`, () => {
-  it('emits all eleven sections inside the token budget', async () => {
+  it('emits all eleven sections inside the default budget, untrimmed', async () => {
     const doc = buildContextDoc(await context('_Suchka'));
     for (let n = 2; n <= 11; n++) {
       expect(doc.markdown, `section ${n}`).toContain(`\n## ${n}. `);
     }
     expect(doc.markdown.startsWith('# Suchka — level ')).toBe(true);
-    expect(doc.tokenEstimate).toBeLessThanOrEqual(TOKEN_BUDGET);
     expect(doc.tokenEstimate).toBe(estimateTokens(doc.markdown));
+    expect(doc.tokenEstimate).toBeLessThanOrEqual(DEFAULT_MAX_TOKENS);
+    // The window, not the budget, is what bounds an ordinary character's
+    // document — so nothing should be given up at the default settings.
+    expect(doc.trimmed).toEqual([]);
+  });
+
+  it('still fits the plan’s 30k ceiling when asked to', async () => {
+    const doc = buildContextDoc(await context('_Suchka'), { maxTokens: PLAN_TOKEN_BUDGET });
+    expect(doc.tokenEstimate).toBeLessThanOrEqual(PLAN_TOKEN_BUDGET);
+    for (let n = 2; n <= 11; n++) {
+      expect(doc.markdown, `section ${n}`).toContain(`\n## ${n}. `);
+    }
   });
 
   it('renders the resistance matrix with exactly the aggregate’s numbers', async () => {
@@ -522,6 +538,6 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
   it('works for a low-level character with almost nothing on', async () => {
     const doc = buildContextDoc(await context('_abcdef'));
     expect(doc.markdown).toContain('\n## 11. Task');
-    expect(doc.tokenEstimate).toBeLessThanOrEqual(TOKEN_BUDGET);
+    expect(doc.tokenEstimate).toBeLessThanOrEqual(PLAN_TOKEN_BUDGET);
   });
 });

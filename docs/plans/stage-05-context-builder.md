@@ -49,7 +49,7 @@ test/context.test.ts
 
 ## Acceptance criteria
 
-1. `npm run cli -- context --char _Suchka` emits well-formed markdown with all 11 sections; token estimate printed and ≤ 30k.
+1. `npm run cli -- context --char _Suchka` emits well-formed markdown with all 11 sections; token estimate printed and ≤ the budget. *(Amended during the stage: the default budget is 100k and the document lands at ~36k untrimmed — see the Outcome. A test still asserts it fits 30k when a caller asks for that.)*
 2. The resistance matrix in the doc matches `aggregates --char _Suchka` exactly (same numbers, one renderer test asserts this).
 3. Section 9 lists **only** factions/tiers the save's rep values actually reach (unit test at exact threshold boundaries: 1500 vs 1501), each augment with a use-on restriction.
 4. Difficulty: auto-detected value shown; `--difficulty elite` (names and 0/1/2 accepted) overrides and is reflected in header, matrix cap math, and task section.
@@ -82,7 +82,9 @@ Done. `npm run cli -- context --char _Suchka` emits the eleven sections at **~29
 
 **The candidate ranking is lexicographic, not additive.** The plan's order ("covers-a-shortfall > matches top-2 damage types > rarity > level proximity") is a strict priority, and a summed score let two rarity steps outrank a resistance hole. Weights now step by orders of magnitude. `damageIdentity` also tracks min and max separately rather than the aggregate's midpoint, since §7 quotes the range a player would see.
 
-**Token budget: the plan's 30k is a *floor*, not a ceiling on what exists.** The whole reachable candidate set — every gear item in the −25/+10 level window, uncapped — costs **~36k tokens**; the document cannot grow past that without widening the window itself. So `--max-tokens` and `--candidates` are CLI options: the default stays 30,000 (one trim step, 5 candidates per slot), and `--max-tokens 45000 --candidates 40` renders everything with nothing trimmed. Stage 6 should pass its own budget rather than inherit the default.
+**The token gate turned out to be the wrong shape, and the defaults moved.** The plan's 30k was written as a ceiling; measurement showed it is a *floor* on what the document is worth. The whole reachable candidate set — every gear item in the −25/+10 level window, with no per-slot cap — costs **~36k tokens**, and the document cannot grow past that without widening the window itself. At 30k the gate was therefore discarding real candidates (8 → 5 per slot, 22 main-hand weapons unlisted) to hit a number nothing was paying for, while the receiving model has a 1M-token window.
+
+So the defaults are now `maxTokens: 100_000` and `perGroup: 40`, and `_Suchka`'s document renders at ~36.2k with **nothing trimmed**. The budget is a safety net for the hoarder case — a transfer stash several times the test character's, where the cap does bite — not a target. The trim ladder (12 → 8 → 5 → 3, then compress §10, then §8) is unchanged and still never touches the matrix, the skills or the equipped blocks. `--max-tokens` / `--candidates` remain CLI options, and a test asserts the builder can still hit the plan's 30k on demand, since a smaller-context provider would ask for exactly that. Stage 6 should pass its own budget rather than inherit either number.
 
 **§11 asks for a full projected "after" summary, not just resistances.** The plan named a projected resistance table; a swap also moves armour (one body part at a time), health, OA/DA, attribute totals — and therefore whether the *rest* of the loadout still meets its requirements — the damage profile, and skill ranks (which shift every stat read at that rank, including resistances already counted). All are now required of the advisor, with an instruction to say when a figure is not derivable from the document rather than estimating silently.
 

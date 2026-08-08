@@ -9,7 +9,7 @@
 import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { Command } from 'commander';
 
-import { buildContextDoc } from '../core/context/builder.js';
+import { buildContextDoc, DEFAULT_MAX_TOKENS, DEFAULT_PER_GROUP } from '../core/context/builder.js';
 import { loadGameDb } from '../core/db/index.js';
 import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
 import { createIconService } from '../core/icons/index.js';
@@ -888,8 +888,8 @@ program
   .option('-c, --char <name>', 'character directory name under <saveDir>/main')
   .option('--difficulty <d>', 'Normal | Elite | Ultimate (or 0/1/2); default: the character’s current one')
   .option('-o, --out <file>', 'write the document here instead of stdout')
-  .option('--max-tokens <n>', 'token budget the document is trimmed to fit', '30000')
-  .option('--candidates <n>', 'candidates per equipment slot before trimming', '8')
+  .option('--max-tokens <n>', 'token budget the document is trimmed to fit', String(DEFAULT_MAX_TOKENS))
+  .option('--candidates <n>', 'candidates per equipment slot before trimming', String(DEFAULT_PER_GROUP))
   .option('--refresh', 'rebuild the database first')
   .action(
     async (opts: {
@@ -936,7 +936,7 @@ program
         console.error(`~${doc.tokenEstimate.toLocaleString('en-US')} tokens (budget ${Number(opts.maxTokens).toLocaleString('en-US')})`);
         for (const note of doc.trimmed) console.error(`  trimmed: ${note}`);
         if (doc.trimmed.length) {
-          console.error('  raise --max-tokens (and --candidates) to keep them; the untrimmed document is bounded by the level window, not by the caps');
+          console.error('  raise --max-tokens to keep them — the untrimmed document is bounded by the candidate level window, not by this budget');
         }
       });
     },

@@ -54,6 +54,28 @@ export interface ContextOptions {
   perGroup?: number;
 }
 
+/**
+ * The default budget is a **safety net, not a target**.
+ *
+ * The document's real size is bounded by the level window in `filters.ts`, not
+ * by this number: everything a normally-stocked character can reach comes to
+ * roughly 36k tokens, and no budget above that changes the file at all. What
+ * the headroom buys is the hoarder case — a transfer stash five times the size
+ * of the test character's — where the per-slot cap would otherwise start
+ * discarding real candidates to hit a number nobody is paying for. Trimming a
+ * candidate is a genuine loss of information, so it should happen only when the
+ * prompt would actually be too large to reason over, and the receiving model
+ * here has a 1M-token window.
+ */
+export const DEFAULT_MAX_TOKENS = 100_000;
+
+/**
+ * Candidates per slot before any trimming. High enough to be no constraint on
+ * an ordinary stash — the level window has already done the filtering — while
+ * still bounding the pathological case.
+ */
+export const DEFAULT_PER_GROUP = 40;
+
 export interface ContextDoc {
   markdown: string;
   tokenEstimate: number;
@@ -63,12 +85,16 @@ export interface ContextDoc {
   itemIds: Map<string, string>;
 }
 
-/** Candidate caps the token gate steps down through. */
-const CAP_LADDER = [8, 5, 3];
+/**
+ * Candidate caps the token gate steps down through when a document really is
+ * too big. Entries at or above the starting cap are skipped, so an explicit
+ * `--candidates 5` never widens back out to 12.
+ */
+const CAP_LADDER = [12, 8, 5, 3];
 
 export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}): ContextDoc {
-  const maxTokens = opts.maxTokens ?? 30_000;
-  const startCap = opts.perGroup ?? CAP_LADDER[0]!;
+  const maxTokens = opts.maxTokens ?? DEFAULT_MAX_TOKENS;
+  const startCap = opts.perGroup ?? DEFAULT_PER_GROUP;
 
   // Progressive tightening, cheapest loss first. The matrix, the skills and the
   // equipped blocks are never touched — they are the parts a swap is judged on.
