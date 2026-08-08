@@ -202,6 +202,35 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
     expect(db.stats().itemsWithAttrReq).toBeGreaterThan(5_000);
   });
 
+  it('types the use-on restriction on components and augments', { timeout: BUILD_TIMEOUT }, async () => {
+    const db = await gameDb();
+
+    // Attuned Lodestone fits amulets and medals, nothing else.
+    const lodestone = db.getItem('records/items/materia/compb_lodestone.dbr');
+    expect(lodestone?.slot).toBe('ItemRelic');
+    expect(lodestone?.allowedSlots).toEqual(['amulet', 'medal']);
+
+    // Seal of Might is weapons-and-shield; proposing it for armor is illegal.
+    const seal = db.getItem('records/items/materia/compa_sealmight.dbr');
+    expect(seal?.allowedSlots).toContain('sword');
+    expect(seal?.allowedSlots).toContain('shield');
+    expect(seal?.allowedSlots).not.toContain('chest');
+
+    // A faction augment: jewelry only.
+    const augment = db.getItem('records/items/enchants/b17a_enchant.dbr');
+    expect(augment?.slot).toBe('ItemEnchantment');
+    expect(augment?.allowedSlots).toEqual(['amulet', 'ring']);
+
+    // The flags left `stats` — kept there they read as junk stat lines and
+    // would inflate nothing but the advisor context.
+    for (const item of [lodestone, seal, augment]) {
+      expect(Object.keys(item!.stats)).not.toContain('amulet');
+      expect(Object.keys(item!.stats)).not.toContain('sword');
+    }
+    // 107 components + the augments; gear never carries the field.
+    expect(db.stats().socketables).toBeGreaterThan(450);
+  });
+
   it('knows crafting-bonus affixes even though they have no name', { timeout: BUILD_TIMEOUT }, async () => {
     const db = await gameDb();
     const crafting = 'records/items/lootaffixes/crafting/ao306_poison.dbr';

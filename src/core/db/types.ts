@@ -91,6 +91,13 @@ export interface DbItem {
    * one stat; the resolver adds `attrReqPerStat × (statCount − 1)`.
    */
   attrReqPerStat?: AttrRequirements;
+  /**
+   * Components (`ItemRelic`) and augments (`ItemEnchantment`) only: the use-on
+   * restriction, as the record's raw slot-flag field names (`amulet`, `sword2h`,
+   * `offhand`, …). A socketable may only be applied to gear these flags accept —
+   * advice that ignores this proposes illegal moves. Gear items never carry it.
+   */
+  allowedSlots?: string[];
 }
 
 /**
@@ -283,4 +290,6 @@ export interface DbStats {
   sets: number;
   /** Items whose cost equations produced an attribute requirement. */
   itemsWithAttrReq: number;
+  /** Components + augments carrying a typed use-on restriction (`allowedSlots`). */
+  socketables: number;
 }

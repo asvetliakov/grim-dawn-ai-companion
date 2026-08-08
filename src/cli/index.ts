@@ -301,6 +301,7 @@ program
         console.log(`  localization   ${s.l10nTags.toLocaleString('en-US')} tags`);
         console.log(`  item names     ${s.localizedNames.toLocaleString('en-US')}/${s.items.toLocaleString('en-US')} localized (${pct}%)`);
         console.log(`  attribute reqs ${s.itemsWithAttrReq.toLocaleString('en-US')} items (from cost equations; medals and cost-less gear have none)`);
+        console.log(`  socketables    ${s.socketables.toLocaleString('en-US')} components/augments with use-on slot restrictions`);
         console.log('\nFactions');
         for (const f of db.factions()) {
           const stock = f.hasVendor ? `${db.vendorItems(f.id, 'Revered').length} items` : '—';

@@ -26,7 +26,7 @@ import {
 } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 6;
+export const DB_SCHEMA_VERSION = 7;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -224,6 +224,42 @@ const NON_STAT_KEYS = new Set<string>([
   'lootRandomizerWeight',
   'marketAdjustmentPercent',
 ]);
+
+/**
+ * Use-on slot flags on component (`ItemRelic`) and augment (`ItemEnchantment`)
+ * records — boolean template fields, value 1 when the socketable fits that gear
+ * family, spelled out at zero (and so dropped) otherwise. Verified against the
+ * installed archives: exactly these 23 keys occur, only on those two classes,
+ * never with a value other than 1. They move to `DbItem.allowedSlots` rather
+ * than staying in `stats`, where they would read as junk stat lines.
+ */
+const SLOT_FLAG_KEYS = [
+  'amulet',
+  'medal',
+  'ring',
+  'head',
+  'chest',
+  'shoulders',
+  'hands',
+  'legs',
+  'feet',
+  'waist',
+  'offhand',
+  'shield',
+  'sword',
+  'sword2h',
+  'axe',
+  'axe2h',
+  'mace',
+  'mace2h',
+  'dagger',
+  'scepter',
+  'spear2h',
+  'ranged1h',
+  'ranged2h',
+] as const;
+
+const SOCKETABLE_CLASSES = new Set(['ItemRelic', 'ItemEnchantment']);
 
 /** Asset references — meaningless to an advisor, and they dominate the byte count. */
 const ASSET_VALUE = /\.(tex|msh|anm|wav|pfx|tpl|fnt|ssh|lua)$/i;
@@ -512,6 +548,14 @@ export function buildDb(input: BuildInput): NormalizedDb {
       stats: extractStats(rec.fields),
       ...buildAttrRequirements(rec, cls, records),
     };
+
+    // Socketables: lift the use-on flags out of `stats` into the typed field.
+    // Presence implies 1 — `extractStats` already dropped the zeroed flags.
+    if (SOCKETABLE_CLASSES.has(cls)) {
+      const allowed = SLOT_FLAG_KEYS.filter((key) => item.stats[key] !== undefined);
+      for (const key of allowed) delete item.stats[key];
+      if (allowed.length > 0) item.allowedSlots = allowed;
+    }
 
     const setRecord = str(rec, 'itemSetName');
     const setName = setRecord ? localize(str(records.get(setRecord), 'setName')) : undefined;
