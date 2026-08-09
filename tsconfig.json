@@ -16,5 +16,6 @@
     "noEmit": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "electron.vite.config.ts"],
+  "exclude": ["src/renderer"]
 }

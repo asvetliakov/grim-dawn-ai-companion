@@ -79,6 +79,28 @@ export function isReplacement(verdict: Verdict): boolean {
   return verdict === 'EQUIP';
 }
 
+/**
+ * What a mechanical check found wrong with a plan. Defined here rather than in
+ * `verify.ts` (which re-exports it) because it is part of the plan's public
+ * vocabulary: a stored advice envelope carries these, and that envelope has to
+ * be describable from the renderer, where nothing may reach a module that
+ * imports `node:fs`.
+ */
+export type PlanWarningKind =
+  | 'unknown-id'
+  | 'unknown-socketable'
+  | 'missing-target'
+  | 'destroyed-host'
+  | 'illegal-socket'
+  | 'ambiguous-stat'
+  | 'name-mismatch'
+  | 'unjustified-hold';
+
+export interface PlanWarning {
+  kind: PlanWarningKind;
+  message: string;
+}
+
 /** The `Slot | Current | New | Action | Gains / Costs | Why` row for one verdict. */
 export interface VerdictRow {
   slot: string;
@@ -213,6 +235,23 @@ export const advisorPlanSchema = z.object({
     .array(
       z.object({
         itemId: z.string(),
+        itemName: z.string().optional(),
+        /**
+         * What the hold is *for*.
+         *
+         * A hold is a recommendation, not a status: "keep this, because on the
+         * day the threshold is met you will put it on". Being unequippable is
+         * neither necessary nor sufficient for that, and a plan without these
+         * fields cannot tell the two apart — which is how every over-levelled
+         * item in a stash ends up marked HOLD. `slot` says where it goes,
+         * `beats` names the item it would displace (absent when the slot is
+         * empty), and `gains` is what it wins by. Optional in the schema so an
+         * older stored answer still validates; `checkPlan` reports their
+         * absence rather than the parser rejecting it.
+         */
+        slot: z.string().optional(),
+        beats: z.string().optional(),
+        gains: z.array(z.string()).optional(),
         reason: z.string().default(''),
         /** "level 84", "42 more spirit" — the threshold that ends the hold. */
         until: z.string().optional(),
@@ -327,7 +366,11 @@ function normalizePlan(plan: AdvisorPlan): AdvisorPlan {
       ...(v.enablers ? { enablers: v.enablers.map(normalizeId) } : {}),
       ...(v.componentFrom !== undefined ? { componentFrom: normalizeId(v.componentFrom) } : {}),
     })),
-    hold: plan.hold.map((h) => ({ ...h, itemId: normalizeId(h.itemId) })),
+    hold: plan.hold.map((h) => ({
+      ...h,
+      itemId: normalizeId(h.itemId),
+      ...(h.beats !== undefined ? { beats: normalizeId(h.beats) } : {}),
+    })),
     sell: plan.sell.map(normalizeId),
     ...(plan.keyMoves
       ? { keyMoves: plan.keyMoves.map((m) => ({ ...m, itemIds: m.itemIds.map(normalizeId) })) }

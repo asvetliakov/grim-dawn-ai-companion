@@ -92,6 +92,7 @@ function resolved(over: Partial<ResolvedItem> = {}): ResolvedItem {
     display: 'X',
     source: 'inventory',
     location: 'bag 1 (0,0)',
+    position: { kind: 'inventory', sack: 0, x: 0, y: 0 },
     stackCount: 1,
     unresolved: [],
     ...over,

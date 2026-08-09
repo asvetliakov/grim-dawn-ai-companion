@@ -15,6 +15,7 @@ registerProvider(MOCK_ID, () => createMockProvider());
 registerProvider(OPENAI_ID, () => createOpenAiProvider());
 
 export * from './provider.js';
+export * from './envelope.js';
 export * from './verify.js';
 export * from './repair.js';
 export { ADVISOR_SYSTEM_PROMPT } from './prompt.js';

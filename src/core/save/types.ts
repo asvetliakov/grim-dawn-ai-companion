@@ -77,6 +77,37 @@ export const EQUIP_SLOT_NAMES: readonly string[] = [
   'Relic',
 ];
 
+/**
+ * Which container an item came out of. `materials` is the account-wide reagent
+ * store (`reagents.gst`) — crafting materials *and every loose component*,
+ * which is where components actually live: the game moves one there the moment
+ * it is picked up, so a bag copy is the exception rather than the rule.
+ */
+export type ItemSource = 'equipped' | 'inventory' | 'stash' | 'transfer' | 'materials';
+
+/**
+ * Where an item sits, in numbers rather than prose.
+ *
+ * `ResolvedItem.location` is the human string the context document prints; this
+ * is the same fact in the shape a grid can lay out. The two live side by side
+ * because the document's wording — and therefore its item ids, which are
+ * assigned in document order — must not move.
+ *
+ * It lives here, beside the save's own shapes, rather than in `resolve.ts`
+ * because the window's DTOs need it and nothing that crosses the IPC boundary
+ * may drag a file that imports `node:fs` into the renderer's type graph.
+ */
+export type ItemPosition =
+  | { kind: 'equipment'; slot: number }
+  | { kind: 'weapon'; set: 1 | 2; hand: 'main' | 'off' }
+  /** Inventory sack coordinates are i32 in the save, and used as stored. */
+  | { kind: 'inventory'; sack: number; x: number; y: number }
+  /** Stash coordinates are floats; rounded, exactly as `location` rounds them. */
+  | { kind: 'stash'; tab: number; x: number; y: number }
+  | { kind: 'transfer'; tab: number; x: number; y: number }
+  /** The account reagent store has no grid — it is a list. */
+  | { kind: 'materials' };
+
 export type FactionTier = 'Hostile' | 'Neutral' | 'Friendly' | 'Respected' | 'Honored' | 'Revered';
 
 export interface FactionRep {

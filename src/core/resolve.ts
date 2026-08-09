@@ -19,16 +19,13 @@ import {
   EQUIP_SLOT_NAMES,
   type CharacterSave,
   type ItemInstance,
+  type ItemPosition,
+  type ItemSource,
   type PositionedItem,
 } from './save/types.js';
 
-/**
- * Where an item was found. `materials` is the account-wide reagent store
- * (`reagents.gst`) — crafting materials *and every loose component*, which is
- * where components actually live: the game moves one there the moment it is
- * picked up, so a bag copy is the exception rather than the rule.
- */
-export type ItemSource = 'equipped' | 'inventory' | 'stash' | 'transfer' | 'materials';
+/** Re-exported: both were defined here until the renderer needed them too. */
+export type { ItemPosition, ItemSource } from './save/types.js';
 
 /**
  * What this rolled item demands of a character, before any `-% Requirement`
@@ -82,6 +79,8 @@ export interface ResolvedItem {
   requirements?: ItemRequirements;
   /** Human-readable place: slot name, sack number, stash tab, grid position. */
   location: string;
+  /** The same place, structured — what the UI lays out on a grid. */
+  position: ItemPosition;
   stackCount: number;
   /** Record paths that did not resolve — the raw material of the coverage report. */
   unresolved: string[];
@@ -134,6 +133,7 @@ export function resolveItem(
   source: ItemSource,
   location: string,
   track?: CoverageTracker,
+  position: ItemPosition = { kind: 'materials' },
 ): ResolvedItem {
   const unresolved: string[] = [];
 
@@ -179,6 +179,7 @@ export function resolveItem(
     display: [prefix.name, base?.name ?? recordStem(inst.baseName), suffix.name].filter(Boolean).join(' '),
     source,
     location,
+    position,
     stackCount: inst.stackCount,
     unresolved,
   };
@@ -370,33 +371,61 @@ export function resolveCharacter(
   const items: ResolvedItem[] = [];
 
   save.equipment.forEach((item, i) => {
-    if (item) items.push(resolveItem(item, db, 'equipped', EQUIP_SLOT_NAMES[i] ?? `Slot ${i}`, track));
+    if (item) {
+      items.push(
+        resolveItem(item, db, 'equipped', EQUIP_SLOT_NAMES[i] ?? `Slot ${i}`, track, { kind: 'equipment', slot: i }),
+      );
+    }
   });
-  const weaponSets: [string, CharacterSave['weaponSet1']][] = [
-    ['Weapon set 1', save.weaponSet1],
-    ['Weapon set 2', save.weaponSet2],
+  const weaponSets: [string, 1 | 2, CharacterSave['weaponSet1']][] = [
+    ['Weapon set 1', 1, save.weaponSet1],
+    ['Weapon set 2', 2, save.weaponSet2],
   ];
-  for (const [label, set] of weaponSets) {
-    set.forEach((weapon, i) => {
-      if (weapon) items.push(resolveItem(weapon, db, 'equipped', `${label} ${i === 0 ? 'main' : 'off'}`, track));
+  for (const [label, set, weapons] of weaponSets) {
+    weapons.forEach((weapon, i) => {
+      const hand = i === 0 ? 'main' : 'off';
+      if (weapon) {
+        items.push(resolveItem(weapon, db, 'equipped', `${label} ${hand}`, track, { kind: 'weapon', set, hand }));
+      }
     });
   }
 
   save.inventorySacks.forEach((sack, i) => {
     for (const item of sack) {
-      items.push(resolveItem(item, db, 'inventory', `bag ${i + 1} ${position(item)}`, track));
+      items.push(
+        resolveItem(item, db, 'inventory', `bag ${i + 1} ${position(item)}`, track, {
+          kind: 'inventory',
+          sack: i,
+          x: item.x,
+          y: item.y,
+        }),
+      );
     }
   });
 
   save.personalStash.forEach((tab, i) => {
     for (const item of tab.items) {
-      items.push(resolveItem(item, db, 'stash', `tab ${i + 1} ${position(item)}`, track));
+      items.push(
+        resolveItem(item, db, 'stash', `tab ${i + 1} ${position(item)}`, track, {
+          kind: 'stash',
+          tab: i,
+          x: Math.round(item.x),
+          y: Math.round(item.y),
+        }),
+      );
     }
   });
 
   stash?.sacks.forEach((sack, i) => {
     for (const item of sack.items) {
-      items.push(resolveItem(item, db, 'transfer', `tab ${i + 1} ${position(item)}`, track));
+      items.push(
+        resolveItem(item, db, 'transfer', `tab ${i + 1} ${position(item)}`, track, {
+          kind: 'transfer',
+          tab: i,
+          x: Math.round(item.x),
+          y: Math.round(item.y),
+        }),
+      );
     }
   });
 

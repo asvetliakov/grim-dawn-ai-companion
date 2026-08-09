@@ -14,21 +14,19 @@
 
 import type { DbItem } from '../db/types.js';
 import type { ResolvedItem } from '../resolve.js';
-import { SOCKET_VERDICTS, type AdvisorPlan } from './provider.js';
+import {
+  SOCKET_VERDICTS,
+  type AdvisorPlan,
+  type PlanWarning,
+  type PlanWarningKind,
+} from './provider.js';
 
-export type PlanWarningKind =
-  | 'unknown-id'
-  | 'unknown-socketable'
-  | 'missing-target'
-  | 'destroyed-host'
-  | 'illegal-socket'
-  | 'ambiguous-stat'
-  | 'name-mismatch';
-
-export interface PlanWarning {
-  kind: PlanWarningKind;
-  message: string;
-}
+/**
+ * Both live in `provider.ts` — a warning is part of the plan's own vocabulary,
+ * like `VerdictRow`, and a stored advice envelope carries them across the IPC
+ * boundary where nothing may reach a module that imports `node:fs`.
+ */
+export type { PlanWarning, PlanWarningKind } from './provider.js';
 
 export interface PlanCheckInput {
   /** Every id the context document defined, to the item it named. */
@@ -55,6 +53,12 @@ export interface PlanCheckInput {
  * `head`, `WeaponMelee_Sword2h` → `sword2h`. The two vocabularies were built
  * from the same 23 gear families, so the suffix *is* the flag.
  */
+/** `a, b and c` — warnings are read by a person, not grepped. */
+function andList(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts[0] ?? '';
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
 export function slotFlagForClass(templateClass: string | undefined): string | undefined {
   if (!templateClass) return undefined;
   const suffix = templateClass.split('_')[1];
@@ -217,7 +221,36 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     if (SOCKET_VERDICTS.includes(v.verdict)) checkSocket(v, input, warn);
   }
 
-  for (const h of plan.hold) known(h.itemId, `HOLD entry`);
+  // A hold is a recommendation, not a status.
+  //
+  // Every candidate that fails a requirement is listed in §12 so a threshold
+  // can be costed against everything it unlocks — and the first live answers
+  // read that as a to-do list, marking HOLD on every over-levelled item in the
+  // stash whether or not it beat what the character was already wearing. So a
+  // hold has to say what it is *for*: the slot, the item it would displace, and
+  // what it wins by. Those three are decidable, so they are decided here rather
+  // than hoped for.
+  for (const h of plan.hold) {
+    const where = `HOLD on ${h.itemName ?? `#${h.itemId}`}`;
+    known(h.itemId, 'HOLD entry');
+    nameAgrees(h.itemId, h.itemName, where);
+    const missing: string[] = [];
+    if (!h.slot?.trim()) missing.push('which slot it is for');
+    if (!h.beats?.trim()) missing.push('which item it would replace');
+    if (!h.gains?.length) missing.push('what it gains over that item');
+    if (missing.length) {
+      warn(
+        'unjustified-hold',
+        `${where} does not say ${andList(missing)} — being unequippable is not a reason to keep an item`,
+      );
+    }
+    if (h.beats) known(h.beats, `${where} beats`);
+    // Holding an item to replace itself is the degenerate form of the same
+    // mistake: the plan has restated the status quo as a recommendation.
+    if (h.beats && h.beats === h.itemId) {
+      warn('unjustified-hold', `${where} says it replaces itself`);
+    }
+  }
   for (const id of plan.sell) known(id, `SELL entry`);
 
   // Extraction destroys the host. A destroyed item cannot also be kept, held,

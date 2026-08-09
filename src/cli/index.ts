@@ -32,27 +32,26 @@ import {
 } from '../core/ai/index.js';
 import { loadGameDb } from '../core/db/index.js';
 import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
-import { createIconService } from '../core/icons/index.js';
+import { createIconService, readPngSize } from '../core/icons/index.js';
 import { aggregateCharacter, type CharacterAggregate } from '../core/mechanics/aggregate.js';
 import { RESIST_COLUMNS, type ResistVector } from '../core/mechanics/stats.js';
 import { characterSavePath, formulasPath, reagentsPath, transferStashPath } from '../core/paths.js';
 import {
   CoverageTracker,
   resolveCharacter,
-  type AccountFiles,
   type ResolvedCharacter,
   type ResolvedItem,
 } from '../core/resolve.js';
+import {
+  accountFiles,
+  loadSnapshot,
+  readSave as coreReadSave,
+  requireDifficulty,
+  SessionError,
+} from '../core/session.js';
 import { listCharacters, resolveSettings } from '../core/settings.js';
 import { parseGdc } from '../core/save/gdc.js';
-import {
-  parseFormulasFile,
-  parseReagents,
-  parseTransferStash,
-  type FormulasFile,
-  type MaterialStore,
-  type TransferStash,
-} from '../core/save/gst.js';
+import { parseFormulasFile, parseReagents, parseTransferStash, type TransferStash } from '../core/save/gst.js';
 import {
   EQUIP_SLOT_NAMES,
   parseDifficulty,
@@ -69,20 +68,26 @@ program
   .version('0.1.0');
 
 /**
- * Read a save file, turning the usual filesystem failures into a one-line
- * message. A missing save is an ordinary situation (the user has not played
- * that mode, or the path is wrong) and should read as one, not as a stack trace.
+ * Anything the session layer reports as a typed failure becomes a one-line
+ * message and a non-zero exit. A missing save is an ordinary situation (the
+ * user has not played that mode, or the path is wrong) and should read as one,
+ * not as a stack trace — the window, which has no `process.exit`, catches the
+ * same errors and shows them in place.
  */
-function readSave(path: string): Buffer {
+function orExit<T>(fn: () => T): T {
   try {
-    return readFileSync(path);
+    return fn();
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    const reason =
-      code === 'ENOENT' ? 'no such file' : code === 'EACCES' ? 'permission denied' : (err as Error).message;
-    console.error(`error: cannot read ${path} — ${reason}`);
-    process.exit(1);
+    if (err instanceof SessionError) {
+      console.error(`error: ${err.message}`);
+      process.exit(1);
+    }
+    throw err;
   }
+}
+
+function readSave(path: string): Buffer {
+  return orExit(() => coreReadSave(path));
 }
 
 function formatPlayTime(seconds: number): string {
@@ -408,25 +413,6 @@ function describeRequirements(item: ResolvedItem): string {
   return bits.length > 1 ? `req: ${bits.join(', ')}` : bits[0]!;
 }
 
-function readOptionalSave(path: string): Buffer | undefined {
-  return existsSync(path) ? readFileSync(path) : undefined;
-}
-
-/**
- * The three account-wide files, each skipped if absent. One helper so `resolve`,
- * `context` and `advise` cannot end up reading a different set of containers —
- * which is exactly how the reagent store went unread for five stages.
- */
-function accountFiles(dir: string): AccountFiles {
-  const stashBuf = readOptionalSave(transferStashPath(dir));
-  const formulasBuf = readOptionalSave(formulasPath(dir));
-  const reagentsBuf = readOptionalSave(reagentsPath(dir));
-  const stash: TransferStash | undefined = stashBuf ? parseTransferStash(stashBuf) : undefined;
-  const formulas: FormulasFile | undefined = formulasBuf ? parseFormulasFile(formulasBuf) : undefined;
-  const materials: MaterialStore | undefined = reagentsBuf ? parseReagents(reagentsBuf) : undefined;
-  return { stash, formulas, materials };
-}
-
 /**
  * Resolve every character the user asked for (all of them by default), against
  * one shared coverage tracker.
@@ -513,10 +499,10 @@ program
 // Stage 4 — icons
 // ---------------------------------------------------------------------------
 
-/** A PNG's dimensions live in the IHDR chunk, at a fixed offset. */
+/** A PNG's dimensions, from the IHDR chunk (`readPngSize` lives in core now). */
 function pngSize(path: string): string {
-  const head = readFileSync(path).subarray(0, 24);
-  return `${head.readUInt32BE(16)}×${head.readUInt32BE(20)}`;
+  const size = readPngSize(path);
+  return size ? `${size.width}×${size.height}` : '?×?';
 }
 
 /**
@@ -957,14 +943,6 @@ program
 // Stage 5B — the context document
 // ---------------------------------------------------------------------------
 
-/** `elite`, `Elite`, `1` — all three name the same difficulty. */
-function requireDifficulty(input: string): Difficulty {
-  const parsed = parseDifficulty(input);
-  if (parsed) return parsed;
-  console.error(`error: unknown difficulty ${JSON.stringify(input)}; expected Normal, Elite, Ultimate or 0/1/2`);
-  process.exit(1);
-}
-
 interface DocRequest {
   char?: string | undefined;
   difficulty?: string | undefined;
@@ -973,32 +951,20 @@ interface DocRequest {
 }
 
 /**
- * Everything both `context` and `advise` need: pick the character, parse the
- * saves, aggregate, and render the document. One function so the two commands
- * cannot drift into sending different documents.
+ * Everything both `context` and `advise` need. A thin wrapper over the session
+ * layer now: the composition itself lives in `src/core/session.ts`, so the CLI
+ * and the window cannot drift into sending different documents.
  */
 function contextFor(db: GameDb, opts: DocRequest): { name: string; input: ContextInput; doc: ContextDoc } {
-  const settings = resolveSettings();
-  const name = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
-  if (!name) {
-    console.error(`error: no characters found under ${settings.saveDir}/main`);
-    process.exit(1);
-  }
-
-  const path = characterSavePath(name, settings.saveDir);
-  const save = parseGdc(readSave(path), { path });
-  const difficulty = opts.difficulty
-    ? requireDifficulty(opts.difficulty)
-    : (settings.difficultyOverride ?? save.difficulty);
-
-  const resolved = resolveCharacter(save, accountFiles(settings.saveDir), db);
-
-  const input: ContextInput = { save, aggregate: aggregateCharacter(save, db, difficulty), resolved, db };
-  const doc = buildContextDoc(input, {
-    maxTokens: opts.maxTokens,
-    ...(opts.perGroup !== undefined ? { perGroup: opts.perGroup } : {}),
-  });
-  return { name, input, doc };
+  const snap = orExit(() =>
+    loadSnapshot(db, resolveSettings(), {
+      character: opts.char,
+      ...(opts.difficulty !== undefined ? { difficulty: requireDifficulty(opts.difficulty) } : {}),
+      maxTokens: opts.maxTokens,
+      perGroup: opts.perGroup,
+    }),
+  );
+  return { name: snap.character, input: snap.input, doc: snap.doc };
 }
 
 program

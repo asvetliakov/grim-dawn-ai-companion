@@ -9,6 +9,7 @@
  * against one anyway.
  */
 
+import { openSync, readSync, closeSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 
 const SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
@@ -38,6 +39,40 @@ function chunk(type: string, data: Buffer): Buffer {
   const crc = Buffer.allocUnsafe(4);
   crc.writeUInt32BE(crc32(Buffer.concat([head.subarray(4), data])), 0);
   return Buffer.concat([head, data, crc]);
+}
+
+/**
+ * A cached icon's dimensions, without decoding the image.
+ *
+ * IHDR is the first chunk of every PNG and its width/height are big-endian u32
+ * at bytes 16 and 20, so 24 bytes off the front is the whole answer. That
+ * matters because the UI asks for the size of every icon it draws and the
+ * common case is a cache hit — inflating a few hundred images to learn their
+ * width would be the one place this tool did real image work.
+ *
+ * Returns undefined for anything that is not a PNG we wrote, rather than
+ * throwing: a corrupt cache entry should cost that item its grid footprint,
+ * not the window.
+ */
+export function readPngSize(path: string): { width: number; height: number } | undefined {
+  const head = Buffer.allocUnsafe(24);
+  let fd: number;
+  try {
+    fd = openSync(path, 'r');
+  } catch {
+    return undefined;
+  }
+  try {
+    if (readSync(fd, head, 0, 24, 0) < 24) return undefined;
+  } catch {
+    return undefined;
+  } finally {
+    closeSync(fd);
+  }
+  if (!head.subarray(0, 8).equals(SIGNATURE) || head.toString('latin1', 12, 16) !== 'IHDR') return undefined;
+  const width = head.readUInt32BE(16);
+  const height = head.readUInt32BE(20);
+  return width > 0 && height > 0 ? { width, height } : undefined;
 }
 
 export function encodePng(width: number, height: number, rgba: Buffer): Buffer {

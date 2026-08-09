@@ -473,12 +473,69 @@ describe('checkPlan', () => {
           { slot: 'Head', itemId: 'head01', verdict: 'ADD-COMPONENT', target: 'Mark of Illusions', reason: 'r' },
           { slot: 'Ring 1', itemId: 'ring01', verdict: 'EQUIP', target: 'ring02', enablers: ['head01'], reason: 'r' },
         ],
-        hold: [{ itemId: 'ring02', reason: 'r' }],
+        hold: [
+          { itemId: 'ring02', slot: 'Ring 2', beats: 'ring01', gains: ['+12% Fire Resistance'], reason: 'r' },
+        ],
         sell: [],
       },
       w,
     );
     expect(warnings).toEqual([]);
+  });
+
+  /**
+   * A hold is a recommendation, not a status.
+   *
+   * §12 lists every candidate that fails a requirement so a threshold can be
+   * costed against everything it unlocks, and the first live answers read that
+   * as a to-do list — marking HOLD on every over-levelled item in the stash
+   * whether or not it beat what the character was wearing. A hold that cannot
+   * say which slot it is for, what it displaces and what it wins by is that
+   * mistake, and it is decidable.
+   */
+  it('rejects a hold that is only "you cannot wear this yet"', () => {
+    const w = world();
+    const warnings = checkPlan({ verdicts: [], hold: [{ itemId: 'ring02', reason: 'nice item' }], sell: [] }, w);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.kind).toBe('unjustified-hold');
+    expect(warnings[0]!.message).toContain('which slot it is for');
+    expect(warnings[0]!.message).toContain('which item it would replace');
+    expect(warnings[0]!.message).toContain('what it gains over that item');
+  });
+
+  it('names the missing halves of a partly-justified hold', () => {
+    const w = world();
+    const warnings = checkPlan(
+      { verdicts: [], hold: [{ itemId: 'ring02', slot: 'Ring 2', reason: 'r' }], sell: [] },
+      w,
+    );
+    expect(warnings.map((x) => x.kind)).toEqual(['unjustified-hold']);
+    expect(warnings[0]!.message).not.toContain('which slot it is for');
+    expect(warnings[0]!.message).toContain('which item it would replace and what it gains');
+  });
+
+  it('catches a hold that replaces itself, and one that beats an unknown id', () => {
+    const w = world();
+    const self = checkPlan(
+      {
+        verdicts: [],
+        hold: [{ itemId: 'ring02', slot: 'Ring 2', beats: 'ring02', gains: ['+5% Fire Resistance'], reason: 'r' }],
+        sell: [],
+      },
+      w,
+    );
+    expect(self.map((x) => x.kind)).toEqual(['unjustified-hold']);
+    expect(self[0]!.message).toContain('replaces itself');
+
+    const ghost = checkPlan(
+      {
+        verdicts: [],
+        hold: [{ itemId: 'ring02', slot: 'Ring 2', beats: 'nope99', gains: ['+5% Fire Resistance'], reason: 'r' }],
+        sell: [],
+      },
+      w,
+    );
+    expect(ghost.map((x) => x.kind)).toEqual(['unknown-id']);
   });
 
   it('catches an id that is in no part of the document', () => {

@@ -77,10 +77,33 @@ Model/effort discipline: the provider factory already pins `--model opus --effor
 
 ## Renderer
 
-New deps (pure JS, ESM):
-
-- `react-markdown@^10` + `remark-gfm@^4` — renders the model-authored answer to React elements with **no raw-HTML pass-through** (do not add `rehype-raw`); GFM gives tables/strikethrough. This is why react-markdown over marked: marked emits an HTML string and would need DOMPurify.
-- `lucide-react` — action badge icons.
+> **Amended after 7A's third review pass — some of this already exists.** 7A
+> built, against the fixture envelope:
+>
+> - **The markdown renderer.** `src/renderer/src/markdown.ts` (tokenizer) +
+>   `components/Markdown.tsx` (painter), hand-written, ~7 unit tests. **Drop the
+>   planned `react-markdown` + `remark-gfm` dependency**: the repo takes no
+>   runtime deps, and the property that motivated choosing react-markdown over
+>   marked — no raw-HTML pass-through — is stronger here, because the parser
+>   emits a tree whose every leaf is text. There is no code path to `innerHTML`
+>   at all. It already handles GFM tables, both list kinds, blockquotes, fences,
+>   rules and inline emphasis/code/links.
+> - **The "Full answer" view**, as a tab beside the plan in `AdvicePanel`.
+> - **The standing actionable mark** — `actionableIds()` in `advice.ts` folded
+>   into `HighlightProvider` as a second, non-hover set; painted as a corner flag
+>   on `.item-cell`/`.material-row`, with a per-tab count. This is a coarser
+>   thing than `adviceMarks` below (a boolean, not a typed badge); 7B should
+>   *refine* it into the typed badges rather than add a third mark.
+> - **Socket verdicts in the loadout**: `SocketableFace` renders the proposed
+>   component/augment with its own stats, the verdict, and what an extraction
+>   destroys, resolved through `UiSnapshot.socketables` (dossier id →
+>   `UiSocketable`). The `AdviceMark.targetId`-is-a-socketable case below is
+>   therefore already answered for the loadout column; what is left for 7B is the
+>   badge on the host item in the grids.
+>
+> Still to add here: `lucide-react` for the badge icons, and the run plumbing —
+> streaming the answer as it arrives and animating the tab while a run is in
+> flight, both of which need the live advise calls 7A stubs.
 
 `AdviceProvider` context: `{ envelope, run: { runId, phase, elapsedMs } | null, start(question), cancel() }`; on mount calls `getAdviseStatus()` + `getLastAdvice(activeCharacter)` — an app restart re-shows the last advice.
 

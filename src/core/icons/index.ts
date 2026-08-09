@@ -34,8 +34,31 @@ import {
   gameArchives,
   MISSING_GAME_DIR_MESSAGE,
 } from '../db/gamefiles.js';
-import { encodePng } from './png.js';
+import { encodePng, readPngSize } from './png.js';
 import { decodeTex } from './tex.js';
+
+/**
+ * One icon's PNG plus the grid footprint it implies.
+ *
+ * Inventory footprints (1×1 through 2×4) are stored **nowhere** in the game
+ * database — the engine derives them from the texture, one cell per 32 px, and
+ * so must we.
+ */
+export interface IconInfo {
+  pngPath: string;
+  width: number;
+  height: number;
+  cellsW: number;
+  cellsH: number;
+}
+
+/** Pixels per inventory cell. */
+export const CELL_PX = 32;
+
+/** No item is wider or taller than four cells; a stray texture must not be. */
+function cells(px: number): number {
+  return Math.min(4, Math.max(1, Math.round(px / CELL_PX)));
+}
 
 /** Expansion roots, newest first — later content overrides earlier content. */
 const ARCHIVE_ROOTS = ['gdx3', 'gdx2', 'gdx1', ''] as const;
@@ -60,6 +83,12 @@ export interface IconService {
    * and the reason is recorded in `problems()` rather than thrown.
    */
   getIconPng(iconPath: string): Promise<string | undefined>;
+  /**
+   * The same PNG, plus its pixel size and the grid footprint that follows from
+   * it. Undefined for the same reasons `getIconPng` is; the caller falls back
+   * to a 1×1 cell.
+   */
+  getIconInfo(iconPath: string): Promise<IconInfo | undefined>;
   /** Where the PNGs live; the UI serves this directory. */
   cacheDir: string;
   stats(): IconStats;
@@ -96,13 +125,40 @@ class ArchiveIconService implements IconService {
   ) {}
 
   async getIconPng(iconPath: string): Promise<string | undefined> {
+    return this.load(iconPath)?.pngPath;
+  }
+
+  async getIconInfo(iconPath: string): Promise<IconInfo | undefined> {
+    const loaded = this.load(iconPath);
+    if (!loaded) return undefined;
+    // A texture decoded on this call already told us its size; a cache hit has
+    // to be asked, which is 24 bytes off the front of the file rather than an
+    // inflate of the whole image.
+    const size = loaded.size ?? readPngSize(loaded.pngPath);
+    if (!size) return undefined;
+    return {
+      pngPath: loaded.pngPath,
+      width: size.width,
+      height: size.height,
+      cellsW: cells(size.width),
+      cellsH: cells(size.height),
+    };
+  }
+
+  /**
+   * The PNG on disk, extracting it first if need be. `size` is present only
+   * when this call did the decoding — the cache-hit path deliberately does not
+   * touch the file, because `getIconPng` is the hot one and its answer is a
+   * path.
+   */
+  private load(iconPath: string): { pngPath: string; size?: { width: number; height: number } } | undefined {
     this.stat.requested++;
     if (!iconPath) return this.fail(iconPath, 'the record names no icon', 'missing');
 
     const dest = join(this.cacheDir, flatten(iconPath));
     if (existsSync(dest)) {
       this.stat.cached++;
-      return dest;
+      return { pngPath: dest };
     }
 
     const slash = iconPath.indexOf('/');
@@ -118,9 +174,11 @@ class ArchiveIconService implements IconService {
     if (!raw) return this.fail(iconPath, `no ${archiveName}.arc contains ${entryName}`, 'missing');
 
     let png: Buffer;
+    let size: { width: number; height: number };
     try {
       const { width, height, rgba } = decodeTex(raw);
       png = encodePng(width, height, rgba);
+      size = { width, height };
     } catch (err) {
       return this.fail(iconPath, (err as Error).message, 'failed');
     }
@@ -131,7 +189,7 @@ class ArchiveIconService implements IconService {
     }
     writeFileSync(dest, png);
     this.stat.decoded++;
-    return dest;
+    return { pngPath: dest, size };
   }
 
   stats(): IconStats {
@@ -199,4 +257,4 @@ export function flatten(iconPath: string): string {
 
 export type { DecodedTexture } from './tex.js';
 export { decodeTex, UnsupportedTextureError } from './tex.js';
-export { encodePng } from './png.js';
+export { encodePng, readPngSize } from './png.js';

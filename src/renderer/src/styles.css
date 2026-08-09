@@ -1,0 +1,1653 @@
+/*
+ * The window's look: a dark, high-contrast reading surface sized for a 1920×1080
+ * window.
+ *
+ * An earlier draft dressed everything in the game's own `UI.arc` art — window
+ * frames, slot placeholders, 9-slice panels. It was dropped: that art is cut for
+ * the engine's fixed layout, so at the sizes this app actually uses it overlaps
+ * and fights the content. Item icons stay, because they carry information; the
+ * frames were decoration bought at the cost of legibility.
+ */
+
+/*
+ * Inter, not the serif this started with and not Montserrat.
+ *
+ * Nearly everything on screen is a dense number in a narrow column — six
+ * armour ratings, ten resistances against five columns each, three speeds
+ * against their caps. Inter is drawn for exactly that: a tall x-height that
+ * survives 12 px, unambiguous 1/l/I and 0/O, and real tabular figures, which
+ * are what keep a column of numbers aligned rather than merely near each other.
+ * Montserrat is a geometric display face — wide, low-contrast between similar
+ * glyphs, and at table sizes it costs both room and legibility. Swapping is one
+ * line: change `--font`.
+ */
+@import '@fontsource-variable/inter';
+
+:root {
+  --font: 'Inter Variable', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  /* One cell is one inventory square. Item textures are 32 px per cell, so this
+     is the size at which they are pixel-exact; scaling up softens them. */
+  --cell: 32px;
+
+  --ink: #ece4d3;
+  /* Secondary text. It sat two steps off the background and read as disabled;
+     supporting text is meant to be quieter, not inaudible. */
+  --ink-dim: #bcb29a;
+  --ink-faint: #948b77;
+  --bg: #14120f;
+  --bg-panel: #1e1a15;
+  --bg-raised: #2a241c;
+  --line: #4a3f2e;
+  --line-soft: #342c21;
+  --accent: #d4ae62;
+  --bad: #e07a6b;
+  --good: #8fc271;
+  --lit: #ffd76e;
+
+  --rarity-common: #ece4d3;
+  --rarity-magical: #ffd76e;
+  --rarity-rare: #7ee06a;
+  --rarity-epic: #6ea8ff;
+  --rarity-legendary: #c47dff;
+  --rarity-quest: #e2a04a;
+
+  /*
+   * Damage / resistance types, in the game's own associations and picked for
+   * contrast on this ground rather than for saturation. Every one clears 4.5:1
+   * against `--bg-panel`; Chaos and Vitality in particular are lifted well off
+   * the near-black they would naturally sit at.
+   */
+  /* Ordered around the wheel so neighbours stay tellable apart. The game's own
+     palette crowds fire, chaos, bleeding and vitality into one warm corner, so
+     they are spread deliberately: orange, red, rose, violet-magenta. */
+  --type-physical: #cfcabb;
+  --type-pierce: #d9a441;
+  --type-fire: #ff8a3d;
+  --type-cold: #5fd0f0;
+  --type-lightning: #ffe84d;
+  --type-acid: #a8e05f;
+  --type-vitality: #e0559a;
+  --type-aether: #7fa8ff;
+  --type-chaos: #c464ff;
+  --type-bleeding: #ff5555;
+  --type-elemental: #ffc46b;
+
+  /*
+   * The damage-over-time twins: same hue as their parent, lighter and less
+   * saturated. They convert together and read together, so they are the same
+   * family — but they cap and resist separately, so `+30% Burn Damage` painted
+   * in exactly the Fire colour hides a real distinction. Bleeding has no direct
+   * twin and never converts, so it is not one of these.
+   */
+  --type-trauma: #a9a396;
+  --type-burn: #ffb488;
+  --type-frostburn: #a6e6f7;
+  --type-electrocute: #fff3a3;
+  --type-poison: #cceb9d;
+  --type-decay: #ee9bc0;
+
+  --kind-armor: #bcd4e8;
+  --kind-health: #7fd08a;
+  --kind-energy: #9ad9d0;
+  --kind-ability: #ffcf8a;
+  --kind-speed: #7fe3d4;
+  --kind-attribute: #e2c98f;
+  --kind-skill: #9fd2b0;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.5 var(--font);
+  font-feature-settings: 'tnum' 1, 'cv05' 1;
+  /* `auto` rather than `antialiased`: this is a serif face at 12–15 px on a
+     dark ground, where subpixel-off thinning is exactly what makes it read as
+     washed out. The same rule serves the app and the stories. */
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+  user-select: none;
+  cursor: default;
+  overflow: hidden;
+}
+
+h2,
+h3 {
+  font-weight: normal;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* --- header ------------------------------------------------------------- */
+
+.app-header {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+  padding: 10px 18px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line);
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.app-title {
+  font-size: 18px;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+  padding-bottom: 2px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.field select {
+  font: inherit;
+  font-size: 15px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 4px 8px;
+  min-width: 170px;
+}
+
+.header-spacer {
+  flex: 1;
+}
+
+.chrome-button,
+.run-button {
+  font: inherit;
+  font-size: 14px;
+  color: var(--ink);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 6px 16px;
+  cursor: pointer;
+}
+
+.chrome-button:hover:not(:disabled),
+.run-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chrome-button:disabled,
+.run-button:disabled {
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+.paths-popover {
+  position: absolute;
+  top: 100%;
+  right: 16px;
+  z-index: 40;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  padding: 12px 14px;
+  max-width: 640px;
+  font-size: 13px;
+  line-height: 1.8;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 60%);
+  user-select: text;
+}
+
+.paths-popover b {
+  color: var(--accent);
+  font-weight: normal;
+  margin-right: 8px;
+}
+
+.paths-note {
+  color: var(--ink-dim);
+  margin-top: 6px;
+}
+
+.warn {
+  color: var(--accent);
+}
+
+/* --- banners ------------------------------------------------------------ */
+
+.banner {
+  padding: 12px 18px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.banner.error {
+  color: var(--bad);
+  border-left: 3px solid var(--bad);
+}
+
+.banner-note {
+  color: var(--ink-dim);
+  font-size: 13px;
+  flex-basis: 100%;
+}
+
+/* --- layout ------------------------------------------------------------- */
+
+/*
+ * Three columns at full width: loadout · sheet · containers.
+ *
+ * The sheet's column is fixed rather than fluid. A resistance table stretched
+ * across half a screen is harder to read across, not easier, and the width it
+ * gives up is exactly what buys the third column — which is the difference
+ * between seeing where a proposed item lives and having to scroll to find out.
+ * Each pane scrolls on its own so a long loadout never pushes the sheet away.
+ */
+.app-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  /*
+   * Both side columns are measured, not chosen. The sheet is 540 because the
+   * resistance table is 506 wide once the projection column exists and the
+   * panel adds 32 of padding — at 460 the "after" column was the one paying
+   * for it. The containers are 625 because a stash tab is 19 cells of 32 px
+   * plus the panel's own padding, and a column narrower than its widest
+   * container scrolls sideways forever. The loadout takes what is left, which
+   * is the right way round: it is the only pane that reads better wide and
+   * still works narrow, because its long names ellipsise into a tooltip.
+   */
+  grid-template-columns: minmax(0, 1fr) 540px 625px;
+  gap: 16px;
+  padding: 16px;
+  overflow: hidden;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/*
+ * Scrollbars, in the window's own palette.
+ *
+ * macOS overlay scrollbars are invisible until you scroll and then arrive as a
+ * bright grey slab over a dark panel, which is both a surprise and the wrong
+ * colour. These are always present and always quiet: a thin track that reads as
+ * part of the panel edge, and a thumb that only brightens under the pointer.
+ * `scrollbar-*` covers Firefox and the newer WebKit; the `::-webkit-` rules are
+ * what Electron actually paints.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--line-soft);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/*
+ * Not enough room for three: 540 + 625 + the gaps leaves the loadout under
+ * 640, which is where its two item columns stop being comparable. So the
+ * containers drop under the sheet, and the two share the column's height
+ * rather than the sheet taking all of it — an `auto` first row is exactly how
+ * the containers end up below the fold and invisible.
+ */
+@media (max-width: 1860px) {
+  .app-body {
+    /* 625, not 540: this column now holds the containers as well as the sheet,
+       so it has to be as wide as the wider of the two — a stash tab. */
+    grid-template-columns: minmax(0, 1fr) 625px;
+    grid-template-rows: minmax(0, 3fr) minmax(0, 2fr);
+  }
+
+  .pane-loadout {
+    grid-row: 1 / span 2;
+  }
+}
+
+/* Narrow enough that side-by-side helps nobody: one column, page scrolls. */
+@media (max-width: 1180px) {
+  .app-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    overflow-y: auto;
+  }
+
+  .pane-loadout {
+    grid-row: auto;
+  }
+
+  .pane {
+    overflow: visible;
+  }
+}
+
+.loadout,
+.advice-panel,
+.stats-panel,
+.container-panel {
+  background: var(--bg-panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 14px 16px;
+}
+
+.loadout-header,
+.advice-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+}
+
+.loadout-header h2,
+.advice-header h2 {
+  margin: 0;
+  font-size: 17px;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+}
+
+.loadout-hint {
+  color: var(--ink-dim);
+  font-size: 13px;
+  margin-left: auto;
+}
+
+/* --- weapon set switch -------------------------------------------------- */
+
+.weapon-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.switch-label {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-faint);
+}
+
+.set-button {
+  position: relative;
+  font: inherit;
+  font-size: 14px;
+  width: 40px;
+  padding: 3px 0;
+  color: var(--ink-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.set-button.selected {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.held-dot {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--good);
+}
+
+/* --- the loadout comparison --------------------------------------------- */
+
+/* One row per slot, full width. A two-column arrangement fits the sketch but
+   not the names: Grim Dawn item names run to five words, and at half width
+   every one of them ellipsised. Legibility of the thing being compared wins. */
+.loadout-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.slot-row {
+  display: grid;
+  /* The verdict column is sized for the longest *abbreviated* verdict — see
+     `shortVerdict`. Spelled out, `SWAP-COMPONENT` needs 120 px, and every one
+     of those is taken from the two things the row exists to compare; short, the
+     column costs a third of that. The number is measured rather than guessed:
+     a column that merely nearly fits clips the one verdict the reader most
+     needs to read. */
+  grid-template-columns: 84px minmax(0, 1fr) 68px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+}
+
+/* A slot the plan actually changes. `KEEP` is left neutral on purpose — most
+   slots keep, and colouring them all would drown the handful that move. */
+.slot-row.verdict-equip {
+  border-color: var(--good);
+}
+
+.slot-row.verdict-re-augment,
+.slot-row.verdict-add-component,
+.slot-row.verdict-swap-component,
+.slot-row.verdict-buy-augment,
+.slot-row.verdict-craft {
+  border-color: var(--accent);
+}
+
+.slot-name {
+  font-size: 13px;
+  cursor: default;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--ink-faint);
+}
+
+/*
+ * The two cards align at the top, not on their centres.
+ *
+ * The row centres its cells, which is right for the label and the verdict but
+ * wrong for the cards: a name that wraps to two lines makes one card taller
+ * than the other, and centring two boxes of different heights puts their first
+ * lines at different heights. The names are the thing being compared, so it is
+ * the names that have to line up.
+ */
+.slot-side {
+  min-width: 0;
+  align-self: start;
+}
+
+.slot-arrow {
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 15px;
+}
+
+.verdict-tag {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 1px 4px;
+}
+
+.slot-reason {
+  grid-column: 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: 13px;
+  margin-top: 3px;
+}
+
+.gain {
+  color: var(--good);
+}
+
+.cost {
+  color: var(--bad);
+}
+
+.why {
+  color: var(--ink-dim);
+}
+
+/* --- one item's face ---------------------------------------------------- */
+
+.item-face {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+
+.item-face.clickable {
+  cursor: pointer;
+}
+
+/*
+ * One highlight, whatever caused it.
+ *
+ * A card lights the same way whether you are pointing at it or something else
+ * is — a verdict row naming it, a proposal that would destroy it. Two
+ * brightnesses were tried and read as a distinction that does not exist: what
+ * the *advice* says about an item is already carried by the row's border and by
+ * the corner flag in the containers, and a second, dimmer highlight only made
+ * the reader wonder which one they were looking at.
+ */
+.item-face:hover,
+.material-row:hover,
+.item-face.highlighted,
+.material-row.highlighted {
+  border-color: var(--lit);
+  background: rgb(255 215 110 / 10%);
+}
+
+.face-art {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d0b09;
+  border: 1px solid var(--line-soft);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.face-art img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.face-text {
+  min-width: 0;
+}
+
+.face-name {
+  font-size: 14px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+/* Two names competing for one card's width, so the gaps are as small as they
+   can be and still read as two chips. */
+.face-sockets {
+  display: flex;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.socket-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+  font-size: 13px;
+  color: var(--ink-dim);
+  cursor: default;
+}
+
+.socket-chip.empty {
+  flex: 0 0 auto;
+}
+
+.socket-chip.filled {
+  color: #9fd2b0;
+}
+
+.socket-art {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  background: #0d0b09;
+  border: 1px solid var(--line-soft);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.socket-chip.empty .socket-art {
+  opacity: 0.45;
+}
+
+.socket-art img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.socket-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- a proposed component or augment ------------------------------------- */
+
+/* The one socket the proposal changes. Marked rather than merely shown: the two
+   chips are otherwise identical to the ones on the item to its left, which is
+   the whole point of rendering the item again. */
+.socket-chip.changed {
+  color: var(--lit);
+}
+
+.socket-chip.changed .socket-art {
+  border-color: var(--lit);
+  box-shadow: 0 0 6px rgb(255 215 110 / 45%);
+}
+
+/* The Inventor recovers the item *or* the component. This is the one move in
+   the game that destroys something on purpose, so it is not a hover detail. */
+.socket-destroys {
+  color: var(--bad);
+}
+
+.face-empty,
+.face-locked,
+.face-note {
+  font-size: 14px;
+  color: var(--ink-dim);
+  font-style: italic;
+  padding-left: 4px;
+}
+
+.face-locked.waiting {
+  color: var(--line);
+}
+
+/* --- advice ------------------------------------------------------------- */
+
+.advice-meta {
+  font-size: 13px;
+  color: var(--ink-dim);
+}
+
+.advice-header .run-button {
+  margin-left: auto;
+}
+
+.advice-placeholder,
+.advice-summary {
+  margin: 0 0 10px;
+  font-size: 14px;
+  color: var(--ink-dim);
+}
+
+.advice-summary {
+  color: var(--ink);
+}
+
+.key-moves {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  font-size: 14px;
+}
+
+.key-moves li {
+  margin-bottom: 3px;
+  cursor: default;
+}
+
+.move-detail {
+  color: var(--ink-dim);
+}
+
+.verdict-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.verdict-table th,
+.verdict-table td {
+  text-align: left;
+  padding: 3px 8px 3px 0;
+  vertical-align: top;
+  font-weight: normal;
+}
+
+.verdict-table thead th {
+  color: var(--ink-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--line);
+}
+
+.verdict-table tbody th {
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+
+.verdict-table tbody.replaces {
+  color: var(--ink);
+}
+
+.verdict-table tbody:hover {
+  background: rgb(255 215 110 / 8%);
+}
+
+/*
+ * Gains and costs on their own line under the row, as in the loadout.
+ *
+ * In a fifth column they were a stack of one-per-line fragments in whatever
+ * width the four name columns left over, so the tallest stat string set the
+ * height of the row. Across the full width they read as a sentence, and the
+ * columns above stay a table.
+ */
+.verdict-detail td {
+  padding-bottom: 6px;
+  white-space: normal;
+  max-width: none;
+  font-size: 13px;
+}
+
+.verdict-detail .gain,
+.verdict-detail .cost,
+.verdict-detail .why {
+  margin-right: 12px;
+}
+
+.hold-list h3 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-dim);
+}
+
+.hold-list ul {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+}
+
+.hold-list li {
+  cursor: pointer;
+}
+
+.hold-until {
+  color: var(--accent);
+}
+
+/* The slot the hold is for and the item it displaces. A hold list without this
+   is a list of things you cannot wear, which is not advice. */
+.hold-for {
+  color: var(--ink-dim);
+}
+
+.advice-warnings {
+  margin: 10px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+  color: var(--bad);
+}
+
+/* --- the model's own answer ---------------------------------------------- */
+
+.advice-tabs {
+  margin-bottom: 10px;
+}
+
+/* Prose, not a table: a measure this long is read line by line, and the panel
+   is as wide as the loadout beside it. */
+.advice-answer {
+  font-size: 14px;
+  max-width: 78ch;
+}
+
+.markdown .md-h {
+  margin: 14px 0 4px;
+  font-weight: normal;
+  color: var(--accent);
+  letter-spacing: 0.02em;
+}
+
+.markdown .md-h1 {
+  font-size: 17px;
+}
+
+.markdown .md-h2 {
+  font-size: 15px;
+}
+
+.markdown .md-h3,
+.markdown .md-h4,
+.markdown .md-h5,
+.markdown .md-h6 {
+  font-size: 14px;
+  color: var(--ink-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.markdown .md-h:first-child {
+  margin-top: 0;
+}
+
+.markdown .md-p {
+  margin: 0 0 8px;
+}
+
+.markdown .md-list {
+  margin: 0 0 10px;
+  padding-left: 20px;
+}
+
+.markdown .md-list li {
+  margin-bottom: 2px;
+}
+
+.markdown .md-quote {
+  margin: 0 0 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--line);
+  color: var(--ink-dim);
+}
+
+.markdown .md-code,
+.markdown code {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  background: var(--bg-raised);
+  border-radius: 2px;
+}
+
+.markdown code {
+  padding: 0 4px;
+}
+
+.markdown .md-code {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--line-soft);
+}
+
+.markdown .md-rule {
+  border: none;
+  border-top: 1px solid var(--line-soft);
+  margin: 14px 0;
+}
+
+/* A link is shown as its label: there is no browser here to open one in, and
+   the answers cite the dossier rather than the web. */
+.markdown .md-link {
+  color: var(--accent);
+  text-decoration: underline dotted;
+}
+
+.md-table-wrap {
+  overflow-x: auto;
+  margin-bottom: 10px;
+}
+
+.md-table {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.md-table th,
+.md-table td {
+  text-align: left;
+  padding: 2px 12px 2px 0;
+  font-weight: normal;
+  white-space: nowrap;
+}
+
+.md-table thead th {
+  color: var(--ink-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--line);
+}
+
+/* --- stats -------------------------------------------------------------- */
+
+.stats-section {
+  margin-bottom: 16px;
+}
+
+.stats-section h2 {
+  margin: 0 0 2px;
+  font-size: 19px;
+  color: var(--accent);
+}
+
+.stats-section h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 3px;
+}
+
+.stats-sub {
+  color: var(--ink-dim);
+  font-size: 14px;
+}
+
+.stats-note {
+  color: var(--ink-dim);
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.stat-row {
+  display: grid;
+  grid-template-columns: 104px 72px auto 1fr;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.stat-row.weakest .stat-value,
+.stat-row.wasted .stat-detail {
+  color: var(--bad);
+}
+
+/* The part a big hit is most likely to go through. It was a word appended to a
+   dim detail line, which is the one place it could be missed. */
+.stat-tag {
+  margin-right: 8px;
+  padding: 0 5px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--bad);
+  border: 1px solid var(--bad);
+  border-radius: 2px;
+}
+
+/* A qualifier on a heading — "per body part". Says what the numbers under it
+   are without spending a paragraph on it. */
+.stats-aside {
+  color: var(--ink-faint);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 12px;
+  margin-left: 6px;
+}
+
+.stat-label {
+  color: var(--ink-dim);
+}
+
+.stat-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-after {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.stat-detail {
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+
+.better {
+  color: var(--good);
+}
+
+.worse {
+  color: var(--bad);
+}
+
+.same {
+  color: var(--ink-faint);
+}
+
+/* Numbers read across better when the row is short. The table takes what it
+   needs and stops; the leftover width is what makes room for a third column. */
+.resist-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  table-layout: auto;
+}
+
+.resist-table td,
+.resist-table thead th {
+  white-space: nowrap;
+}
+
+.resist-table th,
+.resist-table td {
+  padding: 1px 6px;
+  text-align: right;
+  font-weight: normal;
+}
+
+.resist-table thead th {
+  color: var(--ink-dim);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+/* The row label carries its type colour, so the default is scoped to labels
+   that have none — an element selector would out-specify the `.stat-*` class
+   and quietly grey every one of them back out. */
+.resist-table tbody th {
+  text-align: left;
+}
+
+.resist-table tbody th:not([class*='stat-']) {
+  color: var(--ink-dim);
+}
+
+.resist-table .penalty {
+  color: var(--bad);
+}
+
+.resist-table tr.short .effective {
+  color: var(--accent);
+}
+
+.resist-table .projected-col {
+  border-left: 1px solid var(--line-soft);
+  padding-left: 10px;
+}
+
+.stats-exclusions {
+  font-size: 13px;
+  color: var(--ink-dim);
+}
+
+.stats-exclusions summary {
+  cursor: pointer;
+}
+
+.stats-exclusions ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+/* --- containers --------------------------------------------------------- */
+
+.tab-strip,
+.page-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 12px;
+}
+
+.tab,
+.page-tab {
+  position: relative;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.tab:hover,
+.page-tab:hover {
+  color: var(--ink);
+}
+
+.tab.selected,
+.page-tab.selected {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* A container that holds whatever is being pointed at, even though you cannot
+   see it from here — the whole point of the highlight. */
+.tab.lit::after,
+.page-tab.lit::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lit);
+}
+
+.tab-count {
+  color: var(--ink-faint);
+  font-size: 12px;
+  margin-left: 5px;
+}
+
+.bag-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+}
+
+.bag-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
+
+.item-grid {
+  position: relative;
+  background-color: #0d0b09;
+  background-image:
+    repeating-linear-gradient(to right, var(--line-soft) 0 1px, transparent 1px var(--cell)),
+    repeating-linear-gradient(to bottom, var(--line-soft) 0 1px, transparent 1px var(--cell));
+  border: 1px solid var(--line);
+}
+
+.item-cell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.item-cell.grid-item {
+  position: absolute;
+}
+
+.item-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.item-cell::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid currentColor;
+  opacity: 0.28;
+  pointer-events: none;
+}
+
+.item-cell:hover::after {
+  opacity: 0.9;
+}
+
+.item-cell.highlighted::after {
+  border: 2px solid var(--lit);
+  opacity: 1;
+  box-shadow: 0 0 12px rgb(255 215 110 / 70%);
+}
+
+/*
+ * An item the plan asks you to act on, marked for as long as the run stands.
+ *
+ * A corner flag rather than a second border: an item can be both actionable and
+ * the one under the pointer, and two borders competing for the same four edges
+ * would make the pointed-at one harder to find rather than easier — which is
+ * the whole job of the brighter mark.
+ *
+ * Coloured by *what* the action is. Putting something on now, keeping it for a
+ * threshold, and destroying it for the component inside are three different
+ * instructions, and one green flag for all three turns a stash of things to
+ * wait for into a stash of upgrades.
+ */
+.item-cell.action::before,
+.material-row.action::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  border-top: 11px solid var(--action);
+  border-right: 11px solid transparent;
+  pointer-events: none;
+}
+
+.action-equip {
+  --action: var(--good);
+}
+
+/* Amber, the same colour the "until level 84" threshold is written in: this is
+   not an upgrade you can make today. */
+.action-hold {
+  --action: var(--accent);
+}
+
+/* The extraction spends this item. Red is not decoration here. */
+.action-destroy {
+  --action: var(--bad);
+}
+
+.material-row {
+  position: relative;
+}
+
+.material-row.action {
+  background: color-mix(in srgb, var(--action) 8%, transparent);
+}
+
+/* How many items in this container the plan wants moved, and to what end. The
+   dot says "something in here"; the numbers say whether it is worth opening. */
+.tab-todo {
+  margin-left: 5px;
+  padding: 0 5px;
+  font-size: 11px;
+  color: var(--bg);
+  background: var(--action);
+  border-radius: 8px;
+}
+
+.todo-equip {
+  --action: var(--good);
+}
+
+.todo-hold {
+  --action: var(--accent);
+}
+
+.todo-destroy {
+  --action: var(--bad);
+}
+
+/* What the corner flags mean, said once. It only appears when there are flags
+   to explain — before a run there is nothing marked and nothing to say. */
+.mark-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: -4px 0 12px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The same shape and colour as the flag on the item, drawn the same way — a
+   legend that does not look like the thing it explains explains nothing. */
+.legend-flag {
+  width: 0;
+  height: 0;
+  border-top: 9px solid var(--action);
+  border-right: 9px solid transparent;
+}
+
+.legend-count {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.item-placeholder {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.item-stack {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  font-size: 11px;
+  color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000;
+  pointer-events: none;
+}
+
+.material-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.material-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: default;
+}
+
+.material-art {
+  width: var(--cell);
+  height: var(--cell);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0d0b09;
+  border: 1px solid var(--line-soft);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.material-art img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.material-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.material-name {
+  display: block;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What the component actually does. A list of forty names alone makes the
+   reader hover forty times to find the one they want. */
+.material-effect {
+  display: block;
+  font-size: 12px;
+  color: var(--ink-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.material-count {
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.empty-note {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+/* --- tooltip ------------------------------------------------------------ */
+
+.tooltip-layer {
+  z-index: 100;
+  pointer-events: none;
+}
+
+.tooltip {
+  max-width: 480px;
+  padding: 12px 14px;
+  background: rgb(12 10 8 / 97%);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 70%);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.tooltip-title {
+  font-size: 16px;
+  margin-bottom: 1px;
+}
+
+.tooltip-type {
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+
+.tooltip-affixes {
+  color: var(--rarity-magical);
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+
+.tooltip-block {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid rgb(74 63 46 / 45%);
+}
+
+.tooltip-block:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.tooltip-heading {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+/* These are the tooltip's *secondary* lines — sockets, use-on, requirements.
+   They were a shade off the background, which read as disabled rather than as
+   supporting text; they are secondary, not inaudible. */
+.tooltip-sockets .tooltip-line {
+  color: var(--ink-dim);
+  font-style: italic;
+}
+
+.tooltip-note {
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+
+.tooltip-req .tooltip-line {
+  color: var(--ink);
+}
+
+.tooltip-req.unmet .tooltip-line,
+.tooltip-warn .tooltip-line {
+  color: var(--bad);
+}
+
+.tooltip-id {
+  margin-top: 7px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  font-family: ui-monospace, monospace;
+}
+
+/* --- rarity ------------------------------------------------------------- */
+
+.rarity-common {
+  color: var(--rarity-common);
+}
+.rarity-magical {
+  color: var(--rarity-magical);
+}
+.rarity-rare {
+  color: var(--rarity-rare);
+}
+.rarity-epic {
+  color: var(--rarity-epic);
+}
+.rarity-legendary {
+  color: var(--rarity-legendary);
+}
+.rarity-quest {
+  color: var(--rarity-quest);
+}
+
+/* --- footer ------------------------------------------------------------- */
+
+.app-footer {
+  flex: 0 0 auto;
+  padding: 7px 18px;
+  font-size: 13px;
+  color: var(--ink-dim);
+  border-top: 1px solid var(--line);
+  background: var(--bg-panel);
+}
+
+/* --- stat line colours --------------------------------------------------- */
+
+/*
+ * Grim Dawn colours its own tooltips by damage type and players read them that
+ * way, so a wall of uniform text throws away a channel they already know how to
+ * use. Which class a line gets is decided in `statColors.ts`, off the finished
+ * text — safe because Stage 6C made "every stat reference names its kind" a
+ * mechanical rule, so `Fire Resistance` and `Fire Damage` are both spelled out.
+ */
+.stat-physical { color: var(--type-physical); }
+.stat-pierce { color: var(--type-pierce); }
+.stat-fire { color: var(--type-fire); }
+.stat-cold { color: var(--type-cold); }
+.stat-lightning { color: var(--type-lightning); }
+.stat-acid { color: var(--type-acid); }
+.stat-vitality { color: var(--type-vitality); }
+.stat-aether { color: var(--type-aether); }
+.stat-chaos { color: var(--type-chaos); }
+.stat-bleeding { color: var(--type-bleeding); }
+.stat-elemental { color: var(--type-elemental); }
+
+/* The DoT twins — same hue as the direct type above, one shade lighter. */
+.stat-trauma { color: var(--type-trauma); }
+.stat-burn { color: var(--type-burn); }
+.stat-frostburn { color: var(--type-frostburn); }
+.stat-electrocute { color: var(--type-electrocute); }
+.stat-poison { color: var(--type-poison); }
+.stat-decay { color: var(--type-decay); }
+
+.stat-armor { color: var(--kind-armor); }
+.stat-health { color: var(--kind-health); }
+.stat-energy { color: var(--kind-energy); }
+.stat-ability { color: var(--kind-ability); }
+.stat-speed { color: var(--kind-speed); }
+.stat-attribute { color: var(--kind-attribute); }
+.stat-skill { color: var(--kind-skill); }
+
+/* A granted skill's own colour wins inside its block — the point of that block
+   is that it is a *skill*, whatever damage type its stats happen to mention.
+   Which is why it has to out-specify the type classes: a two-class selector
+   beats a one-class one, so `.stat-fire` alone would lose here and win in the
+   component block, where the type colour is exactly what is wanted. */
+.tooltip-granted .tooltip-line {
+  color: var(--kind-skill);
+}
+
+/* A component's stats are stats. They were being flattened to the body colour
+   by a rule of the same shape as the granted-skill one above — which was the
+   right fix for the wrong block. */
+.tooltip-socketable .tooltip-line:not([class*='stat-']) {
+  color: var(--ink);
+}
+
+.tooltip-socketable-title {
+  color: var(--kind-skill);
+}
+
+/* --- loading ------------------------------------------------------------- */
+
+.banner.loading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}
+
+/* --- long names ---------------------------------------------------------- */
+
+/*
+ * Nothing may widen its column. Grim Dawn names run past forty characters and
+ * a rare with both affixes past sixty; the name ellipsises and the tooltip —
+ * which is not width-constrained — carries the whole thing.
+ */
+.verdict-table tr:not(.verdict-detail) td,
+.verdict-table tbody th {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats-sub,
+.stats-note,
+.advice-summary,
+.key-moves li,
+.hold-list li {
+  overflow-wrap: anywhere;
+}
+
+.chrome-button.primary {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.chrome-button.primary:disabled {
+  color: var(--ink-faint);
+  border-color: var(--line);
+}

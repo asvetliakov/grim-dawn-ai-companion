@@ -34,9 +34,10 @@ Work in this order. Each step constrains the ones after it.
 7. **Requirements are a hard constraint on the post-swap loadout, not the current one.** An outgoing item's \`+Attribute\` and \`-% Requirement\` reduction leave with it, so re-check every joint move against what remains. Then triage by deficit:
    a. the post-swap loadout meets everything → the move is legal;
    b. a small deficit that another proposed item or the unspent attribute points can cover (§2 states what one point is worth — read it there rather than assuming a rate) → propose the **enabler combination as one joint move** ("equip X *and* Y — Y's +25 Cunning is what makes X wearable") and list those enablers in the plan;
-   c. a level or attribute gap that levelling will close → **HOLD** with the number ("until level 84", "needs 42 more spirit");
+   c. a level or attribute gap that levelling will close, **on an item that would actually be equipped the moment it closes** → **HOLD** with the number ("until level 84", "needs 42 more spirit");
    d. a requirement unreachable for this build's attribute line → not a candidate. Say SELL if the item has no other value — unless it is exceptional for the build, in which case HOLD it flagged as "worth an attribute respec (Tonic of Reshaping — scarce), build decision".
    §12 has already grouped every failing candidate by its shared threshold and done the arithmetic; use those groups rather than re-deriving them per item.
+   **HOLD is a recommendation, not a status.** Being unequippable is not a reason to hold an item — it is the reason it is not a verdict *yet*. A hold says "keep this, because on the day the threshold is met you will put it on", so every hold must name the **slot** it is for and the **item it would replace**, and state what it gains over that item. An item that loses to what is already worn is not held even if it is level 90 and shiny; say nothing about it, or SELL it. §12 lists every blocked candidate because a threshold is worth costing against everything it unlocks — most of those items are worse than what the character is wearing, and listing them there is not a recommendation to keep them.
    **Iron: do what §2 says.** It states whether iron is a constraint for this character, computed against a worst-case bill. If it says iron *is* a constraint, budget explicitly and keep a running total. If it says it is **not**, do not compute iron totals and do not write a budget section — quote a price only where it is genuinely large against the pile.
 8. **Socketables are moves with a legality check and a source.**
    - *Legality:* a component or augment may only go to a slot its stated use-on restriction accepts. Never propose an illegal socket.
@@ -96,6 +97,10 @@ Then, as the **final element of your answer and nothing after it**, emit exactly
   "hold": [
     {
       "itemId": "<id>",
+      "itemName": "<its name>",
+      "slot": "<the slot it is being held for, matching a verdicts[].slot>",
+      "beats": "<id of the item it would replace in that slot; omit only if the slot is empty>",
+      "gains": ["<what it gains over that item, fully qualified>"],
       "reason": "<why>",
       "until": "level 84 | 3 attribute points into Spirit",
       "needs": { "levels": 2, "attributePoints": { "attribute": "spirit", "points": 3 } }
@@ -128,6 +133,7 @@ Rules for the plan block:
 - An item named in \`componentFrom\` is destroyed by the extraction: it must not appear in \`hold\`, in \`sell\`, or as the subject of any other verdict.
 - \`gains\` and \`costs\` hold **fully-qualified** stat strings, exactly as the rule above requires of the prose. They are what a UI renders as a delta, so a bare \`+12 Fire\` is unusable there.
 - \`needs\` is the machine-readable form of \`until\`: \`levels\` is how many **more** levels are required, not the target level; \`attributePoints\` is the count of unspent points, not the raw attribute value. Give whichever applies; give both when both do.
+- Every \`hold\` needs \`slot\`, \`gains\` and — unless the slot is empty — \`beats\`. This is checked: a hold that names no slot or beats nothing is reported as an error, because "cannot equip this yet" is a fact about the item and not a recommendation, and a UI that showed it as one would tell the user to keep every over-levelled item they own. Hold only what you would tell them to put on the day the threshold is met.
 - \`projectedResistances\` uses the §3 column labels as keys and the post-change **effective** value — after the difficulty penalty — as the number.
 - \`nextLevels\` mirrors the Next levels section, cheapest threshold first.
 - \`projected.attackSpeedPercent\` and its siblings are the post-change char-sheet percentages, in the same terms §3 states them, already clamped to the caps §3 gives. If a change moves no speed, repeat §3's current figure rather than omitting it.
