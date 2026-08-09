@@ -745,10 +745,46 @@ h3 {
   color: var(--ink-dim);
 }
 
+/*
+ * A last-resort scroller, not the normal path.
+ *
+ * `table-layout: fixed` below means the table always fits its container, so
+ * this never triggers today. It is here because the failure it guards against
+ * is silent: the pane clips horizontally, so a table that outgrows its panel
+ * loses its right-hand column without a scrollbar to say so — which is exactly
+ * what the auto-layout table was doing at the app's own window size.
+ */
+.table-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
 .verdict-table {
   width: 100%;
+  /* Fixed, so `width: 100%` is honoured. With auto layout the four name
+     columns each claimed up to their `max-width` and the table came to 735 px
+     inside a 689 px panel. Fixed shares out the width there actually is. */
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 14px;
+}
+
+/* "Weapon set 1 main" is the longest slot name; the rest is split between the
+   two item names and the action, which is the shortest of the three. */
+.col-slot {
+  width: 20%;
+}
+
+.col-current {
+  width: 29%;
+}
+
+.col-new {
+  width: 26%;
+}
+
+.col-action {
+  width: 25%;
 }
 
 .verdict-table th,
@@ -876,6 +912,13 @@ h3 {
 
 .markdown .md-h:first-child {
   margin-top: 0;
+}
+
+/* Model output this window has no control over: a record path, an identifier
+   with nothing in it a line may break at. Better an ugly break than a paragraph
+   that pushes the panel sideways, because the pane clips and says nothing. */
+.markdown {
+  overflow-wrap: anywhere;
 }
 
 .markdown .md-p {
@@ -1493,6 +1536,17 @@ h3 {
   color: var(--bad);
 }
 
+/* The advisor's own sentence about the move, under its stats: the stats say
+   what the component does, this says why it is the one being proposed. */
+.tooltip-why {
+  margin-top: 7px;
+  padding-top: 6px;
+  border-top: 1px solid rgb(74 63 46 / 45%);
+  font-size: 13px;
+  font-style: italic;
+  color: var(--ink-dim);
+}
+
 .tooltip-id {
   margin-top: 7px;
   color: var(--ink-faint);
@@ -1626,9 +1680,16 @@ h3 {
  * a rare with both affixes past sixty; the name ellipsises and the tooltip —
  * which is not width-constrained — carries the whole thing.
  */
+/* A cell whose name is worth reading in full — it carries the item's own panel
+   on hover, so the pointer should say so. */
+.verdict-table .has-tooltip {
+  cursor: help;
+}
+
+/* The columns are already sized; these only decide what a name too long for
+   one does. Its full text is on the cell's `title`, or in its tooltip. */
 .verdict-table tr:not(.verdict-detail) td,
 .verdict-table tbody th {
-  max-width: 200px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

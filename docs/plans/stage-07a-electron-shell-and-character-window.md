@@ -654,3 +654,35 @@ cover both lines — where they read as a sentence while the columns above stay 
 table. The `why` sentence joins them there rather than being dropped.
 
 82 story assertions.
+
+### Tenth pass (same session): the table fits, and the table explains itself
+
+Asked whether the advice table could truncate at small widths and whether it
+needed a horizontal scrollbar. It could — and the measurement found something
+worse than the question assumed:
+
+- **The table was already clipped at the app's own window size.** Auto layout
+  gave each of four name columns up to its `max-width`, so the table came to
+  735 px inside a 689 px panel, and the pane clips horizontally rather than
+  scrolling — the Action column was being cut off with nothing to say so. Now
+  `table-layout: fixed` with proportional columns (20/29/26/25), which fits at
+  every width the layout has: 657 in 689 at 1920, and measured down to 900.
+  A `.table-scroll` wrapper is kept as a last-resort scroller: it never triggers
+  today, but the failure it guards is *silent*, which is the kind worth a
+  belt-and-braces.
+- **Nothing an ellipsis hides is unreachable.** The two item cells carry the
+  item's own tooltip and the Action cell carries the socketable's — this table
+  is where a reader decides whether to act, and deciding means reading the stats
+  of both items and of the component being installed. The Action panel also
+  carries the advisor's **reason** for the move: the stats say what the
+  component does, the sentence says why it is the one being proposed. Cells with
+  no tooltip to give keep a plain `title`.
+- **The markdown tab was only passing because the fixture answer was tame.** A
+  real answer is model output this window has no control over. `HOSTILE_ANSWER`
+  and its story are the case that actually bites: a table with more columns than
+  the panel is wide, a fenced block of long lines, an identifier with nothing in
+  it a line may break at. Each has its own escape hatch — the table and the code
+  block scroll inside themselves, `overflow-wrap: anywhere` handles the prose —
+  and `stories:check` asserts none of them widens the panel.
+
+93 story assertions.

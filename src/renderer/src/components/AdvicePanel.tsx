@@ -17,9 +17,10 @@
 
 import { useState } from 'react';
 
-import type { AdviseEnvelope, UiSnapshot } from '../../../shared/ipc.js';
-import { holds } from '../advice.js';
+import type { AdviseEnvelope, UiItem, UiSnapshot, UiSocketable } from '../../../shared/ipc.js';
+import { adviceBySlot, holds, slotKey, socketMove } from '../advice.js';
 import { useHighlight } from '../highlight.js';
+import { useTooltip } from '../tooltip.js';
 import { itemsByDocId } from './LoadoutPanel.js';
 import { Markdown } from './Markdown.js';
 
@@ -36,6 +37,10 @@ export function AdvicePanel({
 }): React.ReactNode {
   const highlight = useHighlight();
   const byId = itemsByDocId(snapshot);
+  // The row's Action cell names a component or an augment; the plan is where its
+  // id lives, because a socket move keeps the item and `nextId` is reserved for
+  // the one verdict that swaps it.
+  const bySlot = adviceBySlot(advice);
   const [tab, setTab] = useState<'plan' | 'answer'>('plan');
 
   if (!advice) {
@@ -119,7 +124,23 @@ export function AdvicePanel({
             table. One `<tbody>` per verdict is what keeps the pair a single
             row-group — and what lets the hover and the click cover both lines.
           */}
+          <div className="table-scroll">
           <table className="verdict-table">
+            {/*
+              Proportional widths with `table-layout: fixed`, because the
+              natural layout does not fit: four columns of auto-sized names came
+              to 735 px inside a 689 px panel, and the pane clips rather than
+              scrolls, so the Action column was being cut off at the app's own
+              window size. Fixed shares out whatever width there is instead —
+              and nothing an ellipsis hides is lost, because the two item cells
+              carry the item's own tooltip and the rest carry a `title`.
+            */}
+            <colgroup>
+              <col className="col-slot" />
+              <col className="col-current" />
+              <col className="col-new" />
+              <col className="col-action" />
+            </colgroup>
             <thead>
               <tr>
                 <th>Slot</th>
@@ -144,10 +165,22 @@ export function AdvicePanel({
                   }}
                 >
                   <tr>
-                    <th scope="row">{row.slot}</th>
-                    <td>{row.currentName}</td>
-                    <td>{row.replaces ? row.nextName : ''}</td>
-                    <td>{row.action}</td>
+                    <th scope="row" title={row.slot}>
+                      {row.slot}
+                    </th>
+                    {/* The two item cells get the real item panel, not just the
+                        ellipsis-rescuing `title`: this table is where a reader
+                        decides whether to act on a move, and deciding means
+                        reading the stats of both items. The `title` stays as the
+                        fallback for an id the snapshot has never heard of —
+                        a stale save, or the `unknown-id` check firing. */}
+                    <ItemCellText id={row.currentId} name={row.currentName} byId={byId} />
+                    <ItemCellText id={row.nextId} name={row.replaces ? row.nextName : ''} byId={byId} />
+                    <ActionCell
+                      action={row.action}
+                      socketable={socketableFor(bySlot, snapshot, row.slot)}
+                      why={row.why}
+                    />
                   </tr>
                   {detail && (
                     <tr className="verdict-detail">
@@ -170,6 +203,7 @@ export function AdvicePanel({
               );
             })}
           </table>
+          </div>
 
           {held.length > 0 && (
             <div className="hold-list">
@@ -223,6 +257,86 @@ export function AdvicePanel({
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * One item's name in the verdict table, with its full tooltip on hover.
+ *
+ * `mouseover` for the same reason the loadout cards use it: it bubbles, so the
+ * panel is re-asserted whichever part of the cell the pointer crossed to get
+ * here — including on the way back from the neighbouring cell, which is the
+ * move a reader comparing two items makes constantly.
+ */
+function ItemCellText({
+  id,
+  name,
+  byId,
+}: {
+  id: string;
+  name: string;
+  byId: Map<string, UiItem>;
+}): React.ReactNode {
+  const tooltip = useTooltip();
+  const item = id ? byId.get(id) : undefined;
+  if (!item) return <td title={name}>{name}</td>;
+  return (
+    <td
+      className="has-tooltip"
+      onMouseOver={(e) => tooltip.show(e.currentTarget, item)}
+      onMouseLeave={tooltip.hide}
+    >
+      {name}
+    </td>
+  );
+}
+
+/**
+ * The socketable a row's Action proposes, when it proposes one.
+ *
+ * The same lookup the loadout does: the plan names it by `targetId`, and the
+ * snapshot's socketable dictionary has its stats — which the item cells cannot
+ * supply, because a proposed component is installed nowhere.
+ */
+function socketableFor(
+  bySlot: ReturnType<typeof adviceBySlot>,
+  snapshot: UiSnapshot,
+  slot: string,
+): { part: UiSocketable; kind: string } | undefined {
+  const move = socketMove(bySlot.get(slotKey(slot)));
+  const part = move ? snapshot.socketables[move.id] : undefined;
+  // The verdict says which socket it goes in, so the panel is labelled with the
+  // one the reader is about to fill rather than a guess.
+  return part && move ? { part, kind: move.kind === 'augment' ? 'Augment' : 'Component' } : undefined;
+}
+
+/**
+ * The Action cell: `KEEP`, or a socket move and what it installs.
+ *
+ * Where it names a socketable, that socketable's own panel is what the reader
+ * wants — the whole question about `ADD-COMPONENT Mark of Mogdrogen` is what
+ * the Mark does. Where it does not, the `title` still rescues an ellipsis.
+ */
+function ActionCell({
+  action,
+  socketable,
+  why,
+}: {
+  action: string;
+  socketable: { part: UiSocketable; kind: string } | undefined;
+  /** The advisor's sentence about this move — the second half of "why this one?". */
+  why: string;
+}): React.ReactNode {
+  const tooltip = useTooltip();
+  if (!socketable) return <td title={action}>{action}</td>;
+  return (
+    <td
+      className="has-tooltip"
+      onMouseOver={(e) => tooltip.showSocketable(e.currentTarget, socketable.kind, socketable.part, why)}
+      onMouseLeave={tooltip.hide}
+    >
+      {action}
+    </td>
   );
 }
 

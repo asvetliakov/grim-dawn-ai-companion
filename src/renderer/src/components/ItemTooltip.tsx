@@ -17,13 +17,13 @@ import { statClass } from '../statColors.js';
 
 export type TooltipSubject =
   | { kind: 'item'; item: UiItem }
-  | { kind: 'socketable'; label: string; part: UiSocketable };
+  | { kind: 'socketable'; label: string; part: UiSocketable; note?: string };
 
 export function Tooltip({ subject }: { subject: TooltipSubject }): React.ReactNode {
   return subject.kind === 'item' ? (
     <ItemTooltip item={subject.item} />
   ) : (
-    <SocketableTooltip label={subject.label} part={subject.part} />
+    <SocketableTooltip label={subject.label} part={subject.part} {...(subject.note ? { note: subject.note } : {})} />
   );
 }
 
@@ -99,8 +99,23 @@ export function ItemTooltip({ item }: { item: UiItem }): React.ReactNode {
   );
 }
 
-/** A component or augment hovered on its own, in the loadout or a grid. */
-export function SocketableTooltip({ label, part }: { label: string; part: UiSocketable }): React.ReactNode {
+/**
+ * A component or augment hovered on its own, in the loadout or a grid.
+ *
+ * `note` is the advisor's own sentence about the move — why this component, in
+ * this slot, now. It belongs here because the panel is what a reader is looking
+ * at when they ask "and why this one?", and the stats above it answer only the
+ * first half of that.
+ */
+export function SocketableTooltip({
+  label,
+  part,
+  note,
+}: {
+  label: string;
+  part: UiSocketable;
+  note?: string;
+}): React.ReactNode {
   return (
     <div className="tooltip">
       <div className="tooltip-title tooltip-socketable-title">{part.name}</div>
@@ -109,6 +124,7 @@ export function SocketableTooltip({ label, part }: { label: string; part: UiSock
         <StatLines lines={part.lines} />
       </div>
       {part.useOn && <div className="tooltip-note">use-on: {part.useOn}</div>}
+      {note && <div className="tooltip-why">{note}</div>}
     </div>
   );
 }

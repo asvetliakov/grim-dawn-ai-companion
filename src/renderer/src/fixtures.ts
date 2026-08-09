@@ -768,3 +768,30 @@ Your damage is fine. Your **Bleeding resistance** is not: 38 against a cap of
 Two levels from now the Mythical Ashfallen Visor replaces the head slot and
 this whole answer is worth re-running.
 `;
+
+/**
+ * An answer written to be hostile to the layout.
+ *
+ * The pretty fixture above proves the renderer works; this proves it does not
+ * *break*, which is a different question and the one that bites in production.
+ * A real answer is a few thousand words of model output over which this window
+ * has no control: a table with more columns than the panel is wide, a record
+ * path with no spaces in it, a fenced block of long lines. Each of those has its
+ * own escape hatch — the table and the code block scroll inside themselves, the
+ * prose breaks anywhere — and none of them may push the panel sideways, because
+ * the pane clips rather than scrolls and the overflow would be silent.
+ */
+export const HOSTILE_ANSWER = `# An answer that does not fit
+
+| Slot | Current | Proposed | Fire | Cold | Lightning | Acid | Vitality | Aether | Chaos | Bleeding |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Weapon set 1 main | Servitor's Slicer | Preposterously Ostentatious Harbinger's Girdle of the Everlasting Midnight Vigil | 74 | 74 | 74 | 100 | 94 | 148 | 82 | 63 |
+
+The record is \`records/items/gearweapons/swords1h/d012_sword.dbr\` and the
+identifier is PreposterouslyOstentatiousHarbingersGirdleOfTheEverlastingMidnightVigilOfDoom,
+which has nothing in it a line may break at.
+
+\`\`\`
+records/items/gearaccessories/amulets/d101_amulet.dbr  itemLevel=84  offensivePhysicalMin=146
+\`\`\`
+`;

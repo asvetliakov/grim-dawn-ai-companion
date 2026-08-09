@@ -10,7 +10,7 @@ import { ContainerPanel } from '../components/ContainerPanel.js';
 import { ItemTooltip, SocketableTooltip } from '../components/ItemTooltip.js';
 import { LoadoutPanel } from '../components/LoadoutPanel.js';
 import { StatsPanel } from '../components/StatsPanel.js';
-import { fixtureAdvice, fixtureSnapshot } from '../fixtures.js';
+import { HOSTILE_ANSWER, fixtureAdvice, fixtureSnapshot } from '../fixtures.js';
 import { HighlightProvider } from '../highlight.js';
 import { IconUrlProvider } from '../icons.js';
 import { TooltipProvider } from '../tooltip.js';
@@ -176,6 +176,32 @@ export const Answer: StoryObj = {
     return (
       <Frame>
         <AdvicePanel snapshot={snapshot} advice={fixtureAdvice(snapshot)} onRun={() => {}} />
+      </Frame>
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const tabs = canvasElement.querySelectorAll<HTMLButtonElement>('.advice-tabs .tab');
+    tabs[1]?.click();
+  },
+};
+
+/**
+ * The answer the layout has to survive rather than the one it flatters.
+ *
+ * A real answer is model output this window has no control over. Each hostile
+ * shape has its own escape hatch — a wide table scrolls inside itself, a fenced
+ * block scrolls inside itself, prose with no spaces in it breaks anywhere — and
+ * none of them may push the panel sideways, because the pane clips rather than
+ * scrolls and that overflow would be silent.
+ */
+export const AnswerHostile: StoryObj = {
+  name: 'Advice — an answer that does not fit',
+  render: () => {
+    const snapshot = fixtureSnapshot();
+    const advice = { ...fixtureAdvice(snapshot), answer: HOSTILE_ANSWER };
+    return (
+      <Frame>
+        <AdvicePanel snapshot={snapshot} advice={advice} onRun={() => {}} />
       </Frame>
     );
   },

@@ -19,7 +19,7 @@ import { Tooltip, type TooltipSubject } from './components/ItemTooltip.js';
 
 interface TooltipApi {
   show: (element: Element, item: UiItem) => void;
-  showSocketable: (element: Element, label: string, part: UiSocketable) => void;
+  showSocketable: (element: Element, label: string, part: UiSocketable, note?: string) => void;
   hide: () => void;
 }
 
@@ -75,10 +75,12 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
     [refs],
   );
   const showSocketable = useCallback(
-    (element: Element, label: string, part: UiSocketable) => {
+    (element: Element, label: string, part: UiSocketable, note?: string) => {
       refs.setPositionReference(anchorFor(element));
       setSubject((prev) =>
-        prev?.kind === 'socketable' && prev.part === part ? prev : { kind: 'socketable', label, part },
+        prev?.kind === 'socketable' && prev.part === part && prev.note === note
+          ? prev
+          : { kind: 'socketable', label, part, ...(note ? { note } : {}) },
       );
     },
     [refs],

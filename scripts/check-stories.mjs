@@ -161,6 +161,51 @@ const detail = await page.locator('.verdict-table .verdict-detail td').first().e
 check('gains and costs run the full width under their row', detail.span === 4 && detail.wider, JSON.stringify(detail));
 check('and wrap rather than ellipsise', detail.wraps === 'normal', detail.wraps);
 
+// The table must fit its panel. It used to be 735 px of auto-laid-out columns
+// inside a 689 px panel, and the pane clips horizontally — so the Action column
+// was cut off at the app's own window size, with no scrollbar to say so.
+const fits = await page.locator('.verdict-table').evaluate((t) => {
+  const panel = t.closest('.advice-panel');
+  return { table: Math.round(t.scrollWidth), panel: panel.clientWidth };
+});
+check('the verdict table fits its panel', fits.table <= fits.panel, `${fits.table} in ${fits.panel}`);
+// Nothing an ellipsis hides may be unreachable.
+const reachable = await page.locator('.verdict-table tr:not(.verdict-detail) td, .verdict-table tbody th').evaluateAll((cells) =>
+  cells
+    .filter((c) => c.scrollWidth > c.clientWidth + 1)
+    .every((c) => c.title.trim().length > 0 || c.classList.contains('has-tooltip')),
+);
+check('and every truncated cell can still be read', reachable);
+
+// The two item cells carry the item's own panel: this table is where a reader
+// decides whether to act, and deciding means reading both items' stats.
+const cells = page.locator('.verdict-table tbody').nth(1).locator('td.has-tooltip');
+await cells.first().hover();
+await page.waitForTimeout(220);
+const fromTable = (await page.locator('.tooltip').innerText()).split('\n')[0];
+check('hovering the Current cell shows that item', fromTable.length > 0, fromTable);
+await cells.nth(1).hover();
+await page.waitForTimeout(220);
+const nextTip = (await page.locator('.tooltip').innerText()).split('\n')[0];
+check('and the New cell shows the other one', nextTip !== fromTable, `${fromTable} → ${nextTip}`);
+// And the Action cell names a socketable, whose own stats are the whole
+// question about `ADD-COMPONENT Mark of Mogdrogen`.
+const actionCell = page.locator('.verdict-table tbody', { hasText: 'ADD-COMPONENT' }).locator('td.has-tooltip').last();
+await actionCell.hover();
+await page.waitForTimeout(220);
+const actionTip = (await page.locator('.tooltip').innerText()).split('\n');
+check('hovering an Action shows the socketable it installs', actionTip[0]?.includes('Mogdrogen'), actionTip.slice(0, 2).join(' · '));
+check('labelled with the socket it fills', actionTip[1] === 'Component', actionTip[1]);
+// The stats say what the component does; the advisor's sentence says why this
+// one. A reader asking "and why?" is looking at this panel when they ask it.
+check(
+  'and carries the advisor’s reason for the move',
+  actionTip.some((l) => l.includes('socket is empty')),
+  actionTip[actionTip.length - 1],
+);
+await page.mouse.move(5, 5);
+await page.waitForTimeout(100);
+
 // A verdict row is about two items; lighting one is half an answer.
 await page.locator('.verdict-table tbody').nth(1).hover();
 await page.waitForTimeout(120);
@@ -343,6 +388,27 @@ check('and the plan is still there behind it', (await page.locator('.verdict-tab
 const hold = await page.locator('.hold-list li').first().innerText();
 check('a hold names its slot and what it displaces', /for Head over /.test(hold), hold.split('\n')[0]);
 check('and what it gains', (await page.locator('.hold-list .gain').count()) >= 1);
+
+// An answer is model output this window has no control over. Each hostile shape
+// has its own escape hatch, and none of them may push the panel sideways —
+// the pane clips rather than scrolls, so that overflow would be silent.
+await page.goto(story('parts--answer-hostile'), { waitUntil: 'networkidle' });
+await page.waitForTimeout(400);
+const hostile = await page.evaluate(() => {
+  const panel = document.querySelector('.advice-panel');
+  const wrap = document.querySelector('.md-table-wrap');
+  const code = document.querySelector('.md-code');
+  return {
+    panelOverflows: panel.scrollWidth > panel.clientWidth,
+    tableScrolls: wrap ? wrap.scrollWidth > wrap.clientWidth : false,
+    codeScrolls: code ? code.scrollWidth > code.clientWidth : false,
+    paraOverflow: [...document.querySelectorAll('.md-p')].map((e) => e.scrollWidth - e.clientWidth),
+  };
+});
+check('an oversized answer never widens the panel', !hostile.panelOverflows, JSON.stringify(hostile));
+check('its wide table scrolls inside itself', hostile.tableScrolls);
+check('its code block scrolls inside itself', hostile.codeScrolls);
+check('and an unbreakable identifier breaks rather than overflowing', hostile.paraOverflow.every((d) => d <= 0));
 
 await page.goto(story('parts--materials'), { waitUntil: 'networkidle' });
 const materialRows = page.locator('.material-row');
