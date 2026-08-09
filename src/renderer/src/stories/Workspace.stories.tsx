@@ -9,7 +9,7 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 
-import { LoadingBanner, Shell, Workspace } from '../App.js';
+import { LoadingBanner, Shell, Workspace, type ColumnTab } from '../App.js';
 import { Header } from '../components/Header.js';
 import { fixtureAdvice, fixtureSnapshot, FIXTURE_THINKING } from '../fixtures.js';
 import { IconUrlProvider } from '../icons.js';
@@ -62,6 +62,7 @@ function Screen({
   run,
   activity,
   adviceError,
+  initialTab,
   loading = false,
   progress,
   error,
@@ -83,6 +84,8 @@ function Screen({
   /** What the model has written so far. */
   activity?: RunActivity;
   adviceError?: string;
+  /** Which column tab to open on — a story showing the advice panel says so. */
+  initialTab?: ColumnTab;
   loading?: boolean;
   progress?: string;
   error?: string;
@@ -116,6 +119,7 @@ function Screen({
             {...(activity ? { activity } : {})}
             history={history}
             {...(adviceError ? { adviceError } : {})}
+            {...(initialTab ? { initialTab } : {})}
             onRunAdvice={() => {}}
             onCancelAdvice={() => {}}
             onNewRun={() => {}}
@@ -153,7 +157,9 @@ export const WithAdvice: Story = {
  * button is the other way out of here.
  */
 export const AdviceNothingOpen: Story = {
-  render: () => <Screen snapshot={fixtureSnapshot()} history={STORED_RUNS} />,
+  // On the Advice tab, because the story is about the empty state's own words:
+  // how many answers are kept, and where the door to them is.
+  render: () => <Screen snapshot={fixtureSnapshot()} history={STORED_RUNS} initialTab="advice" />,
 };
 
 /**
@@ -219,8 +225,16 @@ export const AdviceAfterActing: Story = {
  * the open run's date, and no second picker.
  */
 export const AdviceHistory: Story = {
+  // On the Advice tab: this story is about the panel naming its run and the
+  // controls around a stored answer, not about the marks it paints.
   render: () => (
-    <Screen snapshot={fixtureSnapshot()} withAdvice history={STORED_RUNS} adviceId={STORED_RUNS[0]!.id} />
+    <Screen
+      snapshot={fixtureSnapshot()}
+      withAdvice
+      history={STORED_RUNS}
+      adviceId={STORED_RUNS[0]!.id}
+      initialTab="advice"
+    />
   ),
 };
 

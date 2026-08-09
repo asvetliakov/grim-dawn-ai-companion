@@ -83,12 +83,18 @@ check('with the proposal column locked before any run', (await page.locator('.fa
 // A run, started from the button
 // ---------------------------------------------------------------------------
 
+// The question box lives in the advice panel, one column tab over from the
+// loadout the window opens on.
+await page.locator('.column-tabs .tab', { hasText: 'Advice' }).click();
 await page.locator('.advice-question').fill(QUESTION);
 await page.locator('.advice-panel .run-button').click();
 
 // The phases come from the main process's own pushes. Only observable on a run
 // that takes real time — the sequence itself is pinned in
 // `test/advise-runner.test.ts`, where the provider's timing is controllable.
+// Completion is read off the *loadout*: the run finishing switches the column
+// back there (that auto-switch is itself part of what this proves), so the
+// verdict table is deliberately not on screen at this point.
 const phases = new Set();
 const started = Date.now();
 while (Date.now() - started < runBudgetMs) {
@@ -97,18 +103,41 @@ while (Date.now() - started < runBudgetMs) {
     phases.add(label);
     console.log(`       …${label} (${Math.round((Date.now() - started) / 1000)}s)`);
   }
-  if ((await page.locator('.verdict-table').count()) > 0) break;
+  // The loadout reappearing *is* the completion signal: the column switched to
+  // Advice for the run, and only the run finishing switches it back.
+  if ((await page.locator('.loadout-grid').count()) > 0) break;
   await page.waitForTimeout(250);
 }
+// One beat for the same render to land everywhere, with the pointer parked: it
+// was left where the Run button was, which is where the New run button now is —
+// and a hovered control unmounting is exactly the orphaned-panel case the
+// tooltip provider now closes itself out of.
+await page.mouse.move(5, 5);
+await page.waitForTimeout(500);
+const afterRun = {
+  loadout: await page.locator('.loadout-grid').count(),
+  waiting: await page.locator('.face-locked.waiting').count(),
+  tab: (await page.locator('.column-tabs .tab.selected').innerText().catch(() => '?')).trim(),
+  phase: await page.locator('.run-phase').count(),
+};
+// The degenerate case is the mock's, not the app's: when the answer lands while
+// the renderer is still busy, Electron delivers every push in one task, React
+// batches them into a single render, and the run is over before it was ever on
+// screen — so there is no transition to switch back from and the column stays
+// where the script put it. A real ~500 s run cannot do that.
+const cameBack = afterRun.loadout === 1 && afterRun.waiting < 14;
+const tooFastToRender = phases.size === 0 && afterRun.tab === 'Advice' && afterRun.phase === 0;
 check(
-  'the run finished and produced a verdict table',
-  (await page.locator('.verdict-table').count()) === 1,
-  phases.size ? `phases: ${[...phases].join(' → ')}` : 'answered inside a frame — no phase to observe',
+  'the run finished and came back to the loadout',
+  cameBack || tooFastToRender,
+  `${phases.size ? `phases: ${[...phases].join(' → ')}` : 'answered inside a frame'}${tooFastToRender ? ' — before the run ever rendered, so nothing to switch back from' : ''}; ${JSON.stringify(afterRun)}`,
 );
+await page.locator('.column-tabs .tab', { hasText: 'Advice' }).click();
+await page.locator('.verdict-table').waitFor({ state: 'visible', timeout: 10_000 });
+check('and produced a verdict table', (await page.locator('.verdict-table').count()) === 1);
 const cost = await page.locator('.advice-cost').innerText();
 check('with a cost line', /call/.test(cost), cost.replace(/\n/g, ' '));
 check('that repeats the question asked', cost.includes(QUESTION));
-check('and the proposal column is no longer locked', (await page.locator('.face-locked.waiting').count()) < 14);
 
 // ---------------------------------------------------------------------------
 // The file, and re-showing it after a reload
@@ -176,8 +205,12 @@ await page.reload();
 await page.locator('.loadout-grid').waitFor({ state: 'visible', timeout: 120_000 });
 await page.waitForTimeout(500);
 check('a reload comes back to the empty state', (await page.locator('.verdict-table').count()) === 0);
+check('and to the loadout tab', (await page.locator('.loadout-grid').count()) === 1);
 check('with the stored answer still on the list', (await page.locator('.app-header .advice-runs option').count()) === 2);
 await page.locator('.app-header .advice-runs').selectOption({ index: 1 });
+// Opening a stored run switches no tabs — only a *run* moves the column — so the
+// table is read on the Advice tab.
+await page.locator('.column-tabs .tab', { hasText: 'Advice' }).click();
 await page.locator('.verdict-table').waitFor({ state: 'visible', timeout: 30_000 });
 check('and re-shows it when picked', (await page.locator('.verdict-table').count()) === 1);
 

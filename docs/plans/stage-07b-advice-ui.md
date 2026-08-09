@@ -575,3 +575,30 @@ raw (absorption and its qualifiers are one line now); and the container tabs +
 legend are **sticky** while the grids scroll.
 
 379 tests, 227 story assertions, 24 app assertions.
+
+### Fifth pass — the column becomes tabs
+
+**Loadout and Advice now share the right-hand column as tabs, and the tab
+follows the run** (the user's design, adopted with one amendment). Stacked, the
+advice panel sat below fourteen slot rows — off screen exactly when a run was
+streaming its reasoning. A run starting opens Advice; the run finishing returns
+to Loadout, where the results actually are; a manual tab change during the run
+pins the column (the amendment — being yanked out of the transcript mid-read is
+the pinned-scroll mistake in tab form); a failed run stays on Advice with its
+error, and a refused start surfaces it. Opening a stored run moves nothing.
+
+Chasing one flaky app-check through the new auto-switching surfaced two real
+bugs and one honest degenerate case, all now pinned in CLAUDE.md: the optimistic
+"run started" state could resurrect a finished run (Electron does not order an
+invoke reply against pushes — `endedRuns` guards it); an orphaned tooltip — a
+hovered control unmounting under a stationary pointer — parked itself over the
+column tabs and swallowed clicks (the provider now closes a panel whose anchor
+left the document); and a mock-fast run can finish inside a single React render,
+leaving no transition to switch back from, which `check-app.mjs` now tolerates
+by name instead of failing on.
+
+Also from this pass: the loadout's placeholder `—` sits on the arrow's line
+whatever the worn card's height (a stretch-and-centre on the placeholder cell;
+top-aligned in a 34 px box it floated above the arrow on any two-line row).
+
+379 tests, 232 story assertions, 25 app assertions.

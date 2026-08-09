@@ -311,6 +311,11 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
           const pending = opening.current;
           opening.current = undefined;
           if (!pending) return;
+          // The wait outlives fast UI: a run finishing swaps the button under a
+          // stationary pointer, and a panel anchored to an unmounted element is
+          // positioned against nothing — floating-ui parks it at the viewport's
+          // top-left, over whatever lives there, with no mouseleave ever coming.
+          if (!pending.anchor.isConnected) return;
           // The anchor moves *with* the subject: the panel must not slide to the
           // new card while it is still describing the old one.
           anchor.current = pending.anchor;
@@ -374,6 +379,28 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
     () => ({ show, showSocketable, showNote, hide }),
     [show, showSocketable, showNote, hide],
   );
+
+  /**
+   * A panel whose subject has left the document closes itself.
+   *
+   * Nothing else can close it: `hide` rides the anchor's `mouseleave`, and an
+   * unmounted anchor fires no events — so a tab switch (or any re-render that
+   * replaces a hovered control) orphaned the panel at the viewport's top-left,
+   * over the column tabs, swallowing clicks until something happened to brush
+   * it. Polled rather than observed: a MutationObserver on the whole tree costs
+   * more than four checks a second on the rare frames a panel is open at all.
+   */
+  useEffect(() => {
+    if (!subject) return;
+    const timer = setInterval(() => {
+      if (anchor.current && !anchor.current.isConnected) {
+        live.current = null;
+        setSubject(null);
+        hold(null);
+      }
+    }, 250);
+    return () => clearInterval(timer);
+  }, [subject, hold]);
 
   /**
    * The wheel, over the panel.

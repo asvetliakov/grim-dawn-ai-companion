@@ -1640,6 +1640,47 @@ h3 {
   margin-bottom: 12px;
 }
 
+/*
+ * The Loadout | Advice strip at the top of the right-hand column. Sticky for
+ * the container chrome's reason: deep in fourteen slot rows, the way to the
+ * other tab must not be a scroll back up. It sits on the page ground rather
+ * than in a panel, so it paints the page background while panels pass under.
+ */
+.column-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: var(--bg);
+  margin-bottom: 0;
+  padding-bottom: 4px;
+}
+
+/*
+ * A run is alive on the Advice tab — the one fact worth knowing from the other
+ * tab. The containers' "something in here" dot, in the accent the run's own
+ * spinner uses, pulsing because the run is the one thing in the window that is
+ * genuinely *happening*.
+ */
+.tab-running {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: tab-running-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tab-running-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
 .tab,
 .page-tab {
   position: relative;

@@ -66,11 +66,29 @@ async function clearTip() {
 const problems = [];
 page.on('pageerror', (e) => problems.push(e.message));
 
+/**
+ * The right-hand column is Loadout | Advice tabs since the fourth pass, so a
+ * check about the panel that is not on screen switches first. The strip is its
+ * own class — `.tab` alone would also match the container tabs.
+ */
+async function columnTab(label) {
+  await page.locator('.column-tabs .tab', { hasText: label }).click();
+  await page.waitForTimeout(120);
+}
+
 // ---------------------------------------------------------------------------
 // With advice
 // ---------------------------------------------------------------------------
 
 await page.goto(story('app-workspace--with-advice'), { waitUntil: 'networkidle' });
+
+// The column opens on the loadout: the result of a run is marks and proposals
+// on the gear, and the table about them is one tab away.
+check('the right column is two tabs', (await page.locator('.column-tabs .tab').count()) === 2);
+check(
+  'and opens on the loadout',
+  (await page.locator('.column-tabs .tab.selected').innerText()).trim() === 'Loadout',
+);
 
 const rows = await page.locator('.slot-row').count();
 check('the loadout renders one row per slot', rows === 14, `${rows} rows`);
@@ -119,8 +137,10 @@ const full = (
 ).join(',');
 check('with the full verdict still on it', full === 'ADD-COMPONENT,RE-AUGMENT,SWAP-COMPONENT', full);
 // The abbreviation is only safe because the word survives somewhere legible.
+await columnTab('Advice');
 const actions = (await page.locator('.verdict-table td:nth-child(4)').allInnerTexts()).join(' ');
 check('and spelled out in the advice table', actions.includes('SWAP-COMPONENT'), actions.trim().split(/\s{2,}/).join(' | '));
+await columnTab('Loadout');
 // Nothing may be clipped: a verdict that nearly fits is the one the reader most
 // needs to read.
 const clipped = await page
@@ -357,12 +377,14 @@ await clearTip();
 // What the run cost, and what it can no longer find
 // ---------------------------------------------------------------------------
 
+await columnTab('Advice');
 const cost = await page.locator('.advice-cost').innerText();
 check('the panel says what the run cost', /2 calls/.test(cost) && /\$4\.16/.test(cost), cost);
 check('and how long it took', /14m/.test(cost), cost);
 // The only visible sign that the repair loop fired at all.
 check('and repeats the question that was asked', /asked:/.test(cost));
 check('nothing is stale while the save matches the run', (await page.locator('.advice-stale').count()) === 0);
+await columnTab('Loadout');
 
 // Three columns at 1920: loadout, sheet, containers — all visible at once.
 check('all three panes are on screen at 1920', (await page.locator('.pane').count()) === 3);
@@ -378,6 +400,7 @@ check('the tab holding it is marked', (await page.locator('.container-panel .tab
 // Gains and costs sit on their own full-width line under their row, as they do
 // in the loadout — in a fifth column the longest stat string set the height of
 // every row.
+await columnTab('Advice');
 const detail = await page.locator('.verdict-table .verdict-detail td').first().evaluate((td) => ({
   span: td.colSpan,
   wraps: getComputedStyle(td).whiteSpace,
@@ -412,7 +435,10 @@ await showTip(cells.nth(1));
 const nextTip = (await page.locator(ITEM_TIP).innerText()).split('\n')[0];
 check('and the New cell shows the other one', nextTip !== fromTable, `${fromTable} → ${nextTip}`);
 // And the Action cell names a socketable, whose own stats are the whole
-// question about `ADD-COMPONENT Mark of Mogdrogen`.
+// question about `ADD-COMPONENT Mark of Mogdrogen`. Parked first: with the
+// panel at the top of its column the previous cell's tooltip pair covers this
+// row, and `.hover()` would retry onto the panel — which keeps it open forever.
+await clearTip();
 const actionCell = page.locator('.verdict-table tbody', { hasText: 'ADD-COMPONENT' }).locator('td.has-tooltip').last();
 await showTip(actionCell);
 const actionTip = (await page.locator(ITEM_TIP).innerText()).split('\n');
@@ -427,11 +453,13 @@ check(
 );
 await clearTip();
 
-// A verdict row is about two items; lighting one is half an answer.
+// A verdict row is about two items; lighting one is half an answer. The loadout
+// is on the other tab now, so what it lights from here is the container copy.
 await page.locator('.verdict-table tbody').nth(1).hover();
 await page.waitForTimeout(120);
 const bothLit = await page.locator('.item-cell.highlighted, .item-face.highlighted').count();
 check('an advice row highlights both items it names', bothLit >= 1, `${bothLit} lit`);
+await columnTab('Loadout');
 
 // Clicking reveals: the panel switches to the tab and page holding the item.
 await page.locator('.container-panel .tab', { hasText: 'Transfer' }).click();
@@ -706,6 +734,7 @@ check('and not as a paragraph under it', !/rolled per hit/.test(armour));
 // The model's own prose
 // ---------------------------------------------------------------------------
 
+await columnTab('Advice');
 await page.locator('.advice-tabs .tab', { hasText: 'Full answer' }).click();
 await page.waitForTimeout(150);
 check('the answer tab renders the prose', (await page.locator('.markdown').count()) === 1);
@@ -802,9 +831,9 @@ const locked = await page.locator('.face-locked.waiting').count();
 check('without advice every proposal slot reads as locked', locked === 14, `${locked} locked`);
 check('and says what would fill it', (await page.locator('.loadout-hint').count()) === 1);
 check('the header offers the run', (await page.locator('.chrome-button.primary').innerText()).includes('Run advice'));
-// The question box belongs to the run that is about to start, so this is where it
-// lives: with an answer open it steers nothing, and mid-run there is nothing left
-// to steer.
+// The question box belongs to the run that is about to start, and it lives in
+// the advice panel — one tab over from the loadout the column opens on.
+await columnTab('Advice');
 check('and the question box is offered with it', (await page.locator('.advice-question').count()) === 1);
 // Nothing to put away yet, and — with no stored runs for this character — nothing
 // to pick between either.
@@ -814,6 +843,7 @@ check(
     (await page.locator('.advice-panel .run-button.subtle').count()) === 0,
 );
 check('and — no stored runs — nothing to pick between', (await page.locator('.advice-runs').count()) === 0);
+await columnTab('Loadout');
 
 // The panes are `height: 100%` all the way down; if the chain breaks they
 // collapse to their content and a long loadout simply cannot be reached.
@@ -837,6 +867,14 @@ check('and actually moves when scrolled', scrolled > 0, `scrollTop ${scrolled}`)
 // ---------------------------------------------------------------------------
 
 await page.goto(story('app-workspace--advice-running'), { waitUntil: 'networkidle' });
+await page.waitForTimeout(200);
+// A run starting opens the Advice tab by itself — the transcript is what there
+// is to watch — and the strip says a run is alive in there from the other tab.
+check(
+  'a run in flight opens the Advice tab by itself',
+  (await page.locator('.advice-panel').count()) === 1 && (await page.locator('.loadout-grid').count()) === 0,
+);
+check('and the Advice tab carries a live dot', (await page.locator('.column-tabs .tab-running').count()) === 1);
 const phase = await page.locator('.run-phase').innerText();
 check('a run in flight says which phase it is in', phase === 'asking the model', phase);
 const clock = await page.locator('.run-clock').innerText();
@@ -918,6 +956,10 @@ check('a click reopens it', (await page.locator('.activity-text').count()) === 1
 // A refused start is the readable half of this feature. It must be a sentence in
 // the panel, never a blank pane.
 await page.goto(story('app-workspace--advice-failed'), { waitUntil: 'networkidle' });
+await page.waitForTimeout(200);
+// A refusal never becomes a run, so the run-follows-tab rule cannot surface it;
+// the error does so itself — a sentence on a hidden tab explains nothing.
+check('a refusal surfaces the Advice tab by itself', (await page.locator('.advice-panel').count()) === 1);
 const failure = await page.locator('.advice-error').innerText();
 check('a refused run explains itself in the panel', /claude CLI not found/.test(failure), failure);
 check('and the run can still be started', await page.locator('.advice-panel .run-button').isEnabled());
@@ -956,9 +998,11 @@ check(
 );
 check('and named, so the reader knows which verdicts to ignore', /Feet/.test(driftNote));
 // The answer is still there. Most of a fourteen-slot plan survives one slot moving.
+await columnTab('Advice');
 check('the plan is still shown', (await page.locator('.verdict-table').count()) === 1);
 const struck = await page.locator('.verdict-table tbody.done').count();
 check('with the finished row struck through rather than removed', struck === 1, `${struck} struck`);
+await columnTab('Loadout');
 // And in the loadout, where the same item now sits on both sides of the row: an
 // unmarked EQUIP there reads as "equip the item you are already wearing".
 const doneTag = await page.locator('.slot-row.done .verdict-tag').count();
@@ -993,8 +1037,12 @@ check('and a border, so it reads as a stamp not a third line of the name', stamp
 await page.goto(story('app-workspace--advice-nothing-open'), { waitUntil: 'networkidle' });
 await page.waitForTimeout(300);
 check('nothing is open on arrival', (await page.locator('.verdict-table').count()) === 0);
+// The story opens on the Advice tab (it is about the empty state's own words);
+// the locked column is the loadout's half of the same fact.
+await columnTab('Loadout');
 check('and the proposal column reads as locked', (await page.locator('.face-locked.waiting').count()) === 14);
 check('with no marks on the containers', (await page.locator('.item-cell.action').count()) === 0);
+await columnTab('Advice');
 const doorOptions = await page.locator('.app-header .advice-runs option').allInnerTexts();
 check('the stored answers are one click away', doorOptions.length === 3, doorOptions.join(' | '));
 // The fresh session is a real entry, not a "N saved answers" placeholder: it is

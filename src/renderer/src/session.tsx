@@ -137,6 +137,14 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
   /** Guards against a focus event landing on top of a load already in flight. */
   const inFlight = useRef(false);
   /**
+   * Runs that have already pushed `done` or `error`, so the optimistic set in
+   * `startAdvice` cannot resurrect one. Electron does not order an `invoke`
+   * reply against `send` pushes, and a mock-fast run really does finish before
+   * `startAdvise` resolves — without this the stale "it started" state arrived
+   * *after* the real "it finished" one and stuck a phantom run on screen.
+   */
+  const endedRuns = useRef(new Set<string>());
+  /**
    * Whose save was read last, so a re-read can tell a refresh from a switch.
    *
    * A ref rather than the `snapshot` state because `load` is a stable callback and
@@ -245,6 +253,7 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
           ...(prev?.partial ? { partial: true } : {}),
         }));
       } else if (event.type === 'advise-done') {
+        endedRuns.current.add(event.runId);
         setRun(null);
         setAdvice(event.envelope);
         // A finished run joins the history and becomes the selection.
@@ -254,6 +263,7 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
           setAdviceId(runs[0]?.id);
         })();
       } else if (event.type === 'advise-error') {
+        endedRuns.current.add(event.runId);
         setRun(null);
         setAdviceError(event.message);
       }
@@ -352,8 +362,11 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
           const { runId } = await window.gd.startAdvise(question ? { question } : {});
           // Optimistic, and superseded by the first push a moment later. Without
           // it the button would sit there looking unpressed for as long as the
-          // context document takes to compile.
-          setRun((prev) => prev ?? { runId, phase: 'context', startedAt: Date.now(), elapsedMs: 0 });
+          // context document takes to compile. Skipped for a run that already
+          // ended — see `endedRuns`: the reply can arrive after the pushes.
+          setRun((prev) =>
+            prev ?? (endedRuns.current.has(runId) ? null : { runId, phase: 'context', startedAt: Date.now(), elapsedMs: 0 }),
+          );
         } catch (err) {
           // A refused start is the readable half of this feature: no `claude` on
           // PATH, or a run already in flight. Both belong in the panel.

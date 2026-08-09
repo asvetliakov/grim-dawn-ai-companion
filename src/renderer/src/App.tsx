@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { adviceMarks } from '../../shared/advice-marks.js';
 import type { AdviceRunRef, AdviseEnvelope, UiSnapshot } from '../../shared/ipc.js';
@@ -92,6 +92,7 @@ export function Workspace({
   activity,
   history = [],
   adviceError,
+  initialTab = 'loadout',
   onRunAdvice,
   onCancelAdvice,
   onNewRun,
@@ -105,6 +106,8 @@ export function Workspace({
   /** Every stored run for this character, newest first. */
   history?: readonly AdviceRunRef[];
   adviceError?: string;
+  /** Which of the two column tabs to open on. Only a story ever sets it. */
+  initialTab?: ColumnTab;
   onRunAdvice?: (question?: string) => void;
   onCancelAdvice?: () => void;
   /** Put the open run away and offer a fresh one. Deletes nothing. */
@@ -112,6 +115,45 @@ export function Workspace({
 }): React.ReactNode {
   const [weaponSet, setWeaponSet] = useState<1 | 2 | null>(null);
   const heldSet: 1 | 2 = snapshot.alternateWeaponSetActive ? 2 : 1;
+  const running = run !== null;
+
+  /**
+   * Loadout and Advice share the column as tabs, and the tab follows the run.
+   *
+   * Stacked, the advice panel lived below fourteen slot rows — off the bottom of
+   * the screen exactly when a run was streaming its reasoning, which is the one
+   * moment the panel has something live to show. As tabs each gets the whole
+   * column: **a run starting opens Advice** (the transcript is what there is to
+   * watch), and **the run finishing goes back to Loadout**, because the result
+   * of a run is marks and proposals on the gear, not the table about them.
+   *
+   * The switch-back yields to the reader: a manual tab change during the run
+   * pins the column until the next run starts — being yanked out of the
+   * reasoning mid-paragraph is the pinned-scroll mistake in tab form. And a run
+   * that *fails* stays on Advice, where the error sentence is; switching away
+   * from a failure would hide the only explanation of it.
+   */
+  const [tab, setTab] = useState<ColumnTab>(initialTab);
+  const pinned = useRef(false);
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (running && !wasRunning.current) {
+      pinned.current = false;
+      setTab('advice');
+    }
+    if (!running && wasRunning.current && !pinned.current && !adviceError) setTab('loadout');
+    wasRunning.current = running;
+  }, [running, adviceError]);
+  // A start that was *refused* never becomes a run, so the effect above never
+  // fires — but the refusal is a sentence in the advice panel, and it must not
+  // be a sentence on a hidden tab.
+  useEffect(() => {
+    if (adviceError && !running) setTab('advice');
+  }, [adviceError, running]);
+  const pick = (next: ColumnTab): void => {
+    if (running) pinned.current = true;
+    setTab(next);
+  };
 
   // Everything the plan asks the player to touch, marked in the containers for
   // as long as the run stands. Derived from the envelope rather than tracked, so
@@ -127,23 +169,46 @@ export function Workspace({
   return (
     <main className="app-body">
       <div className="pane pane-loadout">
-        <LoadoutPanel
-          snapshot={snapshot}
-          advice={advice}
-          weaponSet={weaponSet ?? heldSet}
-          onWeaponSet={setWeaponSet}
-        />
-        <AdvicePanel
-          snapshot={snapshot}
-          advice={advice}
-          run={run}
-          {...(activity ? { activity } : {})}
-          history={history}
-          {...(adviceError ? { error: adviceError } : {})}
-          {...(onRunAdvice ? { onRun: onRunAdvice } : {})}
-          {...(onCancelAdvice ? { onCancel: onCancelAdvice } : {})}
-          {...(onNewRun ? { onNewRun } : {})}
-        />
+        {/* Sticky over the scrolling panel, like the container chrome: deep in
+            fourteen slot rows, the way to the other tab must not be a scroll
+            back up. */}
+        <div className="tab-strip column-tabs">
+          {COLUMN_TABS.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              className={`tab ${tab === key ? 'selected' : ''}`}
+              onClick={() => pick(key)}
+            >
+              {label}
+              {/* The one tab-strip fact that matters from the other tab: a run
+                  is alive in there. The dot is the containers' own "something
+                  in here" vocabulary. */}
+              {key === 'advice' && running && <span className="tab-running" aria-label="run in flight" />}
+            </button>
+          ))}
+        </div>
+        {tab === 'loadout' && (
+          <LoadoutPanel
+            snapshot={snapshot}
+            advice={advice}
+            weaponSet={weaponSet ?? heldSet}
+            onWeaponSet={setWeaponSet}
+          />
+        )}
+        {tab === 'advice' && (
+          <AdvicePanel
+            snapshot={snapshot}
+            advice={advice}
+            run={run}
+            {...(activity ? { activity } : {})}
+            history={history}
+            {...(adviceError ? { error: adviceError } : {})}
+            {...(onRunAdvice ? { onRun: onRunAdvice } : {})}
+            {...(onCancelAdvice ? { onCancel: onCancelAdvice } : {})}
+            {...(onNewRun ? { onNewRun } : {})}
+          />
+        )}
       </div>
       <div className="pane pane-stats">
         <StatsPanel stats={snapshot.stats} advice={advice} />
@@ -154,6 +219,14 @@ export function Workspace({
     </main>
   );
 }
+
+/** The two halves of the right-hand column. You act from the loadout; the run lives in Advice. */
+export type ColumnTab = 'loadout' | 'advice';
+
+const COLUMN_TABS: readonly (readonly [ColumnTab, string])[] = [
+  ['loadout', 'Loadout'],
+  ['advice', 'Advice'],
+];
 
 /** Providers plus the frame every screen shares. */
 export function Shell({ children }: { children: React.ReactNode }): React.ReactNode {
