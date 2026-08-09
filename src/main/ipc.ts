@@ -16,7 +16,7 @@ import { ipcMain } from 'electron';
 import type { AdviceRunRef, AdviseEnvelope, AdviseStatus } from '../core/ai/envelope.js';
 import type { Settings } from '../core/settings-schema.js';
 import type { UiSnapshot } from '../shared/view.js';
-import { IPC_CHANNELS, type GdApi } from '../shared/ipc.js';
+import { IPC_CHANNELS, type ContextDocumentView, type DetectedPaths, type GdApi } from '../shared/ipc.js';
 
 /** Channel name as sent over IPC — namespaced so nothing else can collide. */
 export function channelName(method: string): string {
@@ -35,6 +35,8 @@ export function createApi(impl: {
   getAdviseStatus: () => AdviseStatus;
   getAdviceHistory: (character: string) => AdviceRunRef[];
   getAdvice: (character: string, id: string) => AdviseEnvelope | null;
+  getContextDocument: () => Promise<ContextDocumentView>;
+  detectPaths: () => DetectedPaths;
 }): Omit<GdApi, 'onPush'> {
   return {
     ...impl,
@@ -45,6 +47,7 @@ export function createApi(impl: {
     getAdviseStatus: async () => impl.getAdviseStatus(),
     getAdviceHistory: async (character: string) => impl.getAdviceHistory(character),
     getAdvice: async (character: string, id: string) => impl.getAdvice(character, id),
+    detectPaths: async () => impl.detectPaths(),
   };
 }
 

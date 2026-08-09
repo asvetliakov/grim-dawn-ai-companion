@@ -39,3 +39,56 @@ export function startingSize(work: { width: number; height: number }): { width: 
     height: Math.max(MIN_SIZE.height, Math.min(DESIGN_SIZE.height, work.height - MARGIN)),
   };
 }
+
+export interface Bounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The work area as Electron reports it: a size *and* an origin. */
+export interface WorkArea extends Bounds {}
+
+/**
+ * Where a remembered window should actually open.
+ *
+ * Restoring saved bounds verbatim is how a window ends up on a monitor that is
+ * no longer plugged in — invisible, and indistinguishable from an app that
+ * failed to start. So the size is clamped to what fits and the position is
+ * clamped to keep a real overlap with the work area; a window that lands wholly
+ * outside is re-centred rather than nudged, because nudging a window from a
+ * 3840-wide desktop onto a laptop screen leaves it in a corner for no reason.
+ *
+ * `undefined` in means "nothing remembered": the caller opens at `startingSize`
+ * and lets Electron centre it.
+ */
+export function restoreBounds(saved: Partial<Bounds> | undefined, work: WorkArea): Bounds | undefined {
+  if (!saved || saved.width === undefined || saved.height === undefined) return undefined;
+  if (![saved.x, saved.y, saved.width, saved.height].every((n) => typeof n === 'number' && Number.isFinite(n))) {
+    return undefined;
+  }
+
+  const width = Math.max(MIN_SIZE.width, Math.min(saved.width, work.width));
+  const height = Math.max(MIN_SIZE.height, Math.min(saved.height, work.height));
+  const x = saved.x!;
+  const y = saved.y!;
+
+  // "Enough of it is on screen to grab" — the title bar plus a corner. A window
+  // one pixel inside the work area is technically restored and practically lost.
+  const VISIBLE = 80;
+  const onScreen =
+    x + width > work.x + VISIBLE &&
+    x < work.x + work.width - VISIBLE &&
+    y + height > work.y &&
+    y < work.y + work.height - VISIBLE;
+  if (!onScreen) {
+    return {
+      x: Math.round(work.x + (work.width - width) / 2),
+      y: Math.round(work.y + (work.height - height) / 2),
+      width,
+      height,
+    };
+  }
+  return { x, y, width, height };
+}

@@ -12,13 +12,16 @@
 
 import { loadGameDb } from '../core/db/index.js';
 import type { GameDb } from '../core/db/types.js';
-import { MISSING_GAME_DIR_MESSAGE } from '../core/db/gamefiles.js';
+import { findGameDirs, MISSING_GAME_DIR_MESSAGE } from '../core/db/gamefiles.js';
 import { createIconService, type IconService } from '../core/icons/index.js';
-import { loadSnapshot, SessionError, type CharacterSnapshot } from '../core/session.js';
-import { listCharacters, loadSettings, resolveSettings, saveSettings } from '../core/settings.js';
+import { adviceScope, loadSnapshot, SessionError, type CharacterSnapshot } from '../core/session.js';
+import type { CharacterSave } from '../core/save/types.js';
+import { findSaveDirs, listCharacters, loadSettings, resolveSettings, saveSettings } from '../core/settings.js';
 import type { ResolvedSettings, Settings } from '../core/settings-schema.js';
 import { buildUiSnapshot } from '../core/view.js';
-import type { Bootstrap, PushEvent } from '../shared/ipc.js';
+import { createSaveWatcher, type SaveWatcher } from '../core/watcher.js';
+import { availableLocales } from '../core/db/gametext.js';
+import type { Bootstrap, ContextDocumentView, DetectedPaths, PushEvent } from '../shared/ipc.js';
 import type { UiSnapshot } from '../shared/view.js';
 
 /** What a change to a settings field costs. */
@@ -43,8 +46,61 @@ export class SessionState {
   /** In-flight database load, so two callers never build it twice. */
   private loading: Promise<GameDb> | undefined;
   private character: string | undefined;
+  private watcher: SaveWatcher | undefined;
+  /**
+   * The save the watcher has already read, waiting to be built into a snapshot.
+   *
+   * Handed on rather than re-read: the watcher got this one through the torn
+   * write — retrying, and falling back to a rotation backup if the live file
+   * never settled — and reading it again here would re-run that race with none
+   * of the retries. It is consumed once and only for the character it belongs
+   * to; an explicit Refresh drops it, because that button promises a fresh read.
+   */
+  private preparsed: { character: string; save: CharacterSave; path: string } | undefined;
 
   constructor(private readonly push: PushFn) {}
+
+  /**
+   * Watch the save tree, so the window keeps up with the game without being
+   * asked to.
+   *
+   * Started explicitly rather than in the constructor: `fs.watch` on a directory
+   * that does not exist throws, and a tool whose save path is wrong should open a
+   * window that says so, not fail before there is a window to say it in.
+   */
+  startWatching(): void {
+    this.watcher?.close();
+    this.watcher = undefined;
+    const saveDir = this.resolved.saveDir;
+    try {
+      this.watcher = createSaveWatcher({
+        saveDir,
+        onEvent: (event) => {
+          if (event.type === 'parse-failed') {
+            this.push({ type: 'save-problem', message: event.message });
+            return;
+          }
+          if (event.type === 'character-updated') {
+            // Another character's autosave is not this window's business — but
+            // a *new* character is, so the invalidation still goes out and the
+            // bootstrap's list picks it up.
+            if (event.character !== this.character) {
+              this.push({ type: 'snapshot-invalidated' });
+              return;
+            }
+            this.preparsed = { character: event.character, save: event.save, path: event.path };
+          }
+          this.snapshot = undefined;
+          this.core = undefined;
+          this.push({ type: 'snapshot-invalidated' });
+        },
+      });
+    } catch (err) {
+      // A save directory that cannot be watched is not a reason to fail: the
+      // window still reads it on demand, and Refresh still works.
+      this.push({ type: 'save-problem', message: `cannot watch ${saveDir} — ${(err as Error).message}` });
+    }
+  }
 
   /**
    * Everything the window needs before it can draw anything. Deliberately does
@@ -58,8 +114,12 @@ export class SessionState {
       settings: this.settings,
       characters,
       saveDir: this.resolved.saveDir,
+      // Whatever `Text_<LOCALE>.arc` files this install actually ships — a
+      // readdir, not a database build, so it is cheap enough for the bootstrap.
+      locales: this.resolved.gameDir ? availableLocales(this.resolved.gameDir) : [],
     };
     if (active) boot.active = active;
+    if (this.resolved.gameDir) boot.gameDir = this.resolved.gameDir;
     if (!this.resolved.gameDir) boot.gameDirProblem = MISSING_GAME_DIR_MESSAGE;
     return boot;
   }
@@ -75,6 +135,9 @@ export class SessionState {
   }
 
   async refresh(): Promise<UiSnapshot> {
+    // The button says it reads your save file again, so it does — even if the
+    // watcher has a perfectly good copy from four seconds ago.
+    this.preparsed = undefined;
     return this.rebuildSnapshot();
   }
 
@@ -89,6 +152,31 @@ export class SessionState {
     // `rebuildSnapshot` either sets it or throws, so this cannot be reached
     // undefined; the assertion is for the compiler, not for the runtime.
     return this.core!;
+  }
+
+  /**
+   * The document the next advice run would send, for the context viewer.
+   *
+   * Built through `adviceScope`, exactly as a run builds it, so the stash toggle
+   * shows through — a viewer that rendered the unfiltered document would be
+   * showing something no run has ever been sent.
+   */
+  async contextDocument(): Promise<ContextDocumentView> {
+    const snap = await this.characterSnapshot();
+    const stashIncluded = this.settings.includeStashInAdvice ?? true;
+    const { doc } = adviceScope(snap, stashIncluded);
+    return {
+      character: snap.character,
+      difficulty: snap.difficulty,
+      markdown: doc.markdown,
+      tokenEstimate: doc.tokenEstimate,
+      stashIncluded,
+    };
+  }
+
+  /** Every save tree and install this machine appears to have. */
+  detectPaths(): DetectedPaths {
+    return { saveDirs: findSaveDirs(), gameDirs: findGameDirs() };
   }
 
   /** The version string the envelope records, so an old advice file can be dated. */
@@ -115,7 +203,15 @@ export class SessionState {
   async updateSettings(patch: Partial<Settings>): Promise<Settings> {
     const next = { ...this.settings, ...patch };
     const dbChanged = REBUILDS_DB.some((key) => next[key] !== this.settings[key]);
+    const saveDirWas = this.resolved.saveDir;
     this.persist(next);
+    // A save tree that moved is a different set of files to watch, and the old
+    // watch would keep reporting a directory nothing reads any more.
+    if (this.resolved.saveDir !== saveDirWas) {
+      this.preparsed = undefined;
+      this.character = undefined;
+      this.startWatching();
+    }
 
     if (dbChanged) {
       this.icons?.close();
@@ -130,6 +226,8 @@ export class SessionState {
   }
 
   dispose(): void {
+    this.watcher?.close();
+    this.watcher = undefined;
     this.icons?.close();
     this.icons = undefined;
   }
@@ -179,9 +277,18 @@ export class SessionState {
     const icons = await this.iconService();
     if (!icons) throw new Error(MISSING_GAME_DIR_MESSAGE);
 
+    // Only for the character on screen, and only once: a save handed over by the
+    // watcher describes the moment it was written, and a second snapshot built
+    // from it later would be describing the past.
+    const handed = this.preparsed?.character === this.character ? this.preparsed : undefined;
+    this.preparsed = undefined;
+
     let snap: CharacterSnapshot;
     try {
-      snap = loadSnapshot(db, this.resolved, { character: this.character });
+      snap = loadSnapshot(db, this.resolved, {
+        character: this.character,
+        ...(handed ? { preparsed: { save: handed.save, path: handed.path } } : {}),
+      });
     } catch (err) {
       // Typed session failures are the user's situation, not a crash: no
       // characters yet, a save the game is mid-write on. Re-thrown with the

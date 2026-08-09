@@ -2,15 +2,17 @@
  * Finding the Grim Dawn install and its database archives.
  *
  * The game runs under CrossOver here, so the install lives inside a bottle's
- * `drive_c`; a native Windows/Linux/proton layout is checked too so this stays
- * testable elsewhere. `GD_GAME_DIR` overrides everything, same as `GD_SAVE_DIR`
- * does for saves.
+ * `drive_c` — but the search is composed from `platform.ts`'s roots rather than
+ * written out, so a native Windows machine, a Whisky bottle and a Proton prefix
+ * are all the same three lookups. **Both stores are covered**: Steam under
+ * `steamapps/common`, GOG under `GOG Games` or GOG Galaxy's own games folder.
+ * `GD_GAME_DIR` overrides everything, same as `GD_SAVE_DIR` does for saves.
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { steamRoots, windowsRoots } from '../platform.js';
 import { fingerprint } from './arz.js';
 
 /**
@@ -26,38 +28,30 @@ const ARCHIVES: readonly { expansion: string; relative: string }[] = [
   { expansion: 'gdx3', relative: 'gdx3/database/GDX3.arz' },
 ];
 
-const CROSSOVER_BOTTLES = join(homedir(), 'Library/Application Support/CrossOver/Bottles');
-const STEAM_COMMON = 'drive_c/Program Files (x86)/Steam/steamapps/common/Grim Dawn';
+/**
+ * Where GOG puts a game, relative to a drive root.
+ *
+ * `GOG Games` is what the standalone installer offers and what nearly every GOG
+ * user accepts; the Galaxy client keeps its own folder instead. `Games` is the
+ * third one people actually pick.
+ */
+const GOG_RELATIVE = ['GOG Games/Grim Dawn', 'Program Files (x86)/GOG Galaxy/Games/Grim Dawn', 'Games/Grim Dawn'];
 
-/** Every place a Grim Dawn install plausibly sits on this machine. */
-function candidateGameDirs(): string[] {
+/**
+ * Every place a Grim Dawn install plausibly sits on this machine, Steam first.
+ *
+ * Steam leads because it is the commoner install and because a machine with both
+ * is a machine where the Steam copy is the one being played — but the GOG paths
+ * are checked on every platform, since the store is orthogonal to the wrapper: a
+ * GOG copy inside a CrossOver bottle is exactly a `drive_c/GOG Games/Grim Dawn`.
+ */
+export function candidateGameDirs(): string[] {
   const candidates: string[] = [];
-
-  // CrossOver bottles, newest-looking first is not worth the effort — any bottle
-  // holding the game will do, and there is normally exactly one.
-  if (existsSync(CROSSOVER_BOTTLES)) {
-    for (const bottle of safeReaddir(CROSSOVER_BOTTLES)) {
-      candidates.push(join(CROSSOVER_BOTTLES, bottle, STEAM_COMMON));
-    }
+  for (const steam of steamRoots()) candidates.push(join(steam, 'steamapps/common/Grim Dawn'));
+  for (const root of windowsRoots()) {
+    for (const relative of GOG_RELATIVE) candidates.push(join(root, relative));
   }
-
-  // Native Steam layouts, for running this tool anywhere else.
-  candidates.push(
-    join(homedir(), 'Library/Application Support/Steam/steamapps/common/Grim Dawn'),
-    join(homedir(), '.steam/steam/steamapps/common/Grim Dawn'),
-    join(homedir(), '.local/share/Steam/steamapps/common/Grim Dawn'),
-    'C:\\Program Files (x86)\\Steam\\steamapps\\common\\Grim Dawn',
-  );
-
-  return candidates;
-}
-
-function safeReaddir(dir: string): string[] {
-  try {
-    return readdirSync(dir);
-  } catch {
-    return [];
-  }
+  return [...new Set(candidates)];
 }
 
 /** A directory counts as an install only if the base archive is actually there. */
@@ -74,6 +68,15 @@ export function findGameDir(): string | undefined {
   const override = process.env.GD_GAME_DIR;
   if (override) return isGameDir(override) ? override : undefined;
   return candidateGameDirs().find(isGameDir);
+}
+
+/**
+ * Every install found, not just the first — a machine with both a Steam and a
+ * GOG copy is a machine where the user, not the tool, should say which one the
+ * saves belong to.
+ */
+export function findGameDirs(): string[] {
+  return candidateGameDirs().filter(isGameDir);
 }
 
 export interface GameArchive {

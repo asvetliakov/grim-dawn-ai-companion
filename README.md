@@ -1,9 +1,13 @@
-# Grim Dawn Companion
+# Grim Dawn AI Companion
 
-A macOS-native desktop companion for [Grim Dawn](https://www.grimdawn.com/). The
-game runs under CrossOver; this tool runs natively alongside it. It reads your
+A desktop companion for [Grim Dawn](https://www.grimdawn.com/). It reads your
 character saves, resolves every item against the game's own database, and — on
-demand — asks an AI for equip/replace/hold advice.
+demand — asks an AI for equip/replace/hold advice. It watches the save folder, so
+alt-tabbing back from the game shows what you are wearing now.
+
+Built on macOS, where the game runs under CrossOver and the tool runs natively
+beside it. It is not macOS-only: Grim Dawn is a Windows game whatever it is
+wrapped in, so the install and the saves are found the same way everywhere.
 
 Development is staged; see [RUNBOOK.md](RUNBOOK.md) for what is built and what is next.
 
@@ -11,16 +15,51 @@ Development is staged; see [RUNBOOK.md](RUNBOOK.md) for what is built and what i
 
 ```bash
 npm install
+npm run dev                           # the window
+npm run cli -- paths                  # where it thinks the game and saves are
+npm run cli -- watch                  # print what the game writes, live
 npm run cli -- db --stats             # build/inspect the item database
 npm run cli -- resolve --char <name>  # resolve a character's gear
-npm run cli -- icon --check-all       # extract icons for everything you own
 npm test                              # vitest
 npm run typecheck
 ```
 
-The tool finds your Grim Dawn install and save directory automatically. Override
-either with `GD_GAME_DIR` / `GD_SAVE_DIR`, or pin them in
-`~/Library/Application Support/gd-companion/settings.json`.
+## Finding your game
+
+Both stores, all three platforms, all found without being told:
+
+| | Install | Saves |
+|---|---|---|
+| **Steam** | `steamapps/common/Grim Dawn`, including libraries on other drives (`libraryfolders.vdf`) | `userdata/<id>/219990/remote/save` with cloud saves on |
+| **GOG** | `GOG Games/Grim Dawn`, GOG Galaxy's games folder, `Games/Grim Dawn` | `Documents/My Games/Grim Dawn/save` |
+
+On macOS those are looked for inside every CrossOver and Whisky bottle; on Linux,
+in a Wine prefix and in Steam's Proton prefix for this app id; on Windows, across
+every drive letter, and in OneDrive's redirected `Documents` as well as the plain
+one. Cloud-off Steam uses the GOG location too.
+
+If yours is somewhere nobody could guess, **Settings** takes a typed path for
+either — or set `GD_GAME_DIR` / `GD_SAVE_DIR`, or pin `gameDir` / `saveDir` in
+`~/Library/Application Support/gd-ai-companion/settings.json`.
+
+## Building a release
+
+```bash
+npm run dist       # macOS (arm64): .dmg and .zip in release/
+npm run dist:win   # Windows (x64): a portable .zip — cross-builds from macOS
+npm run dist:all   # both
+```
+
+The Windows build works from a Mac because there is nothing to compile: the
+zero-dependency rule means no native modules, so packaging is Electron's own
+prebuilt binaries plus this app's JavaScript. The Windows target is a **zip**
+rather than an NSIS installer for the same reason it works at all — an installer
+would need Wine to build here, and a portable zip has no install step.
+
+Neither build is signed or notarized (there is no certificate in this repo, and
+there should not be), so macOS wants a right-click → Open the first time and
+Windows will show a SmartScreen warning. Fine for a personal tool; a public
+release needs certificates, not a config change.
 
 ## Where the data comes from
 
@@ -36,7 +75,7 @@ at all, so it works offline and always describes the build you actually have:
 
 The base game and each expansion contribute their own archives, merged in load
 order so an expansion's changes win. Everything derived is cached under
-`~/Library/Application Support/gd-companion/cache/<build>/`, keyed by a
+`~/Library/Application Support/gd-ai-companion/cache/<build>/`, keyed by a
 fingerprint of the archives, so a game patch re-derives it exactly once.
 
 Set `locale` in `settings.json` to any language the install ships —

@@ -43,6 +43,14 @@ export const settingsSchema = z.object({
    * component census, not a container of gear.
    */
   includeStashInAdvice: z.boolean().optional(),
+  /**
+   * Keep the window above the game's.
+   *
+   * A *choice*, so it lives here — unlike the window's size and position, which
+   * are state and live in the sibling `window.json`. Writing settings.json on
+   * every drag of a window would be the wrong shape of file entirely.
+   */
+  alwaysOnTop: z.boolean().optional(),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

@@ -1138,6 +1138,9 @@ const refreshNote = await page.locator('.control-note').innerText();
 check('Refresh explains itself in the reader’s terms', /save file again/i.test(refreshNote), refreshNote.replace(/\n/g, ' — '));
 check('naming what it picks up', /wearing/.test(refreshNote) && /bags and stashes/.test(refreshNote));
 check('and what happens to the answer on screen', /stays open/.test(refreshNote) && /DONE and amber CHANGED/.test(refreshNote));
+// Since the watcher this button is the belt-and-braces rather than the loop, and
+// a reader pressing it and seeing nothing change deserves to know why.
+check('and that the window keeps up on its own', /by itself/.test(refreshNote) && /rarely need it/.test(refreshNote));
 check(
   'with no jargon from the inside of the app',
   !/dossier|envelope|snapshot|item database/i.test(refreshNote),
@@ -1185,6 +1188,86 @@ check(
 );
 await page.setViewportSize({ width: 1920, height: 1080 });
 await page.waitForTimeout(150);
+
+// ---------------------------------------------------------------------------
+// Settings, and the context document
+// ---------------------------------------------------------------------------
+
+await page.goto(story('app-settings--pane'), { waitUntil: 'networkidle' });
+await page.locator('.modal').waitFor({ state: 'visible' });
+
+// The facts the old read-only `Paths` popover showed are still here — but now
+// next to the fields that set them, which is the whole reason it moved.
+const facts = await page.locator('.settings-facts').innerText();
+check('settings states where the saves are being read from', facts.includes('/fixture/Steam/userdata'), facts.split('\n')[1]);
+check('and the game version it resolved against', /\d+\.\d+\.\d+/.test(facts), facts);
+
+// Detection is an offer, not a mechanism: a machine with both stores installed
+// gets both, and neither is chosen for the user.
+const gameOptions = await page.locator('.settings-path').nth(1).locator('.settings-found-path').allInnerTexts();
+check('both installs are offered when both are found', gameOptions.length === 2, gameOptions.join(' | '));
+check('and the one in use is marked', (await page.locator('.settings-found-path.current').count()) >= 1);
+
+// A path is typed *or* picked. Committing on blur rather than per keystroke is
+// what keeps `gameDir` from rebuilding the item database once per character.
+const saveField = page.locator('.settings-path').first().locator('.settings-path-input');
+await saveField.fill('/somewhere/nobody/could/guess');
+check('typing a path does not commit it yet', (await page.locator('.settings-found-path.current').count()) >= 1);
+await saveField.blur();
+await page.waitForTimeout(120);
+check('and blurring does', (await saveField.inputValue()) === '/somewhere/nobody/could/guess');
+check(
+  'after which none of the detected paths is the current one',
+  (await page.locator('.settings-path').first().locator('.settings-found-path.current').count()) === 0,
+);
+// `Auto` is how a hand-typed path is given back to detection — it appears only
+// once there is a pinned value to clear.
+await page.locator('.settings-path').first().locator('.chrome-button').click();
+await page.waitForTimeout(120);
+check('Auto hands the path back to detection', (await saveField.inputValue()) === '');
+
+// Every locale the *install* ships, not every locale the game has.
+const locales = await page.locator('.settings-section').nth(1).locator('option').count();
+check('the language list is what this install ships', locales === 8, `${locales} option(s)`);
+
+// Always-on-top is a setting rather than window state, so it round-trips
+// through the same file every other preference does.
+const onTop = page.locator('.settings-check input');
+check('always-on-top starts off', (await onTop.isChecked()) === false);
+await onTop.check();
+check('and can be turned on', await onTop.isChecked());
+
+await page.goto(story('app-settings--pane-with-nothing-found'), { waitUntil: 'networkidle' });
+await page.locator('.modal').waitFor({ state: 'visible' });
+check(
+  'with nothing detected the fields are still the way in',
+  (await page.locator('.settings-found-path').count()) === 0 &&
+    (await page.locator('.settings-path-input').count()) === 2,
+);
+
+await page.goto(story('app-settings--context-document'), { waitUntil: 'networkidle' });
+// Rendered first: thirty thousand tokens of headings and resistance tables are a
+// wall of pipes as plain text, and the tables are most of what is worth reading.
+await page.locator('.context-rendered').waitFor({ state: 'visible' });
+check('the context viewer opens rendered', (await page.locator('.context-rendered .md-h').count()) > 0);
+check('with the document’s tables as tables', (await page.locator('.context-rendered .md-table').count()) > 0);
+// And raw is one click, because the document's exact bytes are the contract the
+// advice-to-item join rests on — a viewer that could only show a rendering would
+// be showing something the model never received.
+await page.locator('.view-tabs .tab', { hasText: 'Raw' }).click();
+await page.locator('.context-document').waitFor({ state: 'visible' });
+const docText = await page.locator('.context-document').innerText();
+check('and raw shows the bytes that are actually sent', docText.includes('# Grim Dawn character dossier'));
+check('with no markup of its own', (await page.locator('.context-document h1').count()) === 0);
+// The switch sits in the sheet's chrome next to Close, on the same 30 px line.
+const heights = await page.locator('.modal-head').evaluate((head) => ({
+  tab: head.querySelector('.view-tabs .tab').getBoundingClientRect().height,
+  close: head.querySelector('.chrome-button').getBoundingClientRect().height,
+}));
+check('the view switch lines up with Close', heights.tab === heights.close, JSON.stringify(heights));
+const docSubtitle = await page.locator('.modal-subtitle').innerText();
+check('with the difficulty it was built for', docSubtitle.includes('Ultimate'), docSubtitle);
+check('and whether the stashes are in it', docSubtitle.includes('stashes included'), docSubtitle);
 
 // ---------------------------------------------------------------------------
 // Responsive

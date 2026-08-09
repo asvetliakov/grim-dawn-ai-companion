@@ -59,3 +59,107 @@ npm test && npm run typecheck
 npm run cli -- watch    # touch a save in another terminal → events print
 npm run dev             # manual pass over criteria 1, 3–5
 ```
+
+## Outcome
+
+Done, with the plan wrong on two points and one of them load-bearing.
+
+### The parsers do not throw on a torn write
+
+The plan's retry design says "parse with up to 3 retries, 1 s apart — a checksum
+failure is a torn write, not corruption". That is the right *policy* and the
+wrong *mechanism*: **`parseGdc` does not fail on a torn file.** Stage 1's rule is
+that an unknown block must be skipped rather than be fatal, so `parseBlock`
+catches a bad decode, resynchronizes from the block's trailing checksum and
+reports `checksumOk: false` — and hands back a perfectly ordinary
+`CharacterSave` with half the equipment missing. A truncated file is quieter
+still: the blocks that *are* there checksum fine and the walk simply stops, with
+a warning about the bytes it could not use.
+
+So a watcher that only caught exceptions would have announced every autosave as
+an update, retried nothing, and never once reached the backup fallback. The check
+is `parseProblem(parsed)` — any block that did not verify, or a warning matching
+the truncation/overrun patterns. On a healthy save every block verifies,
+*including* the 8 of 15 the parser skips as unknown, which is what makes this a
+clean signal rather than a heuristic. The same check guards the `.gst` files,
+which degrade identically.
+
+Two consequences worth keeping:
+
+- **The parsed save travels with the event** and is used through the new
+  `SnapshotOptions.preparsed`. Letting main re-read the file would re-run the
+  race the retries just won — and on the rotation-backup path it would lose it,
+  since main would go back to reading the `player.gdc` that never settled.
+- **The backup walk keeps going.** `player.g01` can be newer than `player.g00`
+  and just as torn, so the fallback tries each in mtime order rather than
+  trusting the newest.
+
+### No chokidar
+
+Dropped for the zero-dependency rule, like `sharp` (Stage 4), `execa` (Stage 6),
+`react-markdown` (7A) and `lucide-react` (7B). `fs.watch(dir, { recursive: true })`
+is FSEvents on macOS and ReadDirectoryChangesW on Windows — the two platforms
+this runs on — and what chokidar adds on top of it (globbing, stat polling,
+atomic-write heuristics) is either unnecessary or is the debounce-and-parse loop
+above, which has to exist either way because a `.gdc` is only valid when its
+checksums say so. The filesystem half is injected (`WatchBackend`), so the tests
+fire events by hand; the timers are injected too, and the retry test uses the
+injected `delay` as the hook it *repairs the file through*, which is exactly the
+sequence the game produces.
+
+### Deliverables as built
+
+1. **`src/core/watcher.ts`** + CLI `watch`, plus a CLI **`paths`** command the
+   plan did not ask for — the app check needed the detected save directory, and
+   "where does this thing think my game is" turned out to be worth a command.
+2. **Main wiring** in `SessionState`: `startWatching()` (explicit, because
+   `fs.watch` on a missing directory throws and a wrong save path should open a
+   window that says so), restart on a `saveDir` change, and a new `save-problem`
+   push for the case where nothing readable was found. That last one is an
+   **amber banner, not the error one**: the last good snapshot is still on screen
+   and still true, it is simply not the newest.
+3. **Settings pane**, which absorbed the old read-only `Paths` popover — it
+   showed the two directories and gave no way to change either. Paths are typed
+   *or* picked from what detection found, committed on blur rather than per
+   keystroke (`gameDir` and `locale` each drop the item database). Backend and
+   model are **dependent selects**: a model name typed for the wrong backend
+   fails eight minutes into a run instead of at the moment it was typed.
+4. **Polish**: always-on-top (a *choice*, so `settings.json`) and window geometry
+   (*state*, so a sibling `window.json`), with `restoreBounds` clamping the size
+   and re-centring a window whose monitor has gone. A real application menu, ⌘,
+   and ⌘D. The context viewer opens **rendered** with a **Raw** tab — the exact
+   bytes are the id-stability contract, but thirty thousand tokens of resistance
+   tables are a wall of pipes as plain text.
+
+### Asked for mid-stage, and in
+
+- **Portability and GOG.** `src/core/platform.ts` composes the search from three
+  roots instead of spelling out paths, so Steam and GOG, CrossOver and Whisky and
+  Wine and Proton and real Windows drive letters, and OneDrive's redirected
+  `Documents`, all fall out of the same three lookups. Steam libraries on other
+  drives come from `libraryfolders.vdf`.
+- **The name.** *Grim Dawn AI Companion* in the window, the menu bar and the
+  About box; `gd-ai-companion` on disk (the old directory is deliberately not
+  migrated — it is a preference worth setting again in a pane that now exists,
+  and a cache that rebuilds in half a minute). The macOS menu bar needed
+  `app.setName` before `ready` **and `role: 'appMenu'` on the first menu**:
+  without the role Electron does not recognise it, prepends a default app menu
+  and demotes ours to a `File` menu with Settings hidden inside it.
+- **Packaging.** `npm run dist` (macOS arm64 dmg + zip) and `npm run dist:win`
+  (portable Windows x64 zip, cross-built from macOS — both verified). Windows is
+  a zip rather than an NSIS installer because the installer needs Wine to build
+  here; the cross-build works at all because there are no native modules to
+  compile, which is the zero-dependency rule paying off a third time.
+
+### Acceptance
+
+| # | Criterion | Where it is proved |
+|---|---|---|
+| 1 | A save written while the app is open reaches the UI | `app:check` — a character *appears* in the picker; `cli -- watch` live |
+| 2 | Torn write: retries, then the rotation backup, then says so | `test/watcher.test.ts` (injected clock); `app:check` tears a real save |
+| 3 | Settings persist; locale/gameDir rebuild; saveDir restarts the watcher | `app:check` reads back `settings.json`; `test/watcher.test.ts` moves `saveDir` and proves the old watch stops |
+| 4 | The difficulty override changes the document | `app:check` — 196,213 → 194,313 chars, subtitle names the difficulty |
+| 5 | Always-on-top and geometry survive a restart | `app:check` relaunches the app and compares bounds |
+| 6 | Tests, typecheck, core imports no Electron | 399 tests, typecheck clean, `src/core` still Electron-free |
+
+399 tests (+20), 252 story assertions (+20), 41 app assertions (+17).

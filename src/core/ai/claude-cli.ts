@@ -35,12 +35,15 @@ export const DEFAULT_MODEL = 'opus';
 export const DEFAULT_EFFORT = 'high';
 
 /**
- * Fifteen minutes. Measured, not guessed: a full dossier (~36k tokens in, ~40k
+ * Twenty minutes. Measured, not guessed: a full dossier (~36k tokens in, ~40k
  * out) at `opus` / `high` took **496s** on this machine, so the 180s the stage
- * plan assumed — and the 300s that replaced it — both killed a healthy run.
- * This is a runaway ceiling, not an expectation.
+ * plan assumed — and the 300s that replaced it — both killed a healthy run. The
+ * first live run *from the window* then took 723s across two calls, which is
+ * within a factor of two of the old 900s ceiling; a repaired run on a bigger
+ * stash would have been killed while it was working. This is a runaway ceiling,
+ * not an expectation, and it should sit well clear of a healthy worst case.
  */
-export const DEFAULT_TIMEOUT_MS = 900_000;
+export const DEFAULT_TIMEOUT_MS = 1_200_000;
 
 /** Injectable so the tests can drive every branch without a real subprocess. */
 export type SpawnFn = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;

@@ -1,7 +1,7 @@
 /**
  * The tool's own data directory.
  *
- * Layout under `~/Library/Application Support/gd-companion/`:
+ * Layout under `~/Library/Application Support/gd-ai-companion/`:
  *
  * ```
  *   settings.json
@@ -26,9 +26,17 @@ import { basename, join } from 'node:path';
 
 import { DB_SCHEMA_VERSION, type NormalizedDb } from './build.js';
 
-/** `GD_DATA_DIR` exists so tests can run against a throwaway directory. */
+/**
+ * `GD_DATA_DIR` exists so tests can run against a throwaway directory.
+ *
+ * The directory was `gd-companion` before the app was named, and the old one is
+ * deliberately **not** read or moved: everything in it is either a preference
+ * worth setting again in a pane that now exists, or a cache that rebuilds itself
+ * from the install in half a minute. Migrating a pre-1.0 cache is a code path
+ * that would be wrong exactly once and never exercised again.
+ */
 export function appDataDir(): string {
-  return process.env.GD_DATA_DIR ?? join(homedir(), 'Library/Application Support/gd-companion');
+  return process.env.GD_DATA_DIR ?? join(homedir(), 'Library/Application Support/gd-ai-companion');
 }
 
 export function cacheRoot(): string {

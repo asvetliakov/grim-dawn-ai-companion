@@ -72,6 +72,17 @@ export interface Bootstrap {
   gameDirProblem?: string;
   /** Where saves are being read from — worth showing when the list is empty. */
   saveDir: string;
+  /**
+   * The install actually in use, auto-detected when `settings.gameDir` is blank.
+   * The settings pane shows it as the placeholder, so "auto" is a value the
+   * reader can see rather than a word they have to trust.
+   */
+  gameDir?: string;
+  /**
+   * Locale codes this install ships a `Text_<LOCALE>.arc` for. Thirteen on a
+   * full install; empty when the game cannot be found at all.
+   */
+  locales: string[];
 }
 
 export type PushEvent =
@@ -92,7 +103,47 @@ export type PushEvent =
   | { type: 'advise-done'; runId: string; envelope: AdviseEnvelope }
   | { type: 'advise-error'; runId: string; message: string }
   | { type: 'db-progress'; message: string }
+  /**
+   * The watcher read a save the game had just written and could not make sense
+   * of it, even after retrying and after trying the rotation backups.
+   *
+   * Separate from `error`, which means the window has nothing to show. Here it
+   * still has the last good snapshot on screen — it is simply not the newest one,
+   * and saying so beats a window that quietly stops keeping up.
+   */
+  | { type: 'save-problem'; message: string }
+  /**
+   * The menu bar asking the window to open something. The menu is in main and
+   * the panes are in the renderer, so this is the only way across — and it is a
+   * push rather than a channel because nothing is being asked *for*.
+   */
+  | { type: 'open-pane'; pane: 'settings' | 'context' }
   | { type: 'snapshot-invalidated' };
+
+/** What the app calls itself, in the window, the menu bar and the About box. */
+export const APP_NAME = 'Grim Dawn AI Companion';
+
+/**
+ * What the *context viewer* shows: the document as the advisor would receive it.
+ *
+ * The point of it is answering "what did the model actually see" in one click —
+ * which is also how a difficulty override is verified, since the override's whole
+ * effect is on the numbers in this text.
+ */
+export interface ContextDocumentView {
+  character: string;
+  difficulty: Difficulty;
+  markdown: string;
+  tokenEstimate: number;
+  /** Whether the stashes are in it, which is the one thing the toggle changes. */
+  stashIncluded: boolean;
+}
+
+/** Where the tool can see a Grim Dawn install and its saves on this machine. */
+export interface DetectedPaths {
+  saveDirs: string[];
+  gameDirs: string[];
+}
 
 export interface GdApi {
   getBootstrap(): Promise<Bootstrap>;
@@ -119,6 +170,19 @@ export interface GdApi {
    */
   getAdviceHistory(character: string): Promise<AdviceRunRef[]>;
   getAdvice(character: string, id: string): Promise<AdviseEnvelope | null>;
+  /**
+   * The context document the next advice run would send.
+   *
+   * A debug affordance with one real job: it is the only place the effect of the
+   * difficulty override and the stash toggle is *visible* rather than asserted.
+   */
+  getContextDocument(): Promise<ContextDocumentView>;
+  /**
+   * Where an install and its saves appear to be. The settings pane offers these
+   * beside the two text fields — a path you can pick beats a path you have to
+   * know, and the fields stay editable for the installs nobody can guess.
+   */
+  detectPaths(): Promise<DetectedPaths>;
   /** Subscribe to pushes; the returned function unsubscribes. */
   onPush(cb: (e: PushEvent) => void): () => void;
 }
@@ -135,6 +199,8 @@ export const IPC_CHANNELS = [
   'getAdviseStatus',
   'getAdviceHistory',
   'getAdvice',
+  'getContextDocument',
+  'detectPaths',
 ] as const satisfies readonly (keyof GdApi)[];
 
 export type IpcChannel = (typeof IPC_CHANNELS)[number];

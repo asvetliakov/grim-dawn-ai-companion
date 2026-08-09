@@ -51,6 +51,8 @@ const bootstrap: Bootstrap = {
   characters: ['_Fixture', '_Other'],
   active: '_Fixture',
   saveDir: '/fixture/save',
+  gameDir: '/fixture/game/Grim Dawn',
+  locales: ['DE', 'EN', 'FR', 'RU'],
 };
 
 function Screen({
@@ -108,6 +110,7 @@ function Screen({
           onSelectAdvice={() => {}}
           onNewRun={() => {}}
           onIncludeStash={() => {}}
+          onSettings={() => {}}
         />
         {error && <div className="banner error">{error}</div>}
         {loading && !snapshot && <LoadingBanner {...(progress ? { progress } : {})} />}

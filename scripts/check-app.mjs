@@ -20,7 +20,17 @@
  */
 
 import { _electron as electron } from 'playwright';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -51,7 +61,43 @@ function dataDirectory() {
   return dir;
 }
 
+/**
+ * A throwaway *save tree*, so the watcher can be driven for real.
+ *
+ * The window is pointed at a copy rather than at the live saves for two reasons:
+ * the checks below deliberately tear a `player.gdc` in half to prove the torn-write
+ * path, which is not something to do to someone's character; and a copy is the only
+ * way to make a character *appear* while the app is running, which is what proves
+ * the whole chain from `fs.watch` to the character picker.
+ *
+ * Only the files the tool reads are copied — the `.map` directories beside a save
+ * are megabytes the parser never opens.
+ */
+function saveTree() {
+  const source = JSON.parse(
+    execFileSync('npx', ['tsx', 'src/cli/index.ts', 'paths', '--json'], { encoding: 'utf8' }),
+  ).saveDir;
+  const dir = mkdtempSync(join(tmpdir(), 'gd-app-saves-'));
+  mkdirSync(join(dir, 'main'), { recursive: true });
+  for (const name of readdirSync(source)) {
+    if (name.endsWith('.gst')) copyFileSync(join(source, name), join(dir, name));
+  }
+  const characters = readdirSync(join(source, 'main')).filter((name) =>
+    existsSync(join(source, 'main', name, 'player.gdc')),
+  );
+  return { dir, source, characters };
+}
+
 const dataDir = dataDirectory();
+const saves = saveTree();
+/** The first character is copied in now; the second is what the watcher will find. */
+const [firstCharacter, spareCharacter] = saves.characters;
+function installCharacter(name) {
+  mkdirSync(join(saves.dir, 'main', name), { recursive: true });
+  copyFileSync(join(saves.source, 'main', name, 'player.gdc'), join(saves.dir, 'main', name, 'player.gdc'));
+}
+installCharacter(firstCharacter);
+
 const shot = process.env.SHOT;
 /** A mock answers inside a frame; a real call is ~500 s and the ceiling is 900. */
 const runBudgetMs = Number(process.env.RUN_BUDGET_MS ?? 120_000);
@@ -59,7 +105,7 @@ const QUESTION = 'app check — verifying the pipeline';
 
 const app = await electron.launch({
   args: ['out/main/index.cjs'],
-  env: { ...process.env, GD_DATA_DIR: dataDir },
+  env: { ...process.env, GD_DATA_DIR: dataDir, GD_SAVE_DIR: saves.dir },
 });
 const page = await app.firstWindow();
 const problems = [];
@@ -224,12 +270,159 @@ check(
   marked > 0 ? `${marked} marked item(s)` : 'nothing joined, and the panel says so',
 );
 
+// ---------------------------------------------------------------------------
+// Settings, and the context document
+// ---------------------------------------------------------------------------
+
+await page.locator('.settings-button').click();
+await page.locator('.modal').waitFor({ state: 'visible', timeout: 10_000 });
+const settingsFacts = await page.locator('.settings-facts').innerText();
+check('the settings pane names the save tree in use', settingsFacts.includes(saves.dir), saves.dir);
+check(
+  'and offers the installs this machine has',
+  (await page.locator('.settings-path').nth(1).locator('.settings-found-path').count()) >= 1,
+);
+
+// Always-on-top is a setting, so it goes to settings.json through the same road
+// as every other preference — and the main process applies it to the window.
+await page.locator('.settings-check input').check();
+await page.waitForTimeout(400);
+const settingsFile = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8'));
+check('a settings change is written to settings.json', settingsFile.alwaysOnTop === true, JSON.stringify(settingsFile));
+check('and the window is actually on top', await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isAlwaysOnTop()));
+await page.locator('.settings-check input').uncheck();
+await page.waitForTimeout(400);
+
+// The debug affordance: what the model would actually be sent, compiled now.
+await page.locator('.settings-section', { hasText: 'Advice' }).locator('.chrome-button').click();
+// Rendered is the view it opens on; Raw is the same document as the bytes that
+// are actually sent, and both have to be real.
+await page.locator('.context-rendered').waitFor({ state: 'visible', timeout: 120_000 });
+check('the context document opens rendered', (await page.locator('.context-rendered .md-table').count()) > 0);
+await page.locator('.view-tabs .tab', { hasText: 'Raw' }).click();
+await page.locator('.context-document').waitFor({ state: 'visible', timeout: 30_000 });
+const contextText = await page.locator('.context-document').innerText();
+check('and is the real document', contextText.length > 20_000, `${contextText.length} chars`);
+const contextSubtitle = await page.locator('.modal-subtitle').innerText();
+check('titled with the character and difficulty it was built for', contextSubtitle.includes(character), contextSubtitle);
+await page.locator('.modal .chrome-button', { hasText: 'Close' }).click();
+await page.waitForTimeout(200);
+check('and closes again', (await page.locator('.modal').count()) === 0);
+
+// The override is only meaningful if it reaches the model, and the document is
+// the only place that is *visible*. The resistance penalty is per difficulty and
+// is not uniform, so the two documents cannot be the same text.
+const wasDifficulty = await page.locator('.app-header select').nth(1).inputValue();
+await page.locator('.app-header select').nth(1).selectOption('Normal');
+// The stats panel, not the loadout: the column has been on the Advice tab since
+// the reload checks, and a difficulty change re-aggregates rather than rebuilding
+// the database, so this is a fast re-read.
+await page.locator('.stats-panel').waitFor({ state: 'visible', timeout: 60_000 });
+await page.waitForTimeout(800);
+await page.locator('.settings-button').click();
+await page.locator('.settings-section', { hasText: 'Advice' }).locator('.chrome-button').click();
+await page.locator('.context-rendered').waitFor({ state: 'visible', timeout: 120_000 });
+await page.locator('.view-tabs .tab', { hasText: 'Raw' }).click();
+await page.locator('.context-document').waitFor({ state: 'visible', timeout: 30_000 });
+const onNormal = await page.locator('.context-document').innerText();
+check('the difficulty override changes what the model is sent', onNormal !== contextText, `${contextText.length} → ${onNormal.length} chars`);
+check(
+  'and the document says which difficulty it was built for',
+  (await page.locator('.modal-subtitle').innerText()).includes('Normal'),
+);
+await page.locator('.modal .chrome-button', { hasText: 'Close' }).click();
+await page.locator('.app-header select').nth(1).selectOption(wasDifficulty);
+await page.locator('.stats-panel').waitFor({ state: 'visible', timeout: 60_000 });
+await page.waitForTimeout(800);
+
+// ---------------------------------------------------------------------------
+// The watcher, over a real save tree
+// ---------------------------------------------------------------------------
+
+// A character created while the app is running. This is the whole chain in one
+// assertion: `fs.watch` → the 2 s debounce → a parse that checksums → the
+// snapshot invalidation → the renderer's re-read → the picker.
+if (spareCharacter) {
+  const before = await page.locator('.app-header select').first().locator('option').count();
+  installCharacter(spareCharacter);
+  const picker = page.locator('.app-header select').first();
+  const grew = await picker
+    .locator('option')
+    .nth(before)
+    .waitFor({ state: 'attached', timeout: 20_000 })
+    .then(() => true, () => false);
+  check('a character created while the app is open turns up in the picker', grew, `${before} → ${before + 1}`);
+} else {
+  check('a character created while the app is open turns up in the picker', true, 'only one character on this machine — skipped');
+}
+
+// A torn write: the game is mid-save, so the checksums fail. What must *not*
+// happen is the window emptying — the last good snapshot is still true, it is
+// just not the newest one, and the banner says exactly that.
+// Back to the loadout first: the assertion below is that the window still has
+// what it had, and the column has been sitting on Advice since the reload
+// checks. Clicked *before* the file is torn, because a click raises focus and
+// the focus refresh would read the half-written file on purpose.
+await page.locator('.column-tabs .tab', { hasText: 'Loadout' }).click();
+await page.waitForTimeout(200);
+
+const livePath = join(saves.dir, 'main', character, 'player.gdc');
+const goodBytes = readFileSync(livePath);
+const tornBytes = Buffer.from(goodBytes);
+tornBytes[Math.floor(tornBytes.length / 2)] ^= 0xff;
+writeFileSync(livePath, tornBytes);
+const warned = await page
+  .locator('.banner.warn-banner')
+  .waitFor({ state: 'visible', timeout: 30_000 })
+  .then(() => true, () => false);
+check('a torn save is reported rather than swallowed', warned);
+check('and the loadout it already had is still on screen', (await page.locator('.slot-row').count()) === 14);
+writeFileSync(livePath, goodBytes);
+const recovered = await page
+  .locator('.banner.warn-banner')
+  .waitFor({ state: 'detached', timeout: 30_000 })
+  .then(() => true, () => false);
+check('and the notice goes when the game finishes writing', recovered);
+
 if (shot) {
   await page.screenshot({ path: shot });
   console.log(`screenshot: ${shot}`);
 }
 
+// ---------------------------------------------------------------------------
+// The window remembers where it was
+// ---------------------------------------------------------------------------
+
+// A geometry that survives a restart is not testable without one. The database
+// is cached by now, so the second launch is seconds rather than the first one's
+// half a minute.
+const moved = { x: 120, y: 90, width: 1280, height: 860 };
+await app.evaluate(({ BrowserWindow }, bounds) => BrowserWindow.getAllWindows()[0].setBounds(bounds), moved);
+await page.waitForTimeout(900);
 await app.close();
+
+const remembered = JSON.parse(readFileSync(join(dataDir, 'window.json'), 'utf8'));
+check(
+  'the window writes where it was to window.json',
+  remembered.bounds?.width === moved.width,
+  JSON.stringify(remembered.bounds),
+);
+
+const again = await electron.launch({
+  args: ['out/main/index.cjs'],
+  env: { ...process.env, GD_DATA_DIR: dataDir, GD_SAVE_DIR: saves.dir },
+});
+const reopened = await again.firstWindow();
+await reopened.locator('.loadout-grid').waitFor({ state: 'visible', timeout: 120_000 });
+const bounds = await again.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].getBounds());
+check(
+  'and comes back there',
+  bounds.width === moved.width && bounds.height === moved.height,
+  JSON.stringify(bounds),
+);
+await again.close();
+
+rmSync(saves.dir, { recursive: true, force: true });
 check('no uncaught errors in the window', problems.length === 0, problems[0] ?? '');
 if (failures.length) {
   console.error(`\n${failures.length} check(s) failed`);

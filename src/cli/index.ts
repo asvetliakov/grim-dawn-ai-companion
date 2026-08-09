@@ -7,6 +7,7 @@
  */
 
 import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { Command } from 'commander';
 
 import {
@@ -33,6 +34,7 @@ import {
   type AdvisorPlan,
   type PlanWarning,
 } from '../core/ai/index.js';
+import { findGameDirs } from '../core/db/gamefiles.js';
 import { loadGameDb } from '../core/db/index.js';
 import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
 import { createIconService, readPngSize } from '../core/icons/index.js';
@@ -54,7 +56,8 @@ import {
   requireDifficulty,
   SessionError,
 } from '../core/session.js';
-import { listCharacters, resolveSettings } from '../core/settings.js';
+import { findSaveDirs, listCharacters, resolveSettings } from '../core/settings.js';
+import { createSaveWatcher } from '../core/watcher.js';
 import { parseGdc } from '../core/save/gdc.js';
 import { parseFormulasFile, parseReagents, parseTransferStash, type TransferStash } from '../core/save/gst.js';
 import {
@@ -1308,5 +1311,77 @@ program
       });
     },
   );
+
+// ---------------------------------------------------------------------------
+// Stage 7C — the save watcher
+// ---------------------------------------------------------------------------
+
+program
+  .command('paths')
+  .description('report where this machine keeps Grim Dawn and its saves')
+  .option('--json', 'machine-readable output')
+  .action((opts: { json?: boolean }) => {
+    const settings = resolveSettings();
+    const found = { saveDirs: findSaveDirs(), gameDirs: findGameDirs(), using: settings };
+
+    if (opts.json) {
+      console.log(JSON.stringify({ saveDir: settings.saveDir, gameDir: settings.gameDir, ...found }, null, 2));
+      return;
+    }
+
+    console.log('In use');
+    console.log(`  saves  ${settings.saveDir}`);
+    console.log(`  game   ${settings.gameDir ?? '(not found)'}`);
+    console.log(`  locale ${settings.locale}`);
+    console.log('\nSave trees found');
+    for (const dir of found.saveDirs) console.log(`  ${dir}`);
+    if (!found.saveDirs.length) console.log('  (none — set saveDir in settings.json or GD_SAVE_DIR)');
+    console.log('\nInstalls found');
+    for (const dir of found.gameDirs) console.log(`  ${dir}`);
+    if (!found.gameDirs.length) console.log('  (none — set gameDir in settings.json or GD_GAME_DIR)');
+  });
+
+program
+  .command('watch')
+  .description('watch the save tree and print what the game writes (Ctrl-C to stop)')
+  .option('--debounce <ms>', 'quiet time after the last write before a file is read', '2000')
+  .option('--retries <n>', 'parse attempts before falling back to a rotation backup', '3')
+  .action(async (opts: { debounce: string; retries: string }) => {
+    const settings = resolveSettings();
+    const stamp = (): string => new Date().toTimeString().slice(0, 8);
+
+    console.log(`watching ${settings.saveDir}`);
+    console.log('play the game, or `touch` a save in another terminal — Ctrl-C to stop\n');
+
+    const watcher = createSaveWatcher({
+      saveDir: settings.saveDir,
+      debounceMs: Number(opts.debounce),
+      attempts: Number(opts.retries),
+      onEvent: (event) => {
+        switch (event.type) {
+          case 'character-updated':
+            console.log(
+              `${stamp()}  character-updated  ${event.character} — level ${event.save.level}, ` +
+                `${event.save.equipment.filter(Boolean).length} equipped` +
+                (event.fromBackup ? `  [from the rotation backup ${basename(event.path)}]` : ''),
+            );
+            break;
+          case 'parse-failed':
+            console.log(`${stamp()}  parse-failed       ${event.character ?? ''} ${event.message}`.trimEnd());
+            break;
+          default:
+            console.log(`${stamp()}  ${event.type}`);
+        }
+      },
+    });
+
+    process.on('SIGINT', () => {
+      watcher.close();
+      console.log('\nstopped');
+      process.exit(0);
+    });
+    // Nothing else to do: the watch handle is what keeps the process alive.
+    await new Promise(() => {});
+  });
 
 program.parse();

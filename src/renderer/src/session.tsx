@@ -22,9 +22,13 @@ import type {
   AdviseEnvelope,
   AdvisePhase,
   Bootstrap,
+  DetectedPaths,
   Settings,
   UiSnapshot,
 } from '../../shared/ipc.js';
+
+/** The two panes that cover the window. Opened from the header or the menu bar. */
+export type Pane = 'settings' | 'context';
 
 /**
  * The run in flight, as the window needs to describe it.
@@ -85,6 +89,18 @@ export interface SessionValue {
   /** The database build's own progress notes — a first boot takes real time. */
   progress?: string;
   error?: string;
+  /**
+   * The watcher could not read what the game just wrote.
+   *
+   * Kept apart from `error`: there is still a good snapshot on screen, it is
+   * simply not the newest one. Cleared by the next successful read.
+   */
+  saveProblem?: string;
+  /** Which covering pane is open, if any. */
+  pane?: Pane;
+  openPane: (pane: Pane | undefined) => void;
+  /** Where this machine's saves and installs appear to be — for the settings pane. */
+  detected?: DetectedPaths;
   refresh: () => void;
   setCharacter: (name: string) => void;
   updateSettings: (patch: Partial<Settings>) => void;
@@ -134,6 +150,9 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState<string>();
   const [error, setError] = useState<string>();
+  const [saveProblem, setSaveProblem] = useState<string>();
+  const [pane, setPane] = useState<Pane>();
+  const [detected, setDetected] = useState<DetectedPaths>();
   /** Guards against a focus event landing on top of a load already in flight. */
   const inFlight = useRef(false);
   /**
@@ -161,6 +180,12 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
       const next = await window.gd.getSnapshot(character);
       setSnapshot(next);
       setError(undefined);
+      // A save that reads is the end of a save that would not.
+      setSaveProblem(undefined);
+      // Re-read with the snapshot rather than only at boot: the watcher notices
+      // a character created while the window was open, and the picker should
+      // have them in it without a restart.
+      void window.gd.getBootstrap().then(setBootstrap, () => {});
       // Advice belongs to a character, so the history is fetched with them rather
       // than carried across a switch, where it would list runs about another
       // character's loadout entirely.
@@ -217,6 +242,8 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
     return window.gd.onPush((event) => {
       if (event.type === 'db-progress') setProgress(event.message);
       else if (event.type === 'snapshot-invalidated') void load();
+      else if (event.type === 'save-problem') setSaveProblem(event.message);
+      else if (event.type === 'open-pane') setPane(event.pane);
       else if (event.type === 'advise-progress') {
         // `startedAt` is derived from the elapsed time main reports rather than
         // from the moment this push arrived: a renderer that mounted six minutes
@@ -330,9 +357,18 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
     return () => window.removeEventListener('focus', onFocus);
   }, [load]);
 
+  // Detection is a handful of `readdir`s and the answer changes only when a
+  // drive is plugged in, so it is fetched once and lazily — the settings pane is
+  // the only thing that wants it, and most sessions never open it.
+  useEffect(() => {
+    if (pane !== 'settings' || detected) return;
+    void window.gd.detectPaths().then(setDetected, () => {});
+  }, [pane, detected]);
+
   const value: SessionValue = {
     loading,
     run,
+    openPane: setPane,
     adviceHistory: history,
     selectAdvice: (id: string) => {
       void (async () => {
@@ -410,6 +446,9 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
   if (adviceError) value.adviceError = adviceError;
   if (progress) value.progress = progress;
   if (error) value.error = error;
+  if (saveProblem) value.saveProblem = saveProblem;
+  if (pane) value.pane = pane;
+  if (detected) value.detected = detected;
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }

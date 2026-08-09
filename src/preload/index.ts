@@ -14,6 +14,8 @@ import type {
   AdviceRunRef,
   AdviseEnvelope,
   AdviseStatus,
+  ContextDocumentView,
+  DetectedPaths,
   GdApi,
   PushEvent,
   Settings,
@@ -35,6 +37,8 @@ const api: GdApi = {
   getAdviseStatus: () => invoke<AdviseStatus>('getAdviseStatus'),
   getAdviceHistory: (character: string) => invoke<AdviceRunRef[]>('getAdviceHistory', character),
   getAdvice: (character: string, id: string) => invoke<AdviseEnvelope | null>('getAdvice', character, id),
+  getContextDocument: () => invoke<ContextDocumentView>('getContextDocument'),
+  detectPaths: () => invoke<DetectedPaths>('detectPaths'),
   onPush: (cb: (e: PushEvent) => void) => {
     const listener = (_event: IpcRendererEvent, payload: PushEvent): void => cb(payload);
     ipcRenderer.on(PUSH_CHANNEL, listener);

@@ -50,6 +50,17 @@ export interface SnapshotOptions {
   difficulty?: Difficulty | undefined;
   maxTokens?: number | undefined;
   perGroup?: number | undefined;
+  /**
+   * A `player.gdc` somebody has already read, with the path it came off.
+   *
+   * The watcher is the only caller: it has just parsed the file — retrying
+   * through the torn write, and falling back to a `player.gNN` rotation backup if
+   * the live save never settled — and re-reading it here would throw that away
+   * and re-run the race it just won, on the backup path with no chance of
+   * winning. Must be the save of `opts.character`; nothing checks that, because
+   * the one caller resolves the name first.
+   */
+  preparsed?: { save: CharacterSave; path: string } | undefined;
 }
 
 export interface CharacterSnapshot {
@@ -137,8 +148,8 @@ export function loadSnapshot(
   opts: SnapshotOptions = {},
 ): CharacterSnapshot {
   const character = pickCharacter(settings, opts.character);
-  const savePath = characterSavePath(character, settings.saveDir);
-  const save = parseGdc(readSave(savePath), { path: savePath });
+  const savePath = opts.preparsed?.path ?? characterSavePath(character, settings.saveDir);
+  const save = opts.preparsed?.save ?? parseGdc(readSave(savePath), { path: savePath });
   const difficulty = opts.difficulty ?? settings.difficultyOverride ?? save.difficulty;
 
   const account = accountFiles(settings.saveDir);

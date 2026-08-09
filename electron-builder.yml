@@ -1,0 +1,62 @@
+# Packaging.
+#
+# `npm run build` produces `out/` (main, preload, renderer); this turns that into
+# something you can hand someone. The app is **not** signed or notarized here —
+# there is no certificate in this repo and there should not be — so a macOS
+# release built this way is a "right-click → Open" build and a Windows one is
+# unsigned. Both are fine for a personal tool; neither is fine for public
+# distribution, and the fix for that is a certificate, not a config change.
+#
+# Cross-building: `--win zip` (and `--win dir`) work from macOS with nothing
+# extra, because they are just a copy of the prebuilt Windows Electron binaries
+# with our `out/` and `node_modules` beside them. The **NSIS installer needs
+# Wine**, which is why `zip` is the default Windows target here rather than the
+# usual `nsis` — a portable zip has no install step to run.
+#
+# There are no native modules to rebuild, by design (see the zero-dependency rule
+# in CLAUDE.md), which is the whole reason cross-building is this simple.
+
+appId: com.grimdawn.aicompanion
+productName: Grim Dawn AI Companion
+copyright: Game data © Crate Entertainment
+
+directories:
+  output: release
+  buildResources: build
+
+# `out/` is the build; the two runtime dependencies come from node_modules.
+files:
+  - out/**/*
+  - package.json
+
+# Neither store's game data is ever bundled — the tool reads the install in
+# place, and shipping any of it would be shipping someone else's copyright.
+asar: true
+
+# Apple Silicon only. An Intel Mac build is one line away (`arch: [arm64, x64]`)
+# and is deliberately not made: the game runs here under CrossOver, which is
+# where this tool's users are, and every Mac that runs it is arm64.
+mac:
+  category: public.app-category.utilities
+  target:
+    - target: dmg
+      arch: [arm64]
+    - target: zip
+      arch: [arm64]
+  # No entitlements and no notarization: unsigned, deliberately. See the header.
+  identity: null
+
+# `zip` rather than `nsis` so this cross-builds from macOS without Wine, and
+# **x64 explicitly** — electron-builder otherwise targets the *host* arch, which
+# on an Apple Silicon Mac quietly produces a Windows-on-ARM build that almost
+# nobody can run.
+win:
+  target:
+    - target: zip
+      arch: [x64]
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Game

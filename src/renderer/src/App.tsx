@@ -5,8 +5,10 @@ import type { AdviceRunRef, AdviseEnvelope, UiSnapshot } from '../../shared/ipc.
 import { actionMarks } from './advice.js';
 import { AdvicePanel } from './components/AdvicePanel.js';
 import { ContainerPanel } from './components/ContainerPanel.js';
+import { ContextViewer } from './components/ContextViewer.js';
 import { Header } from './components/Header.js';
 import { LoadoutPanel } from './components/LoadoutPanel.js';
+import { SettingsPane } from './components/SettingsPane.js';
 import { StatsPanel } from './components/StatsPanel.js';
 import { HighlightProvider, useHighlight } from './highlight.js';
 import { useSession, type AdviseRun, type RunActivity } from './session.js';
@@ -14,8 +16,22 @@ import { TooltipProvider } from './tooltip.js';
 
 export function App(): React.ReactNode {
   const session = useSession();
-  const { bootstrap, snapshot, advice, adviceHistory, adviceId, run, activity, adviceError, loading, progress, error } =
-    session;
+  const {
+    bootstrap,
+    snapshot,
+    advice,
+    adviceHistory,
+    adviceId,
+    run,
+    activity,
+    adviceError,
+    loading,
+    progress,
+    error,
+    saveProblem,
+    pane,
+    detected,
+  } = session;
 
   return (
     <Shell>
@@ -34,10 +50,39 @@ export function App(): React.ReactNode {
         onSelectAdvice={session.selectAdvice}
         onNewRun={session.newRun}
         onIncludeStash={(include) => session.updateSettings({ includeStashInAdvice: include })}
+        onSettings={() => session.openPane('settings')}
       />
 
       {error && <div className="banner error">{error}</div>}
-      {loading && !snapshot && <LoadingBanner progress={progress} />}
+      {/*
+        A save the watcher could not read is not the same as having nothing to
+        show: the last good snapshot is still on screen, so this says the window
+        has stopped keeping up rather than that it has failed.
+      */}
+      {saveProblem && !error && (
+        <div className="banner warn-banner">
+          Could not read the save Grim Dawn just wrote — showing the last one that read cleanly.
+          <div className="banner-note">{saveProblem}</div>
+        </div>
+      )}
+      {/* Progress shows even with a snapshot up: changing the locale or the game
+          directory rebuilds the database, which is half a minute of silence
+          otherwise. */}
+      {loading && (!snapshot || progress) && <LoadingBanner progress={progress} />}
+
+      {pane === 'settings' && (
+        <SettingsPane
+          {...(bootstrap ? { bootstrap } : {})}
+          {...(snapshot ? { snapshot } : {})}
+          {...(detected ? { detected } : {})}
+          onChange={session.updateSettings}
+          onShowContext={() => session.openPane('context')}
+          onClose={() => session.openPane(undefined)}
+        />
+      )}
+      {pane === 'context' && (
+        <ContextViewer load={() => window.gd.getContextDocument()} onClose={() => session.openPane(undefined)} />
+      )}
 
       {snapshot && (
         <Workspace

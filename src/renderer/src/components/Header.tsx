@@ -6,10 +6,8 @@
  * settings so the resistance matrix and the advisor both see the same one.
  */
 
-import { useState } from 'react';
-
 import type { AdviceRunRef, Bootstrap, Difficulty, UiSnapshot } from '../../../shared/ipc.js';
-import { DIFFICULTY_CHOICES } from '../../../shared/ipc.js';
+import { APP_NAME, DIFFICULTY_CHOICES } from '../../../shared/ipc.js';
 import { useTooltip } from '../tooltip.js';
 import { ExplainedButton } from './ExplainedButton.js';
 import { RunPicker } from './RunPicker.js';
@@ -29,6 +27,7 @@ export function Header({
   onSelectAdvice,
   onNewRun,
   onIncludeStash,
+  onSettings,
 }: {
   bootstrap?: Bootstrap;
   snapshot?: UiSnapshot;
@@ -47,8 +46,9 @@ export function Header({
   onNewRun?: () => void;
   /** Persist whether the next run's dossier includes the stashes. */
   onIncludeStash?: (include: boolean) => void;
+  /** Open the settings pane — which is also where the paths now live. */
+  onSettings?: () => void;
 }): React.ReactNode {
-  const [showPaths, setShowPaths] = useState(false);
   const tooltip = useTooltip();
   const characters = bootstrap?.characters ?? [];
   const override = bootstrap?.settings.difficultyOverride ?? '';
@@ -56,7 +56,7 @@ export function Header({
 
   return (
     <header className="app-header">
-      <div className="app-title">Grim Dawn Companion</div>
+      <div className="app-title">{APP_NAME}</div>
 
       <label className="field">
         <span>Character</span>
@@ -94,9 +94,11 @@ export function Header({
         in flight, not the answer on screen.
 
         Which is worth saying, because all three are the natural worry — and the
-        third is the reason this button is the last step of the loop the app is
-        for. Play, come back, refresh, and the plan you are working through says
-        which of its moves you have made.
+        third is the reason this button was the last step of the loop the app is
+        for. Since the watcher it is mostly *not* needed, and the note says so
+        rather than leaving a reader wondering why nothing happened: the window
+        keeps up on its own, and this is the belt-and-braces for the case where a
+        file changed in a way the folder never reported.
       */}
       <ExplainedButton
         className="chrome-button"
@@ -106,8 +108,8 @@ export function Header({
         note={{
           title: 'Read your save file again',
           body: runningAdvice
-            ? 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. The question already being asked is not affected: it has everything it needs, and it is answering about the gear it started with.'
-            : 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. An answer you have open stays open, and the green DONE and amber CHANGED stamps on it are worked out again from what you are wearing now.',
+            ? 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. This happens by itself a couple of seconds after the game saves, so you rarely need it. The question already being asked is not affected: it has everything it needs, and it is answering about the gear it started with.'
+            : 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. This happens by itself a couple of seconds after the game saves, so you rarely need it. An answer you have open stays open, and the green DONE and amber CHANGED stamps on it are worked out again from what you are wearing now.',
         }}
       />
 
@@ -192,36 +194,17 @@ export function Header({
         )}
       </div>
 
-      <button
-        type="button"
-        className="chrome-button subtle"
-        onClick={() => setShowPaths((v) => !v)}
-        title="Where the data comes from"
-      >
-        Paths
-      </button>
-
-      {showPaths && bootstrap && (
-        <div className="paths-popover">
-          <div>
-            <b>Game</b> {bootstrap.settings.gameDir ?? 'auto-detected'}
-          </div>
-          <div>
-            <b>Saves</b> {bootstrap.saveDir}
-          </div>
-          <div>
-            <b>Locale</b> {bootstrap.settings.locale}
-          </div>
-          {snapshot && (
-            <div>
-              <b>Game version</b> {snapshot.gameVersion}
-            </div>
-          )}
-          {bootstrap.gameDirProblem && <div className="warn">{bootstrap.gameDirProblem}</div>}
-          <div className="paths-note">
-            Settings live in <code>~/Library/Application Support/gd-companion/settings.json</code>.
-          </div>
-        </div>
+      {/*
+        One door, not two. This used to be `Paths` — a popover that *showed* the
+        save and game directories and gave no way to change either, so the only
+        answer to "it is reading the wrong install" was to find settings.json and
+        edit it by hand. The same facts are now the top section of the settings
+        pane, next to the fields that set them.
+      */}
+      {onSettings && (
+        <button type="button" className="chrome-button subtle settings-button" onClick={onSettings}>
+          Settings
+        </button>
       )}
     </header>
   );
