@@ -109,6 +109,14 @@ export interface ContextDoc {
    * demanded a verdict on, and one it did show must not simply be ignored.
    */
   candidateIds: Set<string>;
+  /**
+   * Components that cost nothing to install: a loose copy on hand, or a
+   * learned blueprint craftable right now — the two origins §8's census calls
+   * free. The empty-socket check runs against this set; a component whose only
+   * copy is installed in gear is deliberately absent, because extracting it
+   * destroys the host and proposing that is a judgement call, not a free fill.
+   */
+  freeComponentIds: Set<string>;
 }
 
 /**
@@ -160,6 +168,7 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
     itemsById,
     socketablesById,
     candidateIds: doc.candidateIds,
+    freeComponentIds: doc.freeComponentIds,
   };
 }
 
@@ -226,7 +235,10 @@ function assignSocketableIds(items: readonly DbItem[], reserved: ReadonlySet<str
 // The document
 // ---------------------------------------------------------------------------
 
-function render(input: ContextInput, trim: Trim): { text: string; candidateIds: Set<string> } {
+function render(
+  input: ContextInput,
+  trim: Trim,
+): { text: string; candidateIds: Set<string>; freeComponentIds: Set<string> } {
   const { save, resolved } = input;
   const ids = assignIds(resolved.items);
   const out = new Writer();
@@ -254,7 +266,8 @@ function render(input: ContextInput, trim: Trim): { text: string; candidateIds: 
   const fodder = bagFodder(ctx, selection);
   setStatus(out, ctx);
   candidatesSection(out, ctx, selection, fodder);
-  census(out, ctx, selection, trim);
+  const components = componentCensus(ctx, selection);
+  census(out, ctx, components, trim);
   factionAugments(out, ctx);
   blueprints(out, ctx, selection, trim);
   task(out, ctx);
@@ -274,7 +287,16 @@ function render(input: ContextInput, trim: Trim): { text: string; candidateIds: 
     if (id) candidateIds.add(id);
   }
 
-  return { text: out.toString(), candidateIds };
+  // The free half of the census, by dossier id — what the empty-socket check
+  // measures a plan against. Availability, so trimming never changes it.
+  const freeComponentIds = new Set<string>();
+  for (const e of components.values()) {
+    if (e.loose.size > 0 || (e.craft && e.craft.plan.missing.length === 0)) {
+      freeComponentIds.add(socketableId(ctx, e.item));
+    }
+  }
+
+  return { text: out.toString(), candidateIds, freeComponentIds };
 }
 
 interface RenderContext extends ContextInput {
@@ -1081,7 +1103,13 @@ function augmentSource(augment: DbItem, db: GameDb): string {
 /** Gear takes a component; relics, jewelry medals and the like vary — ask the data. */
 const COMPONENT_SLOTS = /^(ArmorProtective_|ArmorJewelry_|WeaponMelee_|WeaponHunting_|WeaponArmor_)/;
 
-function acceptsComponent(item: ResolvedItem): boolean {
+/**
+ * Whether this kind of gear has a component socket at all. Exported for the
+ * plan checks: `verify.ts` decides "the plan leaves this socket empty" with the
+ * same rule the dossier used to print **component socket: EMPTY**, so the two
+ * cannot drift apart.
+ */
+export function acceptsComponent(item: ResolvedItem): boolean {
   return COMPONENT_SLOTS.test(item.base?.slot ?? '');
 }
 
@@ -1390,9 +1418,7 @@ function componentCensus(ctx: RenderContext, selection: CandidateSelection): Map
   return components;
 }
 
-function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, trim: Trim): void {
-  const components = componentCensus(ctx, selection);
-
+function census(out: Writer, ctx: RenderContext, components: Map<string, CensusEntry>, trim: Trim): void {
   const augments = new Map<string, CensusEntry>();
   for (const item of ctx.resolved.items) {
     if (item.base?.slot !== AUGMENT_CLASS) continue;

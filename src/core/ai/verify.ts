@@ -12,6 +12,7 @@
  * whoever tunes the prompt), not an error to swallow the answer over.
  */
 
+import { acceptsComponent } from '../context/builder.js';
 import type { DbItem } from '../db/types.js';
 import type { ResolvedItem } from '../resolve.js';
 import {
@@ -52,6 +53,15 @@ export interface PlanCheckInput {
    * given: an item the model was never shown cannot be demanded a verdict on.
    */
   candidateIds?: ReadonlySet<string>;
+  /**
+   * Component ids that are *free* to install — a loose copy on hand, or a
+   * learned blueprint craftable right now (`ContextDoc.freeComponentIds`; §8's
+   * census computes both). The empty-socket check runs only when this is given,
+   * and only against these: an installed-only copy costs its host, so walking
+   * past an empty socket for lack of a free component is a judgement, not an
+   * oversight.
+   */
+  freeComponentIds?: ReadonlySet<string>;
 }
 
 /**
@@ -158,6 +168,20 @@ const QUALIFIER = '(?:Resist|Res\\b|Damage|Dmg|Retaliation|Retal|Armor|Armour|Du
 const TYPE_LINK = `(?:[*_\`)\\s,/]|→|->|\\band\\b|\\bto\\b|${TYPE_TAIL_WORD}|${DAMAGE_TYPE_WORD})`;
 
 /**
+ * A label–value list — `Fire 92, Cold 90, Lightning 80` — names each type as a
+ * row label with its number *after* it, so what the matcher glues together
+ * (`92, Cold`) is the seam between two entries, not a stat. Both live runs
+ * wrote their projected-resistance summary in exactly this shape and the
+ * repair round spent a full second call on it each time — the
+ * false-alarm-on-a-right-answer this check must not produce. A type name
+ * followed by its own unsigned number is therefore not flagged. A *signed*
+ * number after the type is a new stat, which keeps `+48 Pierce, +60 Acid`
+ * flagged on both halves; and the whitespace is same-line only, so a stat that
+ * ends a line stays checkable whatever the next line opens with.
+ */
+const LIST_VALUE_AFTER = `(?:[ \\t]*${TYPE_TAIL_WORD})?[ \\t]*:?[ \\t]*\\d`;
+
+/**
  * A number followed by a bare damage type, with no qualifier after it.
  *
  * Decidable, so decided rather than hoped for. The sign is optional because
@@ -165,7 +189,7 @@ const TYPE_LINK = `(?:[*_\`)\\s,/]|→|->|\\band\\b|\\bto\\b|${TYPE_TAIL_WORD}|$
  * resistance — carries none.
  */
 const AMBIGUOUS_STAT = new RegExp(
-  `[+\\-−]?\\s?\\d[\\d,.]*\\s?%?\\s+${DAMAGE_TYPE_WORD}\\b(?!${TYPE_LINK}*${QUALIFIER})`,
+  `[+\\-−]?\\s?\\d[\\d,.]*\\s?%?\\s+${DAMAGE_TYPE_WORD}\\b(?!${TYPE_LINK}*${QUALIFIER})(?!${LIST_VALUE_AFTER})`,
   'gi',
 );
 
@@ -334,8 +358,57 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     }
   }
 
+  checkEmptySockets(plan, input, warn);
   checkStatClarity(plan, opts.answer, warn);
   return warnings;
+}
+
+/**
+ * An empty component socket the plan walks past.
+ *
+ * The dossier prints **component socket: EMPTY — a free upgrade** on every
+ * worn item this applies to, and `freeComponentIds` says which components cost
+ * nothing to install — so a slot that ends the plan with an empty socket while
+ * a free, legal component exists is a missed move, not a judgement call. This
+ * is the thoroughness failure a lower reasoning effort was observed to make,
+ * so it is decided mechanically rather than left to the effort knob; the
+ * repair round then feeds it back like any other warning.
+ *
+ * The item examined is the one the slot **ends up** holding — the candidate
+ * for an `EQUIP` — same rule as `checkFits`. A socket verdict on the component
+ * itself and a `fits` entry both count as filling it. `CRAFT` is exempt: the
+ * item is transformed, and what its sockets hold afterwards is not the
+ * dossier's to know.
+ */
+function checkEmptySockets(
+  plan: AdvisorPlan,
+  input: PlanCheckInput,
+  warn: (kind: PlanWarningKind, message: string) => void,
+): void {
+  const free = input.freeComponentIds;
+  if (!free?.size || !input.socketablesById) return;
+
+  for (const v of plan.verdicts) {
+    if (v.verdict === 'CRAFT' || v.verdict === 'ADD-COMPONENT' || v.verdict === 'SWAP-COMPONENT') continue;
+    if (v.fits?.some((f) => f.kind === 'component')) continue;
+    const hostId = v.verdict === 'EQUIP' ? v.target : v.itemId;
+    const host = hostId ? input.itemsById.get(hostId) : undefined;
+    if (!host || host.component || !acceptsComponent(host)) continue;
+    const flag = slotFlagForClass(host.base?.slot);
+    if (!flag) continue;
+
+    const fitting = [...free]
+      .map((id) => input.socketablesById?.get(id))
+      .filter((c): c is DbItem => !!c && (!c.allowedSlots?.length || c.allowedSlots.includes(flag)));
+    if (fitting.length === 0) continue;
+
+    const names = fitting.slice(0, 3).map((c) => c.name).join(', ');
+    warn(
+      'unfilled-socket',
+      `${v.slot} ends the plan with an empty component socket on ${host.display}, while a free component fits ` +
+        `(${names}${fitting.length > 3 ? ', …' : ''}) — fill it via a component verdict or \`fits\`, or say why it stays empty`,
+    );
+  }
 }
 
 /**

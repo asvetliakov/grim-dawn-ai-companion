@@ -30,9 +30,18 @@ import {
 
 export const CLAUDE_CLI_ID = 'claude-cli';
 
-/** Opus at high effort: the pair this tool's advice is calibrated against. */
+/**
+ * Opus at **medium** effort. Chosen by an A/B on the live test character
+ * (2026-08-10): against high, medium produced the same core moves, filled every
+ * socket, capped every resistance *sooner* — high spent its extra ~15k thinking
+ * tokens finding a maximum-damage line that left Chaos Resistance 11 under cap
+ * for two levels — and did it 22% faster ($2.22/540s vs $2.59/696s, one call
+ * each). The thoroughness risk that once argued for high (missed socket fills)
+ * is now `unfilled-socket` in `checkPlan`, so the effort knob no longer decides
+ * it. High remains a settings choice for whoever wants the deeper search.
+ */
 export const DEFAULT_MODEL = 'opus';
-export const DEFAULT_EFFORT = 'high';
+export const DEFAULT_EFFORT = 'medium';
 
 /**
  * Twenty minutes. Measured, not guessed: a full dossier (~36k tokens in, ~40k
@@ -130,7 +139,26 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
         systemPrompt,
       ];
 
-      const proc = await run(spawn, binary, args, buildInput(req), timeoutMs, signal, onActivity);
+      // What the reasoning cost, for `usage` — an effort A/B reads it from the
+      // stored envelope to see *where* a cheaper run saved its tokens. Two
+      // sources, authoritative first: the final `message_delta`'s usage carries
+      // `output_tokens_details.thinking_tokens` (observed 106 where the running
+      // estimate said 130), and the `thinking_tokens` estimate events — which a
+      // live medium-effort run turned out not to emit at all — are the fallback,
+      // sampled off the last `thinking` delta they rode in on.
+      let reportedThinking: number | undefined;
+      let estimatedThinking: number | undefined;
+      const track: ActivityListener = (activity) => {
+        if (activity.kind === 'thinking' && activity.outputTokens !== undefined) {
+          estimatedThinking = activity.outputTokens;
+        }
+        onActivity?.(activity);
+      };
+
+      const proc = await run(spawn, binary, args, buildInput(req), timeoutMs, signal, track, (n) => {
+        reportedThinking = n;
+      });
+      const thinkingTokens = reportedThinking ?? estimatedThinking;
 
       if (proc.timedOut) {
         throw new Error(
@@ -156,6 +184,7 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
       const usage = {
         ...(input !== undefined ? { inputTokens: input } : {}),
         ...(envelope.usage?.output_tokens !== undefined ? { outputTokens: envelope.usage.output_tokens } : {}),
+        ...(thinkingTokens !== undefined ? { thinkingTokens } : {}),
         ...(envelope.total_cost_usd !== undefined ? { costUsd: envelope.total_cost_usd } : {}),
         ...(envelope.duration_ms !== undefined ? { durationMs: envelope.duration_ms } : {}),
       };
@@ -218,7 +247,7 @@ function envelopeFrom(stdout: string): Envelope | undefined {
  * event vocabulary is the CLI's and it is free to grow, and a new event kind must
  * not be able to break a twelve-minute run that is otherwise going fine.
  */
-function activityReader(onActivity: ActivityListener): (chunk: string) => void {
+function activityReader(onActivity: ActivityListener, onThinkingTokens?: (n: number) => void): (chunk: string) => void {
   let pending = '';
   let outputTokens: number | undefined;
 
@@ -248,6 +277,10 @@ function activityReader(onActivity: ActivityListener): (chunk: string) => void {
       const delta = event.event?.delta;
       const usage = event.event?.usage;
       if (typeof usage?.output_tokens === 'number') outputTokens = usage.output_tokens;
+      // The final `message_delta` states what the reasoning actually cost —
+      // the one figure in the stream that is a count rather than an estimate.
+      const thinking = usage?.output_tokens_details?.thinking_tokens;
+      if (typeof thinking === 'number') onThinkingTokens?.(thinking);
       const text = delta?.thinking ?? delta?.text;
       if (typeof text !== 'string' || text === '') continue;
       onActivity({
@@ -266,7 +299,7 @@ interface StreamLine {
   estimated_tokens?: number;
   event?: {
     delta?: { thinking?: string; text?: string };
-    usage?: { output_tokens?: number };
+    usage?: { output_tokens?: number; output_tokens_details?: { thinking_tokens?: number } };
   };
 }
 
@@ -308,6 +341,7 @@ function run(
   timeoutMs: number,
   signal: AbortSignal | undefined,
   onActivity?: ActivityListener,
+  onThinkingTokens?: (n: number) => void,
 ): Promise<RunResult> {
   return new Promise<RunResult>((resolve, reject) => {
     let child: ChildProcess;
@@ -365,7 +399,7 @@ function run(
     // Still accumulated in full: the result envelope is the last line, and the
     // error paths quote the beginning of stdout. The reader is a second pass over
     // the same bytes, and the whole stream is a few hundred kB.
-    const readActivity = onActivity ? activityReader(onActivity) : undefined;
+    const readActivity = onActivity ? activityReader(onActivity, onThinkingTokens) : undefined;
     child.stdout?.on('data', (chunk: string) => {
       stdout += chunk;
       // A listener that throws is the consumer's problem, not the run's — this is

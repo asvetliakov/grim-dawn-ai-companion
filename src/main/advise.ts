@@ -33,6 +33,7 @@ import {
   listAdvice,
   loadAdvice,
   normalizeName,
+  repairEffort,
   saveAdvice,
   totalUsage,
   wornSlots,
@@ -121,6 +122,10 @@ export class AdviseRunner {
 
     const settings = this.host.currentSettings();
     const provider = (this.host.createProvider ?? configuredProvider)(settings);
+    // The corrective call runs at `repairEffort` — an edit does not need the
+    // first call's reasoning depth. A test-injected provider serves both calls:
+    // the injection is about timing, not about tiers.
+    const repairProvider = this.host.createProvider ? provider : configuredProvider(settings, 'repair');
     // A backend that cannot run should say so before a document is compiled for
     // it, and it should say so *in its own words* — "claude CLI not found on
     // PATH" is actionable where "not available" is not.
@@ -152,7 +157,7 @@ export class AdviseRunner {
 
     // Deliberately not awaited: `start` answers the IPC call, and the run
     // reports itself from here on.
-    void this.execute(run, provider, snapshot, scope, includeStash, gameVersion, req.question);
+    void this.execute(run, provider, repairProvider, snapshot, scope, includeStash, gameVersion, req.question);
     return { runId: run.runId };
   }
 
@@ -201,6 +206,7 @@ export class AdviseRunner {
   private async execute(
     run: ActiveRun,
     provider: AdvisorProvider,
+    repairProvider: AdvisorProvider,
     snapshot: CharacterSnapshot,
     // The input/document pair the run actually sends — the snapshot's own when
     // the stash is included, a filtered rebuild when it is not. Everything below
@@ -220,6 +226,7 @@ export class AdviseRunner {
         { contextDoc: scope.doc.markdown, ...(question ? { question } : {}) },
         check,
         {
+          repairProvider,
           signal: run.controller.signal,
           onRepair: (_warnings: readonly PlanWarning[]) => this.advance(run, 'repair'),
           onActivity: (activity) => this.observe(run, activity),
@@ -319,11 +326,15 @@ export class AdviseRunner {
  * inherited: without both flags the `claude` subprocess picks up whatever the
  * user's interactive session or settings specify, and two runs on the same save
  * stop being comparable — which is the whole point of storing them.
+ *
+ * The `repair` role is the same backend and model with the effort lowered to
+ * `repairEffort` — the corrective call is an edit, not fresh optimisation.
  */
-function configuredProvider(settings: Settings): AdvisorProvider {
+function configuredProvider(settings: Settings, role: 'primary' | 'repair' = 'primary'): AdvisorProvider {
+  const effort = settings.effort ?? DEFAULT_EFFORT;
   return createProvider(settings.provider, {
     model: settings.model ?? DEFAULT_MODEL,
-    effort: settings.effort ?? DEFAULT_EFFORT,
+    effort: role === 'repair' ? repairEffort(effort) : effort,
     timeoutMs: (settings.advisorTimeoutSeconds ?? 0) * 1000 || DEFAULT_TIMEOUT_MS,
   });
 }
@@ -340,6 +351,7 @@ export function planCheckInput(scope: { input: ContextInput; doc: ContextDoc }):
     socketables: new Map(documentSocketables(scope.input).map((item) => [normalizeName(item.name), item])),
     socketablesById: scope.doc.socketablesById,
     candidateIds: scope.doc.candidateIds,
+    freeComponentIds: scope.doc.freeComponentIds,
   };
 }
 

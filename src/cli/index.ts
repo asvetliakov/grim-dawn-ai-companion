@@ -27,6 +27,7 @@ import {
   verdictRows,
   normalizeName,
   providerIds,
+  repairEffort,
   totalUsage,
   DEFAULT_EFFORT,
   DEFAULT_MODEL,
@@ -1161,8 +1162,11 @@ program
           : (settings.advisorTimeoutSeconds ?? 0) * 1000 || DEFAULT_TIMEOUT_MS;
 
         let provider;
+        let repairProvider;
         try {
           provider = createProvider(providerId, { model, effort, timeoutMs });
+          // The corrective call is an edit, so it runs at `repairEffort`.
+          repairProvider = createProvider(providerId, { model, effort: repairEffort(effort), timeoutMs });
         } catch (err) {
           console.error(`error: ${(err as Error).message}`);
           process.exit(1);
@@ -1215,6 +1219,7 @@ program
           socketables,
           socketablesById: doc.socketablesById,
           candidateIds: doc.candidateIds,
+          freeComponentIds: doc.freeComponentIds,
         };
 
         console.error(`asking ${providerId} (${model}, effort ${effort})…`);
@@ -1227,9 +1232,10 @@ program
             check,
             {
               repair: opts.repair !== false,
+              repairProvider,
               onRepair: (warnings: readonly PlanWarning[]) =>
                 console.error(
-                  `plan had ${warnings.length} warning(s); asking for one revision (this doubles the cost)…`,
+                  `plan had ${warnings.length} warning(s); asking for one revision at ${repairEffort(effort)} effort…`,
                 ),
             },
           );
@@ -1269,7 +1275,7 @@ program
             for (const w of outcome.warnings) console.log(`  ! [${w.kind}] ${w.message}`);
             process.exitCode = 1;
           } else {
-            console.log('plan checks: every item id exists, no illegal socket, no destroyed host reused, every stat qualified');
+            console.log('plan checks: every item id exists, no illegal socket, no destroyed host reused, no free socket walked past, every stat qualified');
           }
         } else {
           console.log('plan: not parseable — text only');

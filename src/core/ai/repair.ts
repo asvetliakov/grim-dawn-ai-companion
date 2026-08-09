@@ -14,10 +14,35 @@
  * kept when the revision is not an improvement — a revision that trades three
  * warnings for four is a regression, and losing the better answer to it would be
  * the repair loop making things worse.
+ *
+ * **And only for warnings that earn it.** A structural warning names a move the
+ * tool cannot render or must not carry out; prose polish does not. Both live
+ * runs spent a full second Opus call — six minutes and two dollars each — on
+ * nothing but `ambiguous-stat`, and one of those revisions then failed to fix
+ * it. Prose-only warnings are reported to the user and left standing.
  */
 
 import type { ActivityListener, AdvisorProvider, AdvisorRequest, AdvisorResult } from './provider.js';
-import { checkPlan, type PlanCheckInput, type PlanWarning } from './verify.js';
+import { checkPlan, type PlanCheckInput, type PlanWarning, type PlanWarningKind } from './verify.js';
+
+/** Warning kinds that are wording, not structure — never worth a second call. */
+const PROSE_ONLY: ReadonlySet<PlanWarningKind> = new Set(['ambiguous-stat']);
+
+/** Whether these warnings justify spending a corrective call. */
+export function worthRepairing(warnings: readonly PlanWarning[]): boolean {
+  return warnings.some((w) => !PROSE_ONLY.has(w.kind));
+}
+
+/**
+ * The effort tier the corrective call runs at. A repair is an *edit* — "fix
+ * exactly what the checks name, keep every other conclusion" — not fresh
+ * optimisation, so it does not need the first call's reasoning depth; and
+ * keep-whichever-is-cleaner already guards the case where the cheaper call
+ * comes back worse. Tiers at or below medium pass through unchanged.
+ */
+export function repairEffort(effort: string): string {
+  return effort === 'high' || effort === 'xhigh' || effort === 'max' ? 'medium' : effort;
+}
 
 export interface RepairOutcome {
   /** The answer to show: the revision when it is cleaner, else the original. */
@@ -55,6 +80,11 @@ export function repairRequest(req: AdvisorRequest, answer: string, warnings: rea
 export interface AdviseAndRepairOptions {
   /** False to report warnings without spending a second call. */
   repair?: boolean;
+  /**
+   * The provider the corrective call goes to, when the caller wants it cheaper
+   * than the first — see `repairEffort`. Defaults to the same provider.
+   */
+  repairProvider?: AdvisorProvider;
   signal?: AbortSignal;
   /** Called before the second request, so a CLI can say what it is doing. */
   onRepair?: (warnings: readonly PlanWarning[]) => void;
@@ -87,10 +117,14 @@ export async function adviseWithRepair(
     revisionRejected: false,
     results: [first],
   };
-  if (firstWarnings.length === 0 || opts.repair === false) return base;
+  if (firstWarnings.length === 0 || opts.repair === false || !worthRepairing(firstWarnings)) return base;
 
   opts.onRepair?.(firstWarnings);
-  const second = await provider.advise(repairRequest(req, first.text, firstWarnings), opts.signal, opts.onActivity);
+  const second = await (opts.repairProvider ?? provider).advise(
+    repairRequest(req, first.text, firstWarnings),
+    opts.signal,
+    opts.onActivity,
+  );
   const secondWarnings = warningsFor(second, check);
   const improved = secondWarnings.length < firstWarnings.length;
 
@@ -119,13 +153,19 @@ export function totalUsage(results: readonly AdvisorResult[]): {
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
+  thinkingTokens?: number;
 } {
-  return results.reduce(
-    (sum, r) => ({
-      inputTokens: sum.inputTokens + (r.usage?.inputTokens ?? 0),
-      outputTokens: sum.outputTokens + (r.usage?.outputTokens ?? 0),
-      costUsd: sum.costUsd + (r.usage?.costUsd ?? 0),
+  const sum = results.reduce(
+    (acc, r) => ({
+      inputTokens: acc.inputTokens + (r.usage?.inputTokens ?? 0),
+      outputTokens: acc.outputTokens + (r.usage?.outputTokens ?? 0),
+      costUsd: acc.costUsd + (r.usage?.costUsd ?? 0),
+      thinkingTokens: acc.thinkingTokens + (r.usage?.thinkingTokens ?? 0),
     }),
-    { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    { inputTokens: 0, outputTokens: 0, costUsd: 0, thinkingTokens: 0 },
   );
+  // Only claimed when some call actually reported it: a zero would read as
+  // "this run did no reasoning" where the truth is "the backend did not say".
+  const { thinkingTokens, ...rest } = sum;
+  return results.some((r) => r.usage?.thinkingTokens !== undefined) ? { ...rest, thinkingTokens } : rest;
 }

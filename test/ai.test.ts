@@ -34,8 +34,10 @@ import {
   normalizeId,
   parseAdvice,
   providerIds,
+  repairEffort,
   slotFlagForClass,
   totalUsage,
+  worthRepairing,
   OPENAI_NOT_CONFIGURED,
   type AdvisorRequest,
   type SpawnFn,
@@ -249,7 +251,7 @@ describe('claude-cli provider', () => {
       '--model',
       'opus',
       '--effort',
-      'high',
+      'medium',
       '--tools',
       '',
       '--no-session-persistence',
@@ -264,7 +266,7 @@ describe('claude-cli provider', () => {
     expect(result.text).toBe(CANNED_ANSWER);
     expect(result.provider).toBe('claude-cli');
     expect(result.model).toBe('opus');
-    expect(result.effort).toBe('high');
+    expect(result.effort).toBe('medium');
     expect(result.structured!.verdicts).toHaveLength(2);
     expect(result.usage).toEqual({
       inputTokens: 36_000,
@@ -287,6 +289,11 @@ describe('claude-cli provider', () => {
       '{"type":"system","subtype":"thinking_tokens","estimated_tokens":33}',
       '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":" build"}}}',
       '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"## Reading"}}}',
+      // The final message_delta reports what the reasoning actually cost — a
+      // count, which beats the running estimate above (a live run showed 106
+      // actual against 130 estimated, and a medium-effort run emitted no
+      // estimate events at all).
+      '{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":426,"output_tokens_details":{"thinking_tokens":106}}}}',
       // An event kind this does not know. The vocabulary is the CLI's and it is
       // free to grow; a new one must not be able to break a paid-for run.
       '{"type":"invented_event","event":{"nonsense":true}}',
@@ -312,6 +319,9 @@ describe('claude-cli provider', () => {
     // the non-streaming envelope was.
     expect(result.text).toBe(CANNED_ANSWER);
     expect(result.usage?.costUsd).toBe(0.42);
+    // The message_delta's counted figure wins over the running estimate (33) —
+    // recorded in usage so an effort A/B can read it from the stored envelope.
+    expect(result.usage?.thinkingTokens).toBe(106);
   });
 
   it('reassembles a delta split across two stdout chunks', async () => {
@@ -880,6 +890,25 @@ describe('ambiguous stat references', () => {
     expect(ambiguousStats('+99% Pierce, 1083 armour, +22 FCL')).toEqual(['+99% Pierce']);
   });
 
+  it('accepts a label–value list, where each type is followed by its own number', () => {
+    // Both live runs wrote their projected-resistance summary in this shape,
+    // and each spent a full repair call on the seam between two entries
+    // ("92, Cold") being read as a stat. The second run's revision then failed
+    // to fix it — six minutes and two dollars for a false alarm.
+    expect(ambiguousStats('Permanent-only (buff dropped): Fire 92, Cold 90, Lightning 80 — all at or over cap')).toEqual([]);
+    expect(ambiguousStats('Fire Resistance 94 → 142, Lightning 94 → 142, Cold 94 → 130')).toEqual([]);
+    expect(ambiguousStats('Vitality 317. Bleeding 318. All effective.')).toEqual([]);
+    // The DoT twins are two words; the value sits after the tail word.
+    expect(ambiguousStats('projected: Vitality 80, Vitality Decay 78')).toEqual([]);
+  });
+
+  it('keeps flagging a signed value after the type — that is a new stat, not a list entry', () => {
+    expect(ambiguousStats('+48 Pierce, +60 Acid Resistance')).toEqual(['+48 Pierce']);
+    // And the list tolerance is same-line only: a stat that ends its line is
+    // still bare whatever the next line opens with.
+    expect(ambiguousStats('gains +35 Acid\n90 more to cap')).toEqual(['+35 Acid']);
+  });
+
   it('reports it against the plan, in reasons and in gains/costs', () => {
     const warnings = checkPlan(
       {
@@ -909,6 +938,71 @@ describe('ambiguous stat references', () => {
       { kind: 'ambiguous-stat' },
     ]);
     expect(checkPlan(clean, world(), { answer: 'Neck gains +48% Pierce Resistance.' })).toEqual([]);
+  });
+});
+
+describe('checkPlan — empty component sockets', () => {
+  const keepHead = { slot: 'Head', itemId: 'head01', verdict: 'KEEP' as const, reason: 'r' };
+
+  it('flags a slot that ends the plan with an empty socket a free component would fit', () => {
+    const warnings = checkPlan(
+      { verdicts: [keepHead], hold: [], sell: [] },
+      { ...world(), freeComponentIds: new Set(['mark1']) },
+    );
+    expect(warnings).toMatchObject([{ kind: 'unfilled-socket' }]);
+    expect(warnings[0]!.message).toContain('Iron Helm');
+    expect(warnings[0]!.message).toContain('Mark of Illusions');
+  });
+
+  it('is satisfied by a component in fits, or by a component verdict', () => {
+    const viaFits = checkPlan(
+      { verdicts: [{ ...keepHead, fits: [{ kind: 'component', id: 'mark1' }] }], hold: [], sell: [] },
+      { ...world(), freeComponentIds: new Set(['mark1']) },
+    );
+    expect(viaFits).toEqual([]);
+    const viaVerdict = checkPlan(
+      {
+        verdicts: [{ slot: 'Head', itemId: 'head01', verdict: 'ADD-COMPONENT', target: 'Mark of Illusions', reason: 'r' }],
+        hold: [],
+        sell: [],
+      },
+      { ...world(), freeComponentIds: new Set(['mark1']) },
+    );
+    expect(viaVerdict).toEqual([]);
+  });
+
+  it('stays silent when no free component fits the slot, or when the socket is filled', () => {
+    // bone1 is ring-only, so an empty head socket is not a missed move.
+    expect(
+      checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, { ...world(), freeComponentIds: new Set(['bone1']) }),
+    ).toEqual([]);
+    // And a filled socket owes nothing.
+    const w = world();
+    const helmet = { record: 'records/items/head.dbr', name: 'Helm', levelReq: 1, rarity: 'Epic', slot: 'ArmorProtective_Head', iconPath: '', stats: {} };
+    w.itemsById.set(
+      'head01',
+      item({ id: 'head01', display: 'Iron Helm', base: helmet, component: socketable('Sanctified Bone', []) }),
+    );
+    expect(
+      checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, { ...w, freeComponentIds: new Set(['mark1']) }),
+    ).toEqual([]);
+  });
+
+  it('checks the item the slot ends up holding — an EQUIP is judged by its candidate', () => {
+    const warnings = checkPlan(
+      {
+        verdicts: [{ slot: 'Ring 1', itemId: 'ring01', verdict: 'EQUIP', target: 'ring02', reason: 'r' }],
+        hold: [],
+        sell: [],
+      },
+      { ...world(), freeComponentIds: new Set(['bone1']) },
+    );
+    expect(warnings).toMatchObject([{ kind: 'unfilled-socket' }]);
+    expect(warnings[0]!.message).toContain('Spare Band');
+  });
+
+  it('runs only when the caller says which components are free', () => {
+    expect(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, world())).toEqual([]);
   });
 });
 
@@ -1184,6 +1278,56 @@ describe('adviseWithRepair', () => {
     expect(outcome.result.text).not.toContain('nope98');
   });
 
+  it('does not spend a second call on prose-only warnings', async () => {
+    // Both live runs spent a full second Opus call — six minutes and two
+    // dollars each — on nothing but `ambiguous-stat`, and one revision then
+    // failed to fix it. Wording is reported to the user, not re-bought.
+    const proseOnly = {
+      verdicts: [{ slot: 'Head', itemId: 'head01', verdict: 'KEEP', reason: 'costs 35 Acid' }],
+      hold: [],
+      sell: [],
+    };
+    const calls: AdvisorRequest[] = [];
+    const provider = createMockProvider({ answers: [answerWith(proseOnly)], calls });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world());
+
+    expect(calls).toHaveLength(1);
+    expect(outcome.revised).toBe(false);
+    expect(outcome.warnings.length).toBeGreaterThan(0);
+    expect(outcome.warnings.every((w) => w.kind === 'ambiguous-stat')).toBe(true);
+  });
+
+  it('worthRepairing separates structure from wording', () => {
+    expect(worthRepairing([{ kind: 'ambiguous-stat', message: 'm' }])).toBe(false);
+    expect(
+      worthRepairing([
+        { kind: 'ambiguous-stat', message: 'm' },
+        { kind: 'unknown-id', message: 'm' },
+      ]),
+    ).toBe(true);
+  });
+
+  it('sends the corrective call to the repair provider when one is given', async () => {
+    const firstCalls: AdvisorRequest[] = [];
+    const repairCalls: AdvisorRequest[] = [];
+    const provider = createMockProvider({ answers: [answerWith(BAD_PLAN)], calls: firstCalls });
+    const repairProvider = createMockProvider({ answers: [answerWith(GOOD_PLAN)], calls: repairCalls });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world(), { repairProvider });
+
+    expect(firstCalls).toHaveLength(1);
+    expect(repairCalls).toHaveLength(1);
+    expect(outcome.revised).toBe(true);
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it('repairEffort lowers the deep tiers and leaves the rest alone', () => {
+    expect(repairEffort('high')).toBe('medium');
+    expect(repairEffort('xhigh')).toBe('medium');
+    expect(repairEffort('max')).toBe('medium');
+    expect(repairEffort('medium')).toBe('medium');
+    expect(repairEffort('low')).toBe('low');
+  });
+
   it('honours --no-repair by never making the second call', async () => {
     const calls: AdvisorRequest[] = [];
     const provider = createMockProvider({ answers: [answerWith(BAD_PLAN)], calls });
@@ -1209,6 +1353,16 @@ describe('adviseWithRepair', () => {
       { text: '', provider: 'x', usage: { inputTokens: 10, outputTokens: 5, costUsd: 1 } },
       { text: '', provider: 'x', usage: { inputTokens: 20, outputTokens: 7, costUsd: 0.5 } },
     ]);
+    // No thinkingTokens key at all when no call reported one: a zero would read
+    // as "did no reasoning" where the truth is "the backend did not say".
     expect(usage).toEqual({ inputTokens: 30, outputTokens: 12, costUsd: 1.5 });
+  });
+
+  it('sums the thinking estimate when the calls carry one', () => {
+    const usage = totalUsage([
+      { text: '', provider: 'x', usage: { inputTokens: 10, outputTokens: 5, costUsd: 1, thinkingTokens: 4 } },
+      { text: '', provider: 'x', usage: { inputTokens: 20, outputTokens: 7, costUsd: 0.5 } },
+    ]);
+    expect(usage).toEqual({ inputTokens: 30, outputTokens: 12, costUsd: 1.5, thinkingTokens: 4 });
   });
 });

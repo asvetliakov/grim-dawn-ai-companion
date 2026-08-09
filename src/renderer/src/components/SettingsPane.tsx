@@ -20,7 +20,29 @@ import type { Bootstrap, DetectedPaths, Difficulty, Settings, UiSnapshot } from 
 import { DIFFICULTY_CHOICES } from '../../../shared/ipc.js';
 import { Modal } from './Modal.js';
 
-const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
+/**
+ * The effort tiers, each with a sentence for the person choosing. Medium is the
+ * default and says so: an A/B on a live save had it produce the same moves as
+ * high, cap every resistance sooner, and finish two minutes faster — high's
+ * extra thinking went into a maximum-damage line that left a resistance under
+ * cap. The notes state what was measured and claim nothing about the
+ * unmeasured tiers.
+ */
+const EFFORTS: readonly { id: string; label: string; note: string }[] = [
+  { id: 'low', label: 'low', note: 'Fastest and cheapest, untested for this tool — a quick opinion, not a plan to act on blind.' },
+  {
+    id: 'medium',
+    label: 'medium (recommended)',
+    note: 'Good and fast enough: side by side with high it made the same moves, capped every resistance sooner, and finished about two minutes faster. The mechanical checks catch the thoroughness slips lower effort used to risk.',
+  },
+  {
+    id: 'high',
+    label: 'high',
+    note: 'Thinks noticeably longer for a slightly more aggressive plan — in the side-by-side it kept ~3% more damage by tolerating a resistance under cap for two levels.',
+  },
+  { id: 'xhigh', label: 'xhigh', note: 'Longer still, untested for this tool. Expect several extra minutes per answer.' },
+  { id: 'max', label: 'max', note: 'The slowest and most expensive tier, untested for this tool.' },
+];
 
 /**
  * The backends, and what each will answer to.
@@ -35,12 +57,21 @@ const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
  * a fixture, and the OpenAI provider is a registered stub whose `available()` is
  * false. An empty list disables the model control and says so.
  */
-const BACKENDS: readonly { id: string; label: string; note: string; models: readonly string[] }[] = [
+const BACKENDS: readonly {
+  id: string;
+  label: string;
+  note: string;
+  models: readonly { id: string; label: string }[];
+}[] = [
   {
     id: 'claude-cli',
     label: 'Claude Code',
     note: 'Runs the `claude` command already on this machine and bills through the subscription it is signed into.',
-    models: ['opus', 'sonnet'],
+    // Opus is what the advice quality was measured on; sonnet is untested here.
+    models: [
+      { id: 'opus', label: 'opus (recommended)' },
+      { id: 'sonnet', label: 'sonnet' },
+    ],
   },
   {
     id: 'openai',
@@ -78,7 +109,7 @@ export function SettingsPane({
     id: providerId,
     label: providerId,
     note: 'A backend set by hand in settings.json.',
-    models: [] as readonly string[],
+    models: [] as readonly { id: string; label: string }[],
   };
 
   return (
@@ -199,10 +230,10 @@ export function SettingsPane({
               <option value="">not applicable</option>
             ) : (
               <>
-                <option value="">Default ({backend.models[0]})</option>
+                <option value="">Default ({backend.models[0]!.id})</option>
                 {backend.models.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
+                  <option key={model.id} value={model.id}>
+                    {model.label}
                   </option>
                 ))}
               </>
@@ -215,14 +246,17 @@ export function SettingsPane({
             value={settings?.effort ?? ''}
             onChange={(e) => onChange({ effort: (e.target.value || undefined) as Settings['effort'] })}
           >
-            <option value="">Default (high)</option>
+            <option value="">Default (medium)</option>
             {EFFORTS.map((e) => (
-              <option key={e} value={e}>
-                {e}
+              <option key={e.id} value={e.id}>
+                {e.label}
               </option>
             ))}
           </select>
         </label>
+        <p className="settings-hint">
+          {(EFFORTS.find((e) => e.id === (settings?.effort ?? 'medium')) ?? EFFORTS[1]!).note}
+        </p>
         <label className="settings-row">
           <span className="settings-label">Give up after</span>
           <input
@@ -238,8 +272,9 @@ export function SettingsPane({
           <span className="settings-unit">seconds</span>
         </label>
         <p className="settings-hint">
-          A real answer takes about eight minutes, and a repaired one has taken twelve. The default of twenty
-          minutes is there to stop a wedged run going forever, not to hurry a working one along.
+          A real answer takes about nine minutes, and one that needs a correction round can take a few more.
+          The default of twenty minutes is there to stop a wedged run going forever, not to hurry a working
+          one along.
         </p>
         <p className="settings-actions">
           <button type="button" className="chrome-button subtle" onClick={onShowContext}>

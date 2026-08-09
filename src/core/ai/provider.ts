@@ -29,7 +29,18 @@ export interface AdvisorResult {
   /** Reasoning effort, when the backend has such a knob. */
   effort?: string;
   structured?: AdvisorPlan;
-  usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number; durationMs?: number };
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    /**
+     * How much of `outputTokens` was reasoning, per the backend's own running
+     * estimate. Recorded so an effort A/B can see *where* a cheaper run saved
+     * its tokens; absent for backends that do not stream the figure.
+     */
+    thinkingTokens?: number;
+    costUsd?: number;
+    durationMs?: number;
+  };
 }
 
 /**
@@ -134,6 +145,14 @@ export const PLAN_WARNING_KINDS = [
    * cannot tell it from an oversight — because it usually is one.
    */
   'unaddressed-item',
+  /**
+   * A slot that ends the plan with an empty component socket while a free,
+   * legal component exists (loose on hand or craftable now). Filling an empty
+   * socket is free and the dossier marks every one, so silence here is a
+   * missed move — the thoroughness failure a lower reasoning effort was
+   * observed to make, decided mechanically so the repair round catches it.
+   */
+  'unfilled-socket',
 ] as const;
 
 export type PlanWarningKind = (typeof PLAN_WARNING_KINDS)[number];

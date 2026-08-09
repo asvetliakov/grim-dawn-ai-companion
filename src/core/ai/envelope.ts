@@ -35,6 +35,14 @@ import {
 export const adviseUsageSchema = z.object({
   inputTokens: z.number(),
   outputTokens: z.number(),
+  /**
+   * How much of `outputTokens` was reasoning, summed across every call the run
+   * made, per the backend's own streamed estimate. What an effort A/B compares
+   * two runs by — the wall clock is output tokens, and this says which kind.
+   * Optional: runs stored before it existed, and backends that do not stream
+   * the figure, simply do not have it.
+   */
+  thinkingTokens: z.number().optional(),
   costUsd: z.number(),
 });
 
