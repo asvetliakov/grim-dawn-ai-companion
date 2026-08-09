@@ -18,17 +18,25 @@ import { describe, expect, it } from 'vitest';
 import {
   ADVISOR_SYSTEM_PROMPT,
   CANNED_ANSWER,
+  adviseWithRepair,
+  ambiguousStats,
   checkPlan,
   createClaudeCliProvider,
   createMockProvider,
   createOpenAiProvider,
   createProvider,
+  isReplacement,
+  verdictRows,
+  KEEP_CELL,
+  nameWithoutQualifier,
   normalizeName,
   normalizeId,
   parseAdvice,
   providerIds,
   slotFlagForClass,
+  totalUsage,
   OPENAI_NOT_CONFIGURED,
+  type AdvisorRequest,
   type SpawnFn,
 } from '../src/core/ai/index.js';
 import type { DbItem } from '../src/core/db/types.js';
@@ -496,5 +504,254 @@ describe('checkPlan', () => {
 
   it('normalizes the markdown a name may arrive wrapped in', () => {
     expect(normalizeName('**Mark of  Illusions**')).toBe('mark of illusions');
+  });
+
+  it('matches a target the model annotated with its source', () => {
+    // "ADD-COMPONENT Dread Skull (loose)" is a *correct* move written with an
+    // extra word. Raising unknown-socketable for it would be a false alarm on a
+    // right answer, which is worse than not checking at all.
+    expect(nameWithoutQualifier('Mark of Illusions (loose)')).toBe('mark of illusions');
+    const warnings = checkPlan(
+      {
+        verdicts: [
+          { slot: 'Head', itemId: 'head01', verdict: 'ADD-COMPONENT', target: 'Mark of Illusions (loose)', reason: 'r' },
+        ],
+        hold: [],
+        sell: [],
+      },
+      world(),
+    );
+    expect(warnings).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stat clarity
+// ---------------------------------------------------------------------------
+
+describe('ambiguous stat references', () => {
+  it('flags a bare damage-type name, whatever the sign', () => {
+    // Every one of these is a real line from the first live run, and each meant
+    // resistance while reading like damage.
+    expect(ambiguousStats('+12 Fire/+12 Lightning')).toEqual(['+12 Fire', '+12 Lightning']);
+    expect(ambiguousStats('+48 Pierce, +60 Acid')).toEqual(['+48 Pierce', '+60 Acid']);
+    expect(ambiguousStats('but costs 35 Acid')).toEqual(['35 Acid']);
+  });
+
+  it('accepts a qualified reference, and anything that is not a damage type', () => {
+    expect(ambiguousStats('+12% Fire Resistance; +99% Pierce Damage; −35% Acid Resistance')).toEqual([]);
+    expect(ambiguousStats('424–505 Fire Retaliation Damage')).toEqual([]);
+    expect(ambiguousStats('30% Vitality Damage → Pierce Damage')).toEqual([]);
+    expect(ambiguousStats('+308 Health, 1083 Armour, 8× Ugdenbloom, level 84')).toEqual([]);
+  });
+
+  it('catches the mixed clause the summary was unreadable because of', () => {
+    // "+99% Pierce" is damage and "+22 FCL" is resistance, four words apart.
+    expect(ambiguousStats('+99% Pierce, 1083 armour, +22 FCL')).toEqual(['+99% Pierce']);
+  });
+
+  it('reports it against the plan, in reasons and in gains/costs', () => {
+    const warnings = checkPlan(
+      {
+        verdicts: [
+          {
+            slot: 'Head',
+            itemId: 'head01',
+            verdict: 'KEEP',
+            reason: 'best on hand',
+            gains: ['+12 Fire'],
+            costs: ['-8% Cold Resistance'],
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+      world(),
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({ kind: 'ambiguous-stat' });
+    expect(warnings[0]!.message).toContain('+12 Fire');
+  });
+
+  it('scans the prose too, when the caller supplies it', () => {
+    const clean = { verdicts: [], hold: [], sell: [] };
+    expect(checkPlan(clean, world(), { answer: 'Neck gains +48 Pierce.' })).toMatchObject([
+      { kind: 'ambiguous-stat' },
+    ]);
+    expect(checkPlan(clean, world(), { answer: 'Neck gains +48% Pierce Resistance.' })).toEqual([]);
+  });
+});
+
+describe('isReplacement', () => {
+  it('is true for EQUIP and false for every socketable verdict', () => {
+    // The CLI's table and Stage 7's grid both key "did this slot's item change?"
+    // on this, so they cannot disagree about it.
+    expect(isReplacement('EQUIP')).toBe(true);
+    expect(isReplacement('KEEP')).toBe(false);
+    expect(isReplacement('RE-AUGMENT')).toBe(false);
+    expect(isReplacement('ADD-COMPONENT')).toBe(false);
+    expect(isReplacement('SWAP-COMPONENT')).toBe(false);
+    expect(isReplacement('BUY-AUGMENT')).toBe(false);
+    expect(isReplacement('CRAFT')).toBe(false);
+  });
+});
+
+describe('verdictRows', () => {
+  const names = new Map([
+    ['head01', 'Iron Helm'],
+    ['ring01', 'Old Band'],
+    ['ring02', 'Spare Band'],
+  ]);
+  const rows = (verdicts: unknown[]) =>
+    verdictRows({ verdicts, hold: [], sell: [] } as never, (id) => names.get(id));
+
+  it('makes a replacement and a keep distinguishable at a glance', () => {
+    const [keep, equip] = rows([
+      { slot: 'Head', itemId: 'head01', verdict: 'KEEP', reason: 'best on hand' },
+      { slot: 'Ring 1', itemId: 'ring01', verdict: 'EQUIP', target: 'ring02', reason: 'more pierce resistance' },
+    ]);
+
+    expect(keep).toMatchObject({ current: 'Iron Helm #head01', next: KEEP_CELL, action: 'KEEP', replaces: false });
+    expect(equip).toMatchObject({
+      current: 'Old Band #ring01',
+      next: 'Spare Band #ring02',
+      action: '',
+      replaces: true,
+    });
+  });
+
+  it('puts a socketable move in Action and leaves the item where it is', () => {
+    // A re-augment is not a new item — showing it under New is what made the
+    // live run's table unreadable.
+    const [row] = rows([
+      { slot: 'Ring 1', itemId: 'ring01', verdict: 'RE-AUGMENT', target: 'Coven Wendigo Spirit', reason: 'r' },
+    ]);
+    expect(row).toMatchObject({
+      next: KEEP_CELL,
+      action: 'RE-AUGMENT Coven Wendigo Spirit',
+      replaces: false,
+    });
+  });
+
+  it('shows an id the dossier never defined rather than hiding it', () => {
+    const [row] = rows([{ slot: 'Head', itemId: 'nope99', verdict: 'KEEP', reason: 'r' }]);
+    expect(row!.current).toBe('(not in the dossier) #nope99');
+  });
+
+  it('renders an empty slot as a dash', () => {
+    const [row] = rows([{ slot: 'Medal', itemId: '', verdict: 'KEEP', reason: 'nothing owned' }]);
+    expect(row!.current).toBe('—');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The repair loop
+// ---------------------------------------------------------------------------
+
+/** A well-formed answer wrapping the given plan object. */
+function answerWith(plan: unknown): string {
+  return `## Per-slot verdicts\n\nSome prose.\n\n\`\`\`json\n${JSON.stringify(plan, null, 2)}\n\`\`\`\n`;
+}
+
+const BAD_PLAN = {
+  verdicts: [{ slot: 'Head', itemId: 'nope99', verdict: 'KEEP', reason: 'invented id' }],
+  hold: [],
+  sell: [],
+};
+const GOOD_PLAN = {
+  verdicts: [{ slot: 'Head', itemId: 'head01', verdict: 'KEEP', reason: 'best on hand' }],
+  hold: [],
+  sell: [],
+};
+
+describe('adviseWithRepair', () => {
+  it('does not spend a second call on a clean plan', async () => {
+    const calls: AdvisorRequest[] = [];
+    const provider = createMockProvider({ answers: [answerWith(GOOD_PLAN)], calls });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world());
+
+    expect(calls).toHaveLength(1);
+    expect(outcome.revised).toBe(false);
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it('asks once with the warnings attached, and keeps the clean revision', async () => {
+    const calls: AdvisorRequest[] = [];
+    const provider = createMockProvider({ answers: [answerWith(BAD_PLAN), answerWith(GOOD_PLAN)], calls });
+    const seen: number[] = [];
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world(), {
+      onRepair: (w) => seen.push(w.length),
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(seen).toEqual([1]);
+    // The follow-up must carry both halves: what was wrong, and what to fix.
+    expect(calls[1]!.contextDoc).toBe('doc');
+    expect(calls[1]!.question).toContain('unknown-id');
+    expect(calls[1]!.question).toContain('nope99');
+    expect(calls[1]!.question).toContain('Your previous answer');
+
+    expect(outcome.revised).toBe(true);
+    expect(outcome.revisionRejected).toBe(false);
+    expect(outcome.firstWarnings).toHaveLength(1);
+    expect(outcome.warnings).toEqual([]);
+    expect(outcome.result.text).toContain('head01');
+    expect(outcome.results).toHaveLength(2);
+  });
+
+  it('never loops: one revision, then it reports', async () => {
+    const calls: AdvisorRequest[] = [];
+    const provider = createMockProvider({ answers: [answerWith(BAD_PLAN), answerWith(BAD_PLAN)], calls });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world());
+
+    expect(calls).toHaveLength(2);
+    expect(outcome.revised).toBe(true);
+    expect(outcome.revisionRejected).toBe(true);
+    expect(outcome.warnings).toHaveLength(1);
+  });
+
+  it('keeps the original when the revision comes back worse', async () => {
+    const worse = {
+      verdicts: [
+        { slot: 'Head', itemId: 'nope99', verdict: 'KEEP', reason: 'still invented' },
+        { slot: 'Neck', itemId: 'nope98', verdict: 'KEEP', reason: 'and another' },
+      ],
+      hold: [],
+      sell: [],
+    };
+    const provider = createMockProvider({ answers: [answerWith(BAD_PLAN), answerWith(worse)] });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world());
+
+    expect(outcome.revisionRejected).toBe(true);
+    expect(outcome.warnings).toHaveLength(1);
+    expect(outcome.result.text).not.toContain('nope98');
+  });
+
+  it('honours --no-repair by never making the second call', async () => {
+    const calls: AdvisorRequest[] = [];
+    const provider = createMockProvider({ answers: [answerWith(BAD_PLAN)], calls });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world(), { repair: false });
+
+    expect(calls).toHaveLength(1);
+    expect(outcome.revised).toBe(false);
+    expect(outcome.warnings).toHaveLength(1);
+  });
+
+  it('leaves an unparseable answer alone — there is nothing to repair', async () => {
+    const calls: AdvisorRequest[] = [];
+    const provider = createMockProvider({ answers: ['Just prose, no plan.'], calls });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world());
+
+    expect(calls).toHaveLength(1);
+    expect(outcome.warnings).toEqual([]);
+    expect(outcome.result.structured).toBeUndefined();
+  });
+
+  it('totals usage across every call, including a rejected revision', () => {
+    const usage = totalUsage([
+      { text: '', provider: 'x', usage: { inputTokens: 10, outputTokens: 5, costUsd: 1 } },
+      { text: '', provider: 'x', usage: { inputTokens: 20, outputTokens: 7, costUsd: 0.5 } },
+    ]);
+    expect(usage).toEqual({ inputTokens: 30, outputTokens: 12, costUsd: 1.5 });
   });
 });

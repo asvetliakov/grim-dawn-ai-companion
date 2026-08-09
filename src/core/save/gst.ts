@@ -1,7 +1,7 @@
 /**
- * Parsers for the two account-wide `.gst` files.
+ * Parsers for the account-wide `.gst` files.
  *
- * Despite sharing an extension these are *two different formats*:
+ * Despite sharing an extension these are *three different formats*:
  *
  *  - `transfer.gst` (the shared transfer stash) uses the same seeded XOR cipher
  *    and checksummed block framing as `player.gdc`, but with its own top-level
@@ -9,8 +9,11 @@
  *  - `formulas.gst` (learned blueprints) is **not enciphered at all**: it is a
  *    plaintext key/value stream delimited by `begin_block`/`end_block` sentinel
  *    words, with no checksum anywhere. See `parseFormulas` below.
+ *  - `reagents.gst` / `potions.gst` (and `transmutes.gst`, out of scope) are the
+ *    *material stores*: same cipher and framing, magic `1`, one top-level block
+ *    whose id names the store. See `parseMaterialStore` below.
  *
- * Both were confirmed empirically against this machine's live 1.3.0.6 files.
+ * All were confirmed empirically against this machine's live 1.3.0.6 files.
  */
 
 import { finishNested, parseBlock } from './blocks.js';
@@ -138,6 +141,134 @@ export function parseTransferStash(buf: Buffer, opts: ParseGstOptions = {}): Tra
   }
 
   return stash;
+}
+
+// ---------------------------------------------------------------------------
+// reagents.gst / potions.gst — the account-wide material stores
+// ---------------------------------------------------------------------------
+
+/**
+ * Magic word shared by every material store, in place of the transfer stash's
+ * `2`. The store's identity is the *block id*, not the magic.
+ */
+export const MATERIAL_STORE_MAGIC = 1;
+
+/** Block ids, one per store file. 18 is the transfer stash; 19–21 are these. */
+export const MATERIAL_BLOCK_IDS = {
+  /** `transmutes.gst` — illusionist appearances. Cosmetic; deliberately unparsed. */
+  transmutes: 19,
+  /** `reagents.gst` — shared crafting materials *and* loose components. */
+  reagents: 20,
+  /** `potions.gst` — the potion recipe list. Carries no quantities. */
+  potions: 21,
+} as const;
+
+export interface MaterialEntry {
+  /** DBR record path, e.g. `records/items/materia/compa_bristlyfur.dbr`. */
+  record: string;
+  /**
+   * How many are held. `reagents.gst` stores one per entry; `potions.gst` has no
+   * quantity field at all (its nested blocks stop after the record path), so its
+   * entries report 1.
+   */
+  quantity: number;
+}
+
+export interface MaterialStore {
+  /** Absolute path the store was read from, when known. */
+  path?: string;
+  /** Which store this is — the block id that carried it. */
+  blockId: number;
+  version: number;
+  /** Mod name; empty for vanilla. */
+  mod: string;
+  entries: MaterialEntry[];
+  blocks: BlockReport[];
+  warnings: string[];
+}
+
+/**
+ * One stored material: a nested block (id 0, exactly as the stash's sacks) that
+ * holds the record path and — in `reagents.gst` — the quantity.
+ *
+ * The nested framing is the whole reason this file resisted a straight read: the
+ * block's length word and its trailing checksum are both consumed *without*
+ * advancing the cipher, so a uniform "every byte advances" walk desynchronizes a
+ * little more at every entry. `finishNested` absorbs any field a future patch
+ * appends, and the checksum arbitrates.
+ */
+function readMaterialEntry(r: GdReader, index: number, warn: (msg: string) => void): MaterialEntry {
+  const block = r.beginBlock();
+  if (block.id !== 0) throw new Error(`material entry ${index}: unexpected nested block id ${block.id}`);
+  const record = r.readStr();
+  // `potions.gst` ends the entry here; `reagents.gst` follows with the count.
+  const quantity = r.offset < block.bodyEnd ? r.readU32() : 1;
+  finishNested(r, block, warn, `material entry ${index}`);
+  return { record, quantity };
+}
+
+function readMaterialBlock(r: GdReader, store: MaterialStore, warn: (msg: string) => void): void {
+  store.version = r.readU32();
+  if (store.version !== 1) warn(`material store: unexpected version ${store.version} (expected 1)`);
+
+  // The same non-advancing word the transfer stash carries after its version.
+  r.readU32NoAdvance();
+
+  store.mod = r.readStr();
+
+  const count = r.readU32();
+  for (let i = 0; i < count; i++) store.entries.push(readMaterialEntry(r, i, warn));
+}
+
+/**
+ * Parse a material store, decoding whichever top-level block matches `blockId`.
+ *
+ * Any other block is walked and checksummed but not modelled — which is how
+ * `transmutes.gst` stays out of scope without becoming an error.
+ */
+export function parseMaterialStore(buf: Buffer, blockId: number, opts: ParseGstOptions = {}): MaterialStore {
+  const warnings: string[] = [];
+  const warn = (msg: string) => warnings.push(msg);
+
+  const r = new GdReader(buf);
+
+  const magic = r.readU32();
+  if (magic !== MATERIAL_STORE_MAGIC) {
+    throw new Error(`not a Grim Dawn material store: magic ${magic} != ${MATERIAL_STORE_MAGIC}`);
+  }
+
+  const store: MaterialStore = { blockId, version: 0, mod: '', entries: [], blocks: [], warnings };
+  if (opts.path !== undefined) store.path = opts.path;
+
+  let sawBlock = false;
+  while (!r.eof) {
+    if (r.remaining < 8) {
+      warn(`${r.remaining} trailing byte(s) after last block`);
+      break;
+    }
+    const block = r.beginBlock();
+    if (block.length > r.remaining) {
+      warn(`block ${block.id}: declared length ${block.length} exceeds remaining ${r.remaining}; stopping`);
+      break;
+    }
+    const decode =
+      block.id === blockId ? (rr: GdReader) => readMaterialBlock(rr, store, warn) : undefined;
+    if (decode) sawBlock = true;
+    store.blocks.push(parseBlock(r, block, decode, warn));
+  }
+
+  if (!sawBlock) warn(`no block ${blockId} in file`);
+  return store;
+}
+
+/** Shared crafting materials and loose components (`reagents.gst`, block 20). */
+export function parseReagents(buf: Buffer, opts: ParseGstOptions = {}): MaterialStore {
+  return parseMaterialStore(buf, MATERIAL_BLOCK_IDS.reagents, opts);
+}
+
+/** The potion recipe list (`potions.gst`, block 21). Same format, no quantities. */
+export function parsePotions(buf: Buffer, opts: ParseGstOptions = {}): MaterialStore {
+  return parseMaterialStore(buf, MATERIAL_BLOCK_IDS.potions, opts);
 }
 
 // ---------------------------------------------------------------------------

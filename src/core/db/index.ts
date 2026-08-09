@@ -32,6 +32,7 @@ import {
   type DbStats,
   type GameDb,
   type RepTier,
+  type LevelProgression,
   type SpeedCaps,
 } from './types.js';
 
@@ -129,6 +130,10 @@ export class NormalizedGameDb implements GameDb {
     return this.db.skillNames[record]?.[0] || undefined;
   }
 
+  skillClass(record: string): string | undefined {
+    return this.db.skillNames[record]?.[1] || this.db.skills[record]?.class;
+  }
+
   difficultyPenalty(difficulty: string): Record<string, number> {
     return this.db.difficultyPenalty[difficulty] ?? {};
   }
@@ -139,6 +144,10 @@ export class NormalizedGameDb implements GameDb {
 
   speedCaps(): SpeedCaps {
     return this.db.speedCaps;
+  }
+
+  levelProgression(): LevelProgression {
+    return this.db.levelProgression;
   }
 
   factions(): DbFaction[] {

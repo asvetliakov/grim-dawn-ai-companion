@@ -326,3 +326,93 @@ npm run cli -- advise  --char _Suchka --provider mock   # repair loop, no cost
 ```
 
 Diff `/tmp/ctx.md` against a pre-change copy: the only changes should be the new component stats, the `[materials]` entries, the narrowed §10, and the reworded notes. Any numeric drift in §3 is a bug — Part 2b is deliberately *named and shown*, never summed.
+
+---
+
+## Outcome
+
+Everything above shipped, plus four things the session found on the way: the levelling rates are in the game data, the reagent store keeps zero-quantity rows, a granted skill's *kind* is derivable, and the `ambiguous-stat` check needed a live run before it was usable. Deviations are itemised at the end.
+
+### Part 1 — the format was solved; block 20 checksums
+
+`reagents.gst` is **`transfer.gst`'s format with one field different**, and the field is the framing: **each entry is a nested block (id 0), exactly like a stash sack.** A nested block's length word and its trailing checksum are both consumed *without* advancing the cipher, which is precisely why a uniform "every byte advances" walk desynchronizes a little more at every entry — the "constant-offset runs whose offset jumps between entries" signature the plan recorded. Two non-advancing reads per entry, and there are 61 of them.
+
+The lead in the plan (magic advancing, id/length not) was a red herring: it produced a literal `records/` by accident. What actually solved it was inverting the search — instead of guessing header variants, **solve for the cipher state that makes a known plaintext decode**. A record path is `^records/.*\.dbr$` with a u32 length prefix, so for a candidate length `n` at offset `o` the state is forced: `state = rawU32(o) ^ n`. Scanning every offset × every plausible length found all 61 entries in one pass, and the gaps between them (16 bytes, uniformly) then read off directly as `[quantity u32][checksum][nested id][nested length]`.
+
+Full layout, checksum-verified:
+
+```
+seed, magic u32 = 1
+block { id 20, length }
+  version u32 = 1
+  u32 (non-advancing — the same quirk word transfer.gst carries after its version)
+  mod string (empty on vanilla)
+  count u32 = 61
+  count × block { id 0, length }
+      record string
+      quantity u32          ← absent in potions.gst; the nested length is what says so
+    end (checksum)
+end (checksum)
+```
+
+`potions.gst` (block 21) fell out for free and is parsed by the same code — its entries simply stop after the record path, which the nested block's own length reports. `transmutes.gst` (block 19) stays out of scope and is reported rather than misread.
+
+**A finding with teeth: the store keeps rows at quantity 0.** Four of `_Suchka`'s 61 entries are zero — a "has held this before" marker, not stock. Passing them through would have read as *one on hand* everywhere downstream, because a save's own `stackCount` is 0 for non-stackables and every consumer floors it at 1. `resolveCharacter` drops them, and §10 went from "missing Manticore Eye **1**/9" to the true `0/9`.
+
+Result: 61 kinds, 3,572 items, block 20 checksum passing. Loose components now read `[materials]`, and "Crafting materials on hand" went from `Royal Jelly ×6` to eighteen materials including `Royal Jelly ×117` and `Ashes of Awakening ×28` — which changes real advice, since the plan's own example HOLD ("Sangvinar — blueprint + 12× Ashes of Awakening") turns out to be affordable twice over.
+
+### The level table is in the game data
+
+The plan's caution — *do not hardcode an attribute-points-per-level rate; check whether the game states it* — was worth following, because it does. `records/creatures/pc/playerlevels.dbr` carries `characterModifierPoints = 1` (attribute points per level), `strengthIncrement`/`dexterityIncrement`/`intelligenceIncrement = 8` (attribute per point), `maxPlayerLevel = 100` and `maxDevotionPoints = 55`. Read via a new `GameDb.levelProgression()` (schema 10), so §12's `ceil(deficit / perPoint)` is derived rather than folklore, and §2 states the rate with its provenance. Levels and points are still reported in their own currencies and never silently interconverted — a level costs XP as well as a point.
+
+### Parts 2–6
+
+- **§8 is now the single component list** (see deviations): owned loose, installed, *and craftable*, each with its stats. `Grants: <skill>` follows the activator→buff hop everywhere and renders the buff at rank 1 — and where it cannot (pet summons, `Skill_SpawnPet`), it says so instead of leaving a bare name, via a new `GameDb.skillClass()`. **No number in §3 moved**: diffed against the pre-change document, the section's only changes are two reworded sentences (the qualified-stat cleanup below). Named and shown, never summed.
+- **§2** gained the per-copy stacking rule, the permanent-vs-gear enabler split, and a computed iron verdict.
+- **§4** reports `Enabled by **2 permanent** — Dual Blades and Implements of War … and 1 gear-granted — Bloodbath, from Slaughter`, followed by the consequence outright: *no gear swap can end dual wielding*. The zero-permanent branch is stub-tested.
+- **§7** notes name their evidence on both sides — `on-type via +45% Pierce Damage, …` / `off-type — its damage lines are Cold, Lightning…; none is in Pierce + Bleeding. This is not a rejection: it still covers bleeding, chaos`.
+- **§12** groups 41 failing candidates by shared threshold, cheapest first, with the biggest group (`At level 84 (2 levels away)`) unlocking 28 in one step, and totals the competing attribute demands cumulatively per attribute.
+- **`ambiguous-stat`** is decided by regex over the plan's reasons, `gains`/`costs` and the answer prose. The sign is optional because `but costs 35 Acid` — a real line from the first run — carries none.
+- **The repair loop** makes exactly one follow-up call and **keeps whichever answer is cleaner**, discarding a revision that came back no better. That last part is not in the plan and is the difference between a repair loop and a coin flip.
+- **`verdictRows`** lives in `provider.ts`, not the CLI, so Stage 7's grid and the CLI cannot disagree about which rows are swaps.
+
+### Also added, from the user mid-session
+
+**A granted skill now states its kind.** Part 2b made `Grants: <skill>` show the buff's stats, but a passive, a toggle, an activated skill and a proc still looked identical — the user asked whether the model was expected to infer "buff" from an *Energy Reserved* line. It should not have to, and the game says so directly: the record's template class partitions cleanly into `passive — always on`, `toggle — stays on until switched off`, `activated — you have to cast it`, `auto-cast <trigger>`, `weapon-pool proc` and `summons a pet`. Two of the classes are conditional passives (`Skill_PassiveOnLife…` at low health, `Skill_PassiveOnHit…` when hit) and would have read as unconditional under any simpler rule. §2 states how to read the label; energy reservation stays where it already was, in the skill's own stats, because `characterManaLimitReserve` is present on many toggles but not all.
+
+### The `ambiguous-stat` check needed the live run to be usable
+
+Its first live outing produced **six warnings, every one a false alarm** — which is the failure mode the plan itself names for `unknown-socketable` ("worse than no check"). Two causes, both fixed:
+
+1. **The game's own compound stat names.** `+24% Fire, Cold and Lightning Resistance` is one qualifier covering three types; the check demanded one immediately after each. A `TYPE_LINK` now lets the lookahead step over further type names, list punctuation, `and`/`to`, a conversion arrow, and the second word of a two-word type (`Vitality Decay`, `Internal Trauma`) — but nothing else, which is what keeps `+48 Pierce, +60 Acid Resistance` flagged on its first half. Listing `Vitality Decay` among the type names instead does *not* work: the engine backtracks out of the longer alternative when the lookahead rejects it, matches the bare `Vitality`, and finds `Decay` where it wanted a qualifier.
+2. **The dossier broke its own rule, and the model copied it.** The answer's `57% pierce · 32% bleeding · 10% frostburn · 1% cold` is §4's weapon-attack composition line, verbatim. Four places were unqualified — that composition line, the per-skill damage lines, the §2 difficulty-penalty list and the §3 under-cap list (the last two only via comma-joining, where `Pierce -50, Fire -50` reads as "-50, Fire") — plus the materials list, where `×8, Aether Shard` looked like a stat. All now qualified or `·`-separated, and **`test/context.test.ts` asserts the document is clean under its own detector**, so it cannot drift back.
+
+Re-judging the same saved answer with the fixed check drops it from nine distinct bare references to four — and those four are the composition line whose source is now fixed.
+
+### Live verification
+
+Two live runs on `_Suchka`, both `opus` / `high` against the ~53k-token dossier.
+
+**Run 1** (before the detector fixes above): 6 warnings, all `ambiguous-stat`, all false alarms; the repair loop fired, the revision was no cleaner, and the original was kept and shown — the `revisionRejected` path, working as intended. 2 calls, 200,850 in / 69,343 out, $3.85, 784s.
+
+**Run 2** (after): `plan had 1 warning(s); asked for one revision → clean`, and then
+
+```
+plan checks: every item id exists, no illegal socket, no destroyed host reused, every stat qualified
+claude-cli / opus (effort high) · 2 calls · 203,457 in · 61,603 out · $3.6826 · 681.8s
+```
+
+Against the acceptance criteria: **zero `ambiguous-stat` warnings** and zero bare references on a re-scan of the whole answer; 18 verdicts of which exactly one is an `EQUIP`, so the deterministic table's `New` column distinguishes it from the seventeen `— (keep)` rows at a glance; **no `target` carries a parenthetical**; 16 of 18 verdicts supply `gains`/`costs`; 10 of 13 holds supply machine-readable `needs`; and the required **Next levels** section is ordered cheapest-first and commits to a line rather than restating gaps — "Commit the point to Physique", against "Not worth it: 15 near-permanent points for +4% Physical Resistance".
+
+Both parts of the repair loop are therefore exercised live: a revision that helped, and one that did not.
+
+Per-call time is ~340s, *down* from Stage 6's 496s despite a dossier half again as large, so the 900s ceiling still has room and is left alone.
+
+### Deviations from the plan
+
+1. **§10 is relics only; components moved into §8.** The plan said "keep component *and* relic blueprints" in §10. Mid-session the user pointed out that a craftable component is just another way of *having* that component, and that the choice between "loose", "installed" and "craftable" is one decision — so splitting it across two sections was the wrong shape. §8 is now the single component authority (61 reachable, 13 craftable now) and §10 keeps relics, blueprint purchases and awakening paths. Craftable relics gained their stat lines for the same reason components did.
+2. **Reagent chains are resolved transitively** (also from the user, mid-session). A component recipe's reagents are often other components the character holds a blueprint for; reporting "missing Ballistic Plating 0/4" when four are two clicks away is a false negative that costs a real move. `recipeView` now crafts what it can from one shared material pool as it descends — so `Haunted Steel` reads *craftable now, after first crafting 3× Vengeful Wraith* rather than *missing Vengeful Wraith 1/4*. Cycles are broken by an in-progress set and a depth cap; a sub-craft that runs the shared materials dry rolls back rather than pretending the first success repeats. The prompt now says a listed shortfall really is one.
+3. **The iron bill excludes the priciest craft.** The plan's formula sentence said "augment bill **plus** the priciest craftable"; its own worked example (`~48,000 for augmenting every slot`) and acceptance criterion 5c (iron *not* a constraint at 1.3M) both say otherwise, and including a 250,000 relic craft flips a millionaire to "constrained". The craft price is reported beside the bill instead, and the "quote a genuinely large price" clause is what covers it.
+4. **§12 sits after §11.** The plan numbers the ladder twelfth and the task is §11; renumbering the task would break every `§11 asks for` cross-reference in the document and the prompt. The task now points forward at §12.
+5. **Acceptance criterion 9's "nine items at level 84" reads 28.** Same grouping, more candidates: the live per-slot cap is 40, not the smaller set the plan was written against. The structural fact — one heading, one threshold, the largest group named in the lead line — is what the criterion is for.
+6. **`resolveCharacter` takes an `AccountFiles` object** rather than a fourth positional parameter. Three optional account-wide files in a row was already the readability limit at two.

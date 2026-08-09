@@ -283,6 +283,17 @@ export interface WieldingSummary {
    * modes always report an empty list.
    */
   enablers: DualWieldEnabler[];
+  /**
+   * How many enablers are invested mastery passives.
+   *
+   * Derived because the consequence is what matters and it is easy to miss: a
+   * permanent enabler is spent skill points, so while one exists **no gear swap
+   * can end dual wielding** and an item's dual-wield grant is worth nothing as a
+   * reason to keep it. The first live advice run made exactly that mistake,
+   * holding a relic "for the Bloodbath enabler" that two learned passives had
+   * already made redundant.
+   */
+  permanentEnablers: number;
 }
 
 export interface CharacterAggregate {
@@ -464,6 +475,7 @@ function wieldingSummary(slots: EquippedSlot[], save: CharacterSave, db: GameDb)
     ...(main?.base ? { mainHand: main.base.name } : {}),
     ...(off?.base ? { offHand: off.base.name } : {}),
     enablers,
+    permanentEnablers: enablers.filter((e) => e.source === 'skill').length,
   };
 }
 

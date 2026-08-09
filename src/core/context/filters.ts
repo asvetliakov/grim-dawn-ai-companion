@@ -24,6 +24,7 @@ import {
   DAMAGE_TYPES,
   emptyDamage,
   resistContributions,
+  type AttrKey,
   type Conversion,
   type DamageKey,
   type ResistKey,
@@ -206,8 +207,10 @@ export interface CandidateContext {
   shortfalls: ReadonlySet<ResistKey>;
   /** The build's top damage types, judged post-conversion. */
   topDamage: ReadonlySet<DamageKey>;
-  /** Unspent attribute points; each is worth 8 of any attribute. */
+  /** Unspent attribute points. */
   unspentPoints: number;
+  /** What one point buys, per attribute — from the game's own level table. */
+  attributePerPoint: Readonly<Record<AttrKey, number>>;
   /** Items per group before the tail is dropped. */
   perGroup: number;
 }
@@ -219,8 +222,11 @@ export interface Candidate {
   score: number;
   /** Resistances this item covers that the character is short on. */
   covers: ResistKey[];
-  /** True when its damage or its conversion feeds a top build type. */
-  onType: boolean;
+  /**
+   * The stats that put this item on-type, as fully-qualified strings. Empty
+   * means off-type — which is a fact about its damage lines, not a rejection.
+   */
+  onTypeVia: string[];
   /** Weapons and off-hands only — what it actually deals. */
   identity?: DamageIdentity;
   /**
@@ -276,7 +282,7 @@ export function selectCandidates(items: readonly ResolvedItem[], ctx: CandidateC
     }
 
     const identity = group === 'Main hand' || group === 'Off hand' ? damageIdentity(item) : undefined;
-    const onType = matchesBuild(item, identity, ctx.topDamage);
+    const onTypeVia = matchesBuild(item, identity, ctx.topDamage);
     const check = checkRequirements(item, ctx.standing);
     const outOfReach = beyondReach(check, ctx);
 
@@ -285,13 +291,13 @@ export function selectCandidates(items: readonly ResolvedItem[], ctx: CandidateC
     // Two rarity steps must never outrank covering a hole the character has.
     const score =
       covers.length * 10_000 +
-      (onType ? 1_000 : 0) +
+      (onTypeVia.length ? 1_000 : 0) +
       (RARITY_SCORE[item.base.rarity] ?? 0) * 10 -
       Math.abs(ctx.level - level) / 10 -
       (outOfReach ? 1_000_000 : 0);
 
     const list = scored.get(group) ?? [];
-    list.push({ item, group, check, score, covers, onType, ...(identity ? { identity } : {}), outOfReach });
+    list.push({ item, group, check, score, covers, onTypeVia, ...(identity ? { identity } : {}), outOfReach });
     scored.set(group, list);
   }
 
@@ -318,40 +324,51 @@ function coveredShortfalls(item: ResolvedItem, shortfalls: ReadonlySet<ResistKey
 }
 
 /**
- * Whether the item feeds one of the build's top damage types — by dealing it,
- * by boosting it, or by converting *into* it. The conversion case is the one
- * that matters: an item whose flat damage looks off-type can be exactly right.
+ * *How* the item feeds one of the build's top damage types — by dealing it, by
+ * boosting it, or by converting *into* it. The conversion case is the one that
+ * matters: an item whose flat damage looks off-type can be exactly right.
+ *
+ * The evidence, not a boolean. `off-type` printed alone reads as a verdict when
+ * it is one input among several — the belt that is off-type *and* the only thing
+ * covering two resistance shortfalls is exactly the trade-off the advisor exists
+ * to weigh, and it cannot weigh what it cannot see the basis for.
  */
-function matchesBuild(
+export function matchesBuild(
   item: ResolvedItem,
   identity: DamageIdentity | undefined,
   top: ReadonlySet<DamageKey>,
-): boolean {
-  if (top.size === 0) return false;
+): string[] {
+  const via: string[] = [];
+  const note = (text: string): void => {
+    if (!via.includes(text)) via.push(text);
+  };
+  if (top.size === 0) return via;
+
   for (const type of identity?.types ?? []) {
-    if (top.has(type.key)) return true;
+    if (top.has(type.key)) note(`${type.min}–${type.max} ${type.label} Damage`);
   }
   for (const stats of itemStatBlocks(item)) {
     const pools = addDamage(emptyDamage(), stats, SCALAR);
     for (const key of Object.keys(pools.percent) as DamageKey[]) {
-      if (pools.percent[key] && top.has(key)) return true;
+      const amount = pools.percent[key];
+      if (amount && top.has(key)) note(`+${Math.round(amount)}% ${DAMAGE_LABEL.get(key) ?? key} Damage`);
     }
     for (const conversion of conversions(stats, SCALAR)) {
-      if (conversion.toKeys.some((key) => top.has(key))) return true;
+      if (conversion.toKeys.some((key) => top.has(key))) {
+        note(`${Math.round(conversion.percent)}% ${conversion.from} → ${conversion.to} conversion`);
+      }
     }
   }
-  return false;
+  return via;
 }
 
 /** Roughly 15% of a character's attributes is what gear plausibly supplies. */
 const PLAUSIBLE_GEAR_SUPPORT = 0.15;
-/** One unspent attribute point buys 8 of any attribute. */
-const POINTS_PER_ATTRIBUTE = 8;
 
 function beyondReach(check: RequirementCheck, ctx: CandidateContext): boolean {
   return check.gaps.some((gap) => {
     if (gap.attr === 'level') return false;
-    const reachable = ctx.unspentPoints * POINTS_PER_ATTRIBUTE + gap.have * PLAUSIBLE_GEAR_SUPPORT;
+    const reachable = ctx.unspentPoints * ctx.attributePerPoint[gap.attr] + gap.have * PLAUSIBLE_GEAR_SUPPORT;
     return gap.deficit > reachable;
   });
 }

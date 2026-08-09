@@ -227,6 +227,26 @@ export interface SpeedCaps {
   run: number;
 }
 
+/**
+ * Levelling rates, read from `records/creatures/pc/playerlevels.dbr` rather than
+ * assumed.
+ *
+ * This matters because "one attribute point is 8 attribute" and "one level is
+ * one attribute point" are exactly the kind of constants the difficulty penalty
+ * taught us not to hardcode — and here the game *does* state them, per
+ * attribute, so the unlock ladder's arithmetic is derived rather than folklore.
+ */
+export interface LevelProgression {
+  /** `characterModifierPoints` — attribute points granted per level. */
+  attributePointsPerLevel: number;
+  /** `strengthIncrement` / `dexterityIncrement` / `intelligenceIncrement` — attribute per point. */
+  attributePerPoint: { physique: number; cunning: number; spirit: number };
+  /** `maxPlayerLevel`. */
+  maxLevel: number;
+  /** `maxDevotionPoints`. */
+  maxDevotionPoints: number;
+}
+
 export interface GameDb {
   /** e.g. "Version 1.3.0.0". */
   gameVersion: string;
@@ -255,6 +275,13 @@ export interface GameDb {
    */
   skillName(record: string): string | undefined;
   /**
+   * Template class for *any* skill record, including the name-only ones that
+   * carry no indexed stats. That is what tells a granted-skill line the
+   * difference between "we could not expand this" and "this summons a pet, and
+   * pet trees are deliberately out of scope".
+   */
+  skillClass(record: string): string | undefined;
+  /**
    * The resistance penalty a difficulty applies, as raw `defensive*` field →
    * negative amount. Read from the game's balancing record rather than assumed:
    * the penalty differs per resistance and Physical takes none.
@@ -267,6 +294,12 @@ export interface GameDb {
   armorAbsorptionBase(): number;
   /** The engine's player speed caps (attack/cast 200, run 135). */
   speedCaps(): SpeedCaps;
+  /**
+   * Attribute points per level and attribute per point, from the player-levels
+   * record. The unlock ladder converts a requirement deficit into "spend N
+   * points" with these, so they must not be guessed.
+   */
+  levelProgression(): LevelProgression;
   factions(): DbFaction[];
   /** Everything a faction vendor stocks up to and including `maxTier`. */
   vendorItems(factionId: string, maxTier: RepTier): DbItem[];

@@ -38,3 +38,17 @@ export function transferStashPath(dir = saveDir()): string {
 export function formulasPath(dir = saveDir()): string {
   return join(dir, 'formulas.gst');
 }
+
+/**
+ * Account-wide crafting materials **and loose components**. Every component not
+ * installed in a piece of gear lives here rather than in a bag, which is why a
+ * tool that never opened this file reported the user owning almost none.
+ */
+export function reagentsPath(dir = saveDir()): string {
+  return join(dir, 'reagents.gst');
+}
+
+/** The potion recipe list. Same format as `reagents.gst`, no quantities. */
+export function potionsPath(dir = saveDir()): string {
+  return join(dir, 'potions.gst');
+}

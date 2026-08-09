@@ -16,12 +16,16 @@
 
 import type { DbItem, DbRecipe, DbSet, DbSkill, GameDb, RepTier, StatValue } from '../db/types.js';
 import { REP_TIERS } from '../db/types.js';
-import type { CharacterAggregate, MatrixRow } from '../mechanics/aggregate.js';
-import type { CharacterStanding, RequirementCheck } from '../mechanics/requirements.js';
+import type { CharacterAggregate, DualWieldEnabler, MatrixRow } from '../mechanics/aggregate.js';
+import type { CharacterStanding, RequirementCheck, RequirementGap } from '../mechanics/requirements.js';
 import { atRank, modifierParent, skillLabel, statRecord } from '../mechanics/skills.js';
 import {
+  addDamage,
   ATTR_KEYS,
+  DAMAGE_TYPES,
+  emptyDamage,
   RESIST_COLUMNS,
+  type AttrKey,
   type DamageKey,
   type ResistKey,
   type ResistVector,
@@ -32,6 +36,7 @@ import { EQUIP_SLOT_NAMES, type CharacterSave } from '../save/types.js';
 import {
   estimateTokens,
   EQUIP_GROUPS,
+  itemStatBlocks,
   selectCandidates,
   type Candidate,
   type CandidateSelection,
@@ -177,7 +182,8 @@ function render(input: ContextInput, trim: Trim): string {
 
   const equipped = resolved.items.filter((i) => i.source === 'equipped');
   const invested = new Set(save.skills.filter((s) => s.level > 0).map((s) => s.record));
-  const ctx: RenderContext = { ...input, ids, equipped, invested };
+  const recipes = recipeView(input);
+  const ctx: RenderContext = { ...input, ids, equipped, invested, recipes, iron: ironOutlook(input, recipes) };
 
   header(out, ctx);
   gameRules(out, ctx);
@@ -191,6 +197,7 @@ function render(input: ContextInput, trim: Trim): string {
   factionAugments(out, ctx);
   blueprints(out, ctx, selection, trim);
   task(out, ctx);
+  unlockLadder(out, ctx, selection);
 
   return out.toString();
 }
@@ -200,6 +207,10 @@ interface RenderContext extends ContextInput {
   equipped: ResolvedItem[];
   /** Skill records with at least one invested point. */
   invested: Set<string>;
+  /** §10's blueprint scope, computed once because §2 prices against it too. */
+  recipes: RecipeView;
+  /** Whether iron is actually scarce for this character — see `ironOutlook`. */
+  iron: IronOutlook;
 }
 
 /** Accumulates markdown lines; nothing more than a joined array with helpers. */
@@ -258,14 +269,73 @@ function header(out: Writer, ctx: RenderContext): void {
 // 2 — game rules
 // ---------------------------------------------------------------------------
 
+/** Slots that take an augment — the twelve worn pieces plus the held weapons. */
+const AUGMENTABLE_SLOTS = 12;
+
+/**
+ * Iron only stops being a constraint by this factor of the worst plausible
+ * shopping bill. Below it the advisor should still budget; the point is not to
+ * declare iron free, it is to stop a character with 37× the whole spend from
+ * getting a budget section.
+ */
+const IRON_COMFORT_FACTOR = 5;
+
+interface IronOutlook {
+  onHand: number;
+  /** Worst case for the routine spend: the priciest augment in every augmentable slot. */
+  bill: number;
+  worstAugment: number;
+  /**
+   * The priciest craft in §10's scope, reported *beside* the bill rather than
+   * inside it. A single 250,000 relic craft is a deliberate, one-off decision —
+   * folding it into the routine bill would declare a millionaire "constrained"
+   * over a purchase they would weigh on its own merits anyway. The advisor is
+   * told to quote a genuinely large price; that clause is what covers this.
+   */
+  worstCraft: number;
+  /** False when iron is comfortably above the bill — then no budgeting is asked for. */
+  constrained: boolean;
+}
+
+/**
+ * Whether iron is worth reasoning about for this character.
+ *
+ * The first live run spent a whole section and four running totals on 35,500
+ * against 1,315,676 — arithmetic that could not change any decision. Blanket
+ * removal is wrong too: iron is genuinely scarce early, and Ascension's 250,000
+ * is real money at any level. So the document *computes* the answer against a
+ * worst-case bill and states which regime the character is in, and the prompt's
+ * "respect the iron" clauses hang off that statement.
+ */
+function ironOutlook(input: ContextInput, recipes: RecipeView): IronOutlook {
+  const { save, db, aggregate } = input;
+  const price = (item: DbItem): number => {
+    const cost = item.stats['itemCost'];
+    return typeof cost === 'number' ? cost : 0;
+  };
+  const worstAugment = Math.max(
+    0,
+    ...vendorStock(save, db, aggregate.level).flatMap((g) => g.augments.map(price)),
+  );
+  const worstCraft = Math.max(0, ...recipes.relevant.map((r) => recipes.planFor(r).ironTotal));
+  const bill = worstAugment * AUGMENTABLE_SLOTS;
+  return {
+    onHand: save.iron,
+    bill,
+    worstAugment,
+    worstCraft,
+    constrained: bill > 0 && save.iron < bill * IRON_COMFORT_FACTOR,
+  };
+}
+
 function gameRules(out: Writer, ctx: RenderContext): void {
   const { aggregate, db } = ctx;
   const caps = db.speedCaps();
-  const penalty = RESIST_COLUMNS.map((c) => `${c.label} ${num(aggregate.resistances.penalty[c.key] ?? 0)}`).join(', ');
+  const penalty = RESIST_COLUMNS.map((c) => `${c.label} ${num(aggregate.resistances.penalty[c.key] ?? 0)}`).join(' · ');
 
   out.h(2, '2. Game rules (v1.3, Fangs of Asterkarn — do not substitute older knowledge)');
 
-  out.line('**Resistances.** Each of the ten damage resistances caps at 80%. `+% Maximum X Resistance` raises that cap, to a hard ceiling of 95%. The difficulty penalty is subtracted from the total *before* the cap, and it is **not uniform** — the in-game "−25%/−50% to all resistances" blurb is a simplification. On this character\'s difficulty the penalty is:');
+  out.line('**Resistances.** Each of the ten damage resistances caps at 80%. `+% Maximum X Resistance` raises that cap, to a hard ceiling of 95%. The difficulty penalty is subtracted from the total *before* the cap, and it is **not uniform** — the in-game "−25%/−50% to all resistances" blurb is a simplification. On this character\'s difficulty the penalty **to each resistance** is:');
   out.line();
   out.line(`> ${aggregate.difficulty}: ${penalty}`);
   out.line();
@@ -278,6 +348,9 @@ function gameRules(out: Writer, ctx: RenderContext): void {
   out.line(`**Speed caps** (engine values): attack ${caps.attack}%, cast ${caps.cast}%, movement ${caps.run}%. \`+% speed\` past a cap is worth nothing — never trade a real stat for it on a build already at cap.`);
 
   out.line();
+  out.line('**Granted skills.** Wherever an item, component or augment reads `Grants: <skill>`, the skill\'s own stats follow it and the parenthetical says **how you get them**: `passive — always on` (simply true), `toggle` (true while held, at the energy reservation shown in its stats), `activated` (you have to cast it), `auto-cast <trigger>` (a proc — a chance per trigger, not a constant), or `weapon-pool proc` (a share of basic attacks). None of these is summed into §3; they are named and shown so you can weigh them yourself, and §3 lists them as an exclusion.');
+
+  out.line();
   out.line('**Sockets.** An item holds up to **one component** and **one augment**, in independent sockets.');
   out.bullets([
     'Every component and augment carries a use-on restriction (listed with it below). It may only be proposed for gear that restriction accepts.',
@@ -286,19 +359,32 @@ function gameRules(out: Writer, ctx: RenderContext): void {
     'Applying an augment **soulbinds** the item: it cannot be traded or placed in the transfer stash until the augment is removed (which destroys the augment).',
     "An occupied **component** socket goes through the Inventor's salvage, which is either/or with an iron fee: **keep the item → the installed component is destroyed** (and any augment with it), or **keep the component → the host item is destroyed** (and its augment). So upgrading a kept item's component costs the old component + fee + a fresh augment, and moving a single-instance component to new gear costs the old item.",
     'Partial components no longer exist in the game — a component is always whole.',
+    'A component that grants a buff grants it **per copy**: two weapons with the same component give two instances of the buff, and their stats add. This is the one case where a duplicate socketable is worth more than the first — unlike set pieces, which count distinct members only.',
   ]);
 
   out.line();
+  ironRule(out, ctx);
+
+  out.line();
+  const lp = db.levelProgression();
+  const perPoint = new Set(Object.values(lp.attributePerPoint));
   out.line('**Requirements.** Items demand a character level and Physique/Cunning/Spirit.');
   out.bullets([
     '`-% Requirement` reductions stack additively and are scoped by gear family (Armor, Jewelry, Shield, Weapon, Melee, Hunting), with Global stacking on top of the scope.',
     'A reduction or a `+Attribute` granted by an item **vanishes when that item is swapped out**, so any joint move has to be re-checked against the post-swap loadout.',
-    'One unspent attribute point = 8 points of any one attribute.',
-    'A deficit that levelling or unspent points will close is a **HOLD-until**, never a reject.',
+    perPoint.size === 1
+      ? `One unspent attribute point = ${[...perPoint][0]} points of any one attribute, and each character level grants ${lp.attributePointsPerLevel} attribute point(s). (Both read from the game's own level table, not assumed.)`
+      : `One unspent attribute point = ${lp.attributePerPoint.physique} Physique / ${lp.attributePerPoint.cunning} Cunning / ${lp.attributePerPoint.spirit} Spirit, and each level grants ${lp.attributePointsPerLevel} point(s).`,
+    'A deficit that levelling or unspent points will close is a **HOLD-until**, never a reject — §12 does that arithmetic.',
   ]);
 
   out.line();
-  out.line('**Dual wielding requires an enabler**: a mastery passive (Dual Blades, Implements of War) or an item-granted skill (Direwolf Claw, Mutilate, Bloodbath, Gunslinger\'s Talent). A swap that removes the *last* enabler while leaving two one-handers is illegal, not merely weak.');
+  out.line('**Dual wielding requires an enabler, and the two kinds are not interchangeable:**');
+  out.bullets([
+    '**Permanent** — an invested mastery passive (Dual Blades, Implements of War). These are spent skill points: they survive *every* gear change, so while one exists no swap can end dual wielding, and an item must never be kept "for the dual-wield grant".',
+    "**Gear-granted** — an item-granted skill (Direwolf Claw, Mutilate, Bloodbath, Gunslinger's Talent). These leave with the item.",
+    'A swap that removes the *last* enabler of **either** kind while leaving two one-handers is illegal, not merely weak. §4 states which kinds this character has.',
+  ]);
 
   out.line();
   out.line('**Respec economy.** Skill points refund at the Spirit Guide for iron (the cost rises per point and caps at 15,000), and the mastery bar can be lowered — but the **class combination is permanent**. Attribute points refund only via the Tonic of Reshaping, which is scarce (two from quests, then craftable at hidden Celestial Blacksmiths on Elite and Ultimate), so an attribute respec is a build decision worth flagging for an exceptional item and never a routine move.');
@@ -318,7 +404,26 @@ function gameRules(out: Writer, ctx: RenderContext): void {
   ]);
 
   out.line();
-  out.line(`**Faction vendors.** Market tiers unlock at Friendly ≥1,501, Respected ≥5,001, Honored ≥10,001, Revered ≥25,000 reputation. ("Trusted" is a reputation level in game but *not* a market tier.) Only the tiers this character has actually reached are listed in §9, and each augment's iron price is quoted against the iron on hand in §1.`);
+  out.line(`**Faction vendors.** Market tiers unlock at Friendly ≥1,501, Respected ≥5,001, Honored ≥10,001, Revered ≥25,000 reputation. ("Trusted" is a reputation level in game but *not* a market tier.) Only the tiers this character has actually reached are listed in §9, with each augment's iron price.`);
+}
+
+/** Whether iron is a real constraint here, stated as a rule the advisor follows. */
+function ironRule(out: Writer, ctx: RenderContext): void {
+  const iron = ctx.iron;
+  const money = (n: number): string => n.toLocaleString('en-US');
+  const bill = `a worst-case ~${money(iron.bill)} — the priciest augment available (${money(iron.worstAugment)}) in all ${AUGMENTABLE_SLOTS} augmentable slots, plus the priciest craft in §10 (${money(iron.worstCraft)})`;
+
+  if (iron.constrained) {
+    out.line(
+      `**Iron is a constraint for this character**: ${money(iron.onHand)} on hand against ${bill}. ` +
+        'Budget explicitly — quote the price of every purchase, keep a running total, and do not propose a plan that overspends.',
+    );
+    return;
+  }
+  out.line(
+    `**Iron is not a constraint for this character**: ${money(iron.onHand)} on hand against ${bill}. ` +
+      '**Do not compute iron totals and do not write a budget section.** Quote a price only when it is genuinely large relative to the pile — the Ascendant Altar\'s 250,000 per roll is the usual example. Prices stay listed in §9 and §10 for reference, not for arithmetic.',
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +450,7 @@ function attributesAndDefenses(out: Writer, ctx: RenderContext): void {
   out.line();
   out.bullets([
     `health ${save.attributes.health.toLocaleString('en-US')}, energy ${save.attributes.energy.toLocaleString('en-US')}`,
-    `unspent: ${a.unspentPoints} attribute point(s) (8 attribute each), ${save.attributes.skillPoints} skill point(s), ${save.attributes.devotionPoints} devotion point(s)`,
+    `unspent: ${a.unspentPoints} attribute point(s) (see §2 for what one buys), ${save.attributes.skillPoints} skill point(s), ${save.attributes.devotionPoints} devotion point(s)`,
     `Offensive Ability contributions ${signed(a.offensiveAbility.flat)}${a.offensiveAbility.percent ? `, ${signed(a.offensiveAbility.percent)}%` : ''} — gear and skills only; the engine's level- and attribute-derived base is not modelled here`,
     `Defensive Ability contributions ${signed(a.defensiveAbility.flat)}${a.defensiveAbility.percent ? `, ${signed(a.defensiveAbility.percent)}%` : ''} — same caveat`,
   ]);
@@ -445,7 +550,7 @@ function resistanceMatrix(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line(
     under.length
-      ? `**Under cap:** ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(', ')}. Everything else is at or over cap; points spent past cap are wasted except as buffer against enemy resistance reduction.`
+      ? `**Under cap** (each figure is that resistance, in points): ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(' · ')}. Everything else is at or over cap; points spent past cap are wasted except as buffer against enemy resistance reduction.`
       : '**Every resistance is at or above its cap** at this difficulty. Further resistance is buffer against enemy resistance reduction only.',
   );
 
@@ -595,7 +700,7 @@ function damageSection(out: Writer, ctx: RenderContext): void {
 
   if (d.weaponAttack.composition.length) {
     const shares = d.weaponAttack.composition
-      .map((s) => `${s.share}% ${s.label.toLowerCase()}${s.overTime ? ' (over time)' : ''}`)
+      .map((s) => `${s.share}% ${s.label} Damage${s.overTime ? ' (over time)' : ''}`)
       .join(' · ');
     out.line();
     out.line(`**Weapon attack composition:** ${shares}${d.weaponAttack.mainAttack ? ` — main attack is **${d.weaponAttack.mainAttack}**` : ''}. This is what every point of flat damage on gear feeds.`);
@@ -608,7 +713,7 @@ function damageSection(out: Writer, ctx: RenderContext): void {
       d.skillDamage.map((s) => {
         const parts = [
           ...(s.weaponDamagePct ? [`${s.weaponDamagePct}% weapon damage`] : []),
-          ...s.flat.map((f) => `${signed(f.amount)} ${f.label.toLowerCase()}${f.overTime ? ' over time' : ''}`),
+          ...s.flat.map((f) => `${signed(f.amount)} ${f.label} Damage${f.overTime ? ' over time' : ''}`),
           ...s.conversions.map((c) => `converts ${num(c.percent)}% ${c.from} → ${c.to} *(this skill only)*`),
         ];
         return `**${s.skill}** rank ${s.rank}${s.isDefaultAttack ? ' *(default attack replacer)*' : ''}: ${parts.join(' · ') || 'no damage of its own'}`;
@@ -622,19 +727,7 @@ function damageSection(out: Writer, ctx: RenderContext): void {
     out.bullets(d.resistReduction.map((rr) => `${rr.source}: ${rr.effect} ${num(rr.value)}`));
   }
 
-  const w = ctx.aggregate.wielding;
-  out.line();
-  const enablers = w.enablers.length
-    ? w.enablers.map((e) => (e.source === 'skill' ? `${e.name} (mastery passive)` : `${e.name}, ${e.source}`)).join('; ')
-    : undefined;
-  out.line(
-    `**Wielding:** ${w.mode}${w.mainHand ? ` — ${w.mainHand}${w.offHand ? ` + ${w.offHand}` : ''}` : ''}.` +
-      (w.mode.startsWith('dual-wield')
-        ? enablers
-          ? ` Dual wield is enabled by: ${enablers}. Any swap must keep at least one of these.`
-          : ' **No dual-wield enabler was found — treat this as a gap in the model, not permission to drop one.**'
-        : ''),
-  );
+  wieldingLines(out, ctx);
 
   if (d.weaponRestrictions.length) {
     out.line();
@@ -645,6 +738,50 @@ function damageSection(out: Writer, ctx: RenderContext): void {
   const top = d.ranked.slice(0, 2).map((e) => e.label);
   out.line();
   out.line(`**Build focus: ${top.join(' + ') || 'undetermined'}** — this is the post-conversion path every candidate's damage stats are judged against.`);
+}
+
+/**
+ * How the weapons are held, and — on a dual-wield mode — what makes it legal.
+ *
+ * The two kinds of enabler get separate sentences and the *consequence* is
+ * stated outright rather than left to be inferred. A flat "enabled by A; B; C.
+ * Any swap must keep at least one of these" reads as though all three were
+ * load-bearing, which is how the first live run came to keep a relic for a
+ * grant that two invested passives already covered.
+ */
+function wieldingLines(out: Writer, ctx: RenderContext): void {
+  const w = ctx.aggregate.wielding;
+  out.line();
+  const held = `**Wielding:** ${w.mode}${w.mainHand ? ` — ${w.mainHand}${w.offHand ? ` + ${w.offHand}` : ''}` : ''}.`;
+  if (!w.mode.startsWith('dual-wield')) {
+    out.line(held);
+    return;
+  }
+
+  const permanent = w.enablers.filter((e) => e.source === 'skill');
+  const granted = w.enablers.filter((e) => e.source !== 'skill');
+  const list = (names: readonly DualWieldEnabler[]): string => names.map((e) => e.name).join(' and ');
+
+  if (w.enablers.length === 0) {
+    out.line(`${held} **No dual-wield enabler was found — treat this as a gap in the model, not permission to drop one.**`);
+    return;
+  }
+
+  const parts = [
+    permanent.length
+      ? `**${permanent.length} permanent** — ${list(permanent)} (invested mastery passive${permanent.length === 1 ? '' : 's'}; they survive any gear change)`
+      : '',
+    granted.length
+      ? `${granted.length} gear-granted — ${granted.map((e) => `${e.name}, ${e.source.replace(/^granted by /, 'from ')}`).join('; ')}`
+      : '',
+  ].filter(Boolean);
+
+  out.line(`${held} Enabled by ${parts.join(' — and ')}.`);
+  out.line(
+    permanent.length
+      ? '**Because a permanent enabler exists, no gear swap can end dual wielding.** Do not count an item\'s dual-wield grant as a reason to keep it.'
+      : `**No permanent enabler.** Dual wielding depends entirely on gear: ${list(granted)}. A swap that removes the last of these while leaving two one-handers is illegal, not merely weak.`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -861,6 +998,7 @@ const SOURCE_TAG: Readonly<Record<string, string>> = {
   stash: '[stash]',
   transfer: '[transfer]',
   equipped: '[equipped]',
+  materials: '[materials]',
 };
 
 function candidateSelection(ctx: RenderContext, perGroup: number): CandidateSelection {
@@ -885,6 +1023,7 @@ function candidateSelection(ctx: RenderContext, perGroup: number): CandidateSele
     shortfalls,
     topDamage,
     unspentPoints: aggregate.attributes.unspentPoints,
+    attributePerPoint: ctx.db.levelProgression().attributePerPoint,
     perGroup,
   });
 }
@@ -910,24 +1049,59 @@ function candidatesSection(out: Writer, ctx: RenderContext, selection: Candidate
   }
 }
 
+/** The build's top two post-conversion types, as the label §4 printed them. */
+function focusLabels(ctx: RenderContext): string {
+  const top = ctx.aggregate.damage.ranked.slice(0, 2).map((e) => e.label);
+  return top.length ? top.join(' + ') : 'the build focus';
+}
+
+/**
+ * The damage types a non-weapon candidate carries, for the off-type note. Only
+ * weapons get a full `DamageIdentity`, but a belt with `+66% Cold Damage` is
+ * off-type for a reason worth naming too.
+ */
+function offTypeDamageLabels(candidate: Candidate): string[] {
+  const seen = new Set<string>();
+  for (const stats of itemStatBlocks(candidate.item)) {
+    const pools = addDamage(emptyDamage(), stats, (v) => (typeof v === 'number' ? v : 0));
+    for (const type of DAMAGE_TYPES) {
+      if (pools.flat[type.key] || pools.percent[type.key]) seen.add(type.label);
+    }
+  }
+  return [...seen];
+}
+
 function candidateBlock(out: Writer, ctx: RenderContext, candidate: Candidate): void {
   const { item } = candidate;
   const tag = SOURCE_TAG[item.source] ?? `[${item.source}]`;
   itemBlock(out, ctx, item, `${tag} ${item.location}`, candidate.check, 4);
 
   const notes: string[] = [];
-  if (candidate.covers.length) notes.push(`covers a current shortfall in ${candidate.covers.join(', ')}`);
+  if (candidate.covers.length) notes.push(`covers a current **resistance** shortfall in ${candidate.covers.join(', ')}`);
   if (candidate.identity) {
     const id = candidate.identity;
-    const damage = id.types.map((t) => `${t.min}–${t.max} ${t.label.toLowerCase()}`).join(', ');
+    const damage = id.types.map((t) => `${t.min}–${t.max} ${t.label} Damage`).join(', ');
     if (damage) {
-      notes.push(`deals ${damage}${id.pierceRatio ? ` (${num(id.pierceRatio)}% armor piercing already applied)` : ''}`);
+      notes.push(`deals ${damage}${id.pierceRatio ? ` (${num(id.pierceRatio)}% Armor Piercing already applied)` : ''}`);
     }
     for (const conversion of id.conversions) {
       notes.push(`grants ${num(conversion.percent)}% ${conversion.from} → ${conversion.to} conversion (global once worn)`);
     }
   }
-  notes.push(candidate.onType ? 'matches the build focus' : '**off-type** for the current build focus');
+  // Both sides name their evidence. "off-type" alone reads as a verdict, and
+  // "matches the build focus" alone hides that the match was one minor suffix.
+  if (candidate.onTypeVia.length) {
+    notes.push(`on-type via ${candidate.onTypeVia.join(', ')}`);
+  } else {
+    const lines = candidate.identity?.types.map((t) => t.label) ?? offTypeDamageLabels(candidate);
+    const focus = focusLabels(ctx);
+    notes.push(
+      `off-type — ${lines.length ? `its damage lines are ${lines.join(', ')}; none is in ${focus}` : `it carries no ${focus} damage line`}. ` +
+        (candidate.covers.length
+          ? `This is not a rejection: it still covers ${candidate.covers.join(', ')} (see above).`
+          : 'This is not a rejection on its own — weigh it against what else the item brings.'),
+    );
+  }
   if (candidate.outOfReach) notes.push('attribute gap exceeds what unspent points plus plausible gear support could close — a stat-stick for this character unless the loadout changes around it');
   out.bullets(notes.map((n) => `note: ${n}`));
 }
@@ -946,9 +1120,20 @@ interface CensusEntry {
   loose: Map<string, number>;
   /** Item ids of gear this component is installed in. */
   hosts: { id: string; where: string }[];
+  /** A learned blueprint that produces it, when one exists. */
+  craft?: { recipe: DbRecipe; plan: CraftPlan };
 }
 
-function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, trim: Trim): void {
+/**
+ * Every component the character can reach, from any origin, in one place.
+ *
+ * Owned, installed and *craftable* are three ways of having the same component,
+ * and the choice between them is a single decision — so they belong in a single
+ * list rather than split between a census and a blueprint section. Each entry
+ * carries its stats for the same reason: "any component beats an empty socket"
+ * is what an advisor is reduced to saying when the numbers are elsewhere.
+ */
+function componentCensus(ctx: RenderContext, selection: CandidateSelection): Map<string, CensusEntry> {
   const shown = new Map<ResolvedItem, string>();
   for (const item of ctx.equipped) shown.set(item, ctx.ids.get(item) ?? item.id);
   for (const candidate of [...selection.byGroup.values()].flat()) {
@@ -956,28 +1141,44 @@ function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, 
   }
 
   const components = new Map<string, CensusEntry>();
-  const augments = new Map<string, CensusEntry>();
-  const entry = (map: Map<string, CensusEntry>, item: DbItem): CensusEntry => {
-    const existing = map.get(item.record) ?? { item, loose: new Map<string, number>(), hosts: [] };
-    map.set(item.record, existing);
+  const entry = (item: DbItem): CensusEntry => {
+    const existing = components.get(item.record) ?? { item, loose: new Map<string, number>(), hosts: [] };
+    components.set(item.record, existing);
     return existing;
   };
 
   for (const item of ctx.resolved.items) {
     if (item.base?.slot === COMPONENT_CLASS) {
-      const e = entry(components, item.base);
-      e.loose.set(item.source, (e.loose.get(item.source) ?? 0) + Math.max(1, item.stackCount));
-    }
-    if (item.base?.slot === AUGMENT_CLASS) {
-      const e = entry(augments, item.base);
+      const e = entry(item.base);
       e.loose.set(item.source, (e.loose.get(item.source) ?? 0) + Math.max(1, item.stackCount));
     }
     // Installed copies. Anything not printed elsewhere is still named by its
     // host's location, so "the only copy is inside this item" stays visible.
     if (item.component) {
       const id = shown.get(item) ?? ctx.ids.get(item) ?? item.id;
-      entry(components, item.component).hosts.push({ id, where: `${item.display} (${item.location})` });
+      entry(item.component).hosts.push({ id, where: `${item.display} (${item.location})` });
     }
+  }
+
+  for (const recipe of ctx.recipes.relevant) {
+    const result = recipe.resultRecord ? ctx.db.getItem(recipe.resultRecord) : undefined;
+    if (result?.slot !== COMPONENT_CLASS) continue;
+    const e = entry(result);
+    if (!e.craft) e.craft = { recipe, plan: ctx.recipes.planFor(recipe) };
+  }
+
+  return components;
+}
+
+function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, trim: Trim): void {
+  const components = componentCensus(ctx, selection);
+
+  const augments = new Map<string, CensusEntry>();
+  for (const item of ctx.resolved.items) {
+    if (item.base?.slot !== AUGMENT_CLASS) continue;
+    const e = augments.get(item.base.record) ?? { item: item.base, loose: new Map<string, number>(), hosts: [] };
+    e.loose.set(item.source, (e.loose.get(item.source) ?? 0) + Math.max(1, item.stackCount));
+    augments.set(item.base.record, e);
   }
 
   const materials = new Map<string, { name: string; count: number }>();
@@ -988,27 +1189,37 @@ function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, 
     materials.set(item.record, existing);
   }
 
-  out.h(2, '8. Component and augment census (every container)');
-  out.line('Scarcity is the point of this section: a component whose only copy is installed can still be moved, but only by destroying its host.');
+  const craftableNow = [...components.values()].filter((e) => e.craft && e.craft.plan.missing.length === 0);
+
+  out.h(2, '8. Components and augments — everything reachable, from every source');
+  out.line(
+    'This is the **single list of components**: owned loose, installed in gear, and craftable from a learned blueprint, each with what it actually grants. ' +
+      'Scarcity is the point — a component whose only copy is installed can still be moved, but only by destroying its host, while a craftable one is unlimited if the materials hold out.',
+  );
 
   if (trim.compressCensus) {
     out.line();
-    out.line(`- ${components.size} distinct component(s) owned, ${[...components.values()].filter(onlyInstalled).length} of them only as an installed copy`);
+    out.line(`- ${components.size} distinct component(s) reachable, ${[...components.values()].filter(onlyInstalled).length} of them only as an installed copy, ${craftableNow.length} craftable now`);
     out.line(`- ${augments.size} distinct loose augment(s) on hand`);
   } else {
     out.line();
-    out.line('**Components:**');
+    out.line(`**Components** (${components.size} reachable, ${craftableNow.length} of them craftable right now):`);
     for (const e of [...components.values()].sort((a, b) => a.item.name.localeCompare(b.item.name))) {
       const loose = [...e.loose].map(([source, n]) => `${n}× ${SOURCE_TAG[source] ?? source}`).join(', ');
       const parts = [
         loose ? `loose: ${loose}` : 'none loose',
         e.hosts.length ? `installed in ${e.hosts.map((h) => `\`#${h.id}\` ${h.where}`).join(', ')}` : '',
+        craftText(e),
         `use-on: ${describeSlots(e.item.allowedSlots)}`,
       ].filter(Boolean);
       const scarce = onlyInstalled(e)
         ? ` — **single instance — extraction destroys ${e.hosts.map((h) => `\`#${h.id}\``).join(' / ')}**`
         : '';
       out.line(`- **${e.item.name}** — ${parts.join('; ')}${scarce}`);
+      // The stats are the whole point of the comparison: without them the
+      // advisor can only say "any component beats an empty socket".
+      const lines = formatStats(e.item.stats, { db: ctx.db, invested: ctx.invested });
+      if (lines.length) out.line(`  - ${lines.join('; ')}`);
     }
 
     if (augments.size) {
@@ -1017,6 +1228,8 @@ function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, 
       for (const e of [...augments.values()].sort((a, b) => a.item.name.localeCompare(b.item.name))) {
         const loose = [...e.loose].map(([source, n]) => `${n}× ${SOURCE_TAG[source] ?? source}`).join(', ');
         out.line(`- **${e.item.name}** — ${loose}; use-on: ${describeSlots(e.item.allowedSlots)}`);
+        const lines = formatStats(e.item.stats, { db: ctx.db, invested: ctx.invested });
+        if (lines.length) out.line(`  - ${lines.join('; ')}`);
       }
     }
   }
@@ -1024,13 +1237,26 @@ function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, 
   out.line();
   out.line(
     materials.size
-      ? `**Crafting materials on hand:** ${[...materials.values()].sort((a, b) => b.count - a.count).map((m) => `${m.name} ×${m.count}`).join(', ')}`
+      ? `**Crafting materials on hand:** ${[...materials.values()].sort((a, b) => b.count - a.count).map((m) => `${m.name} ×${m.count}`).join(' · ')}`
       : '**Crafting materials on hand:** none.',
   );
 }
 
 function onlyInstalled(entry: CensusEntry): boolean {
-  return entry.hosts.length === 1 && entry.loose.size === 0;
+  return entry.hosts.length === 1 && entry.loose.size === 0 && entry.craft === undefined;
+}
+
+/** The craft origin of a census entry: what it costs, or what is still missing. */
+function craftText(entry: CensusEntry): string {
+  if (!entry.craft) return '';
+  const { recipe, plan } = entry.craft;
+  const reagents = [...(recipe.baseReagent ? [recipe.baseReagent] : []), ...recipe.reagents]
+    .map((r) => `${r.quantity}× ${r.name ?? r.record}`)
+    .join(', ');
+  const cost = `${plan.ironTotal.toLocaleString('en-US')} iron`;
+  if (plan.missing.length) return `blueprint learned but **not craftable**: needs ${reagents}, ${cost} — missing ${plan.missing.join(', ')}`;
+  const first = plan.prerequisites.length ? `, after first crafting ${plan.prerequisites.join(', ')}` : '';
+  return `**craftable now** from ${reagents}, ${cost}${first}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,14 +1269,51 @@ function tiersUpTo(tier: string): RepTier[] {
   return index < 0 ? [] : REP_TIERS.slice(0, index + 1);
 }
 
+interface VendorStock {
+  factionId: string;
+  factionName: string;
+  tier: RepTier | string;
+  reputation: number;
+  augments: DbItem[];
+}
+
+/**
+ * The faction augment stock this character can actually buy today, grouped by
+ * faction. One derivation feeding §2's iron verdict, §9's listing and the
+ * socketable index Stage 6 validates against — three readers of the same three
+ * filters (faction unlocked, tier reached, level appropriate) is three chances
+ * for them to drift apart.
+ */
+function vendorStock(save: CharacterSave, db: GameDb, level: number): VendorStock[] {
+  const out: VendorStock[] = [];
+  for (const rep of save.factions) {
+    if (!rep.unlocked) continue;
+    const slot = factionSlot(rep.id);
+    if (!slot) continue;
+    const tier = factionTier(rep.value);
+    const reached = tiersUpTo(tier);
+    if (reached.length === 0) continue;
+    const faction = db.factions().find((f) => f.id === slot.id);
+    if (!faction?.hasVendor) continue;
+    const augments = db
+      .vendorItems(slot.id, reached.at(-1)!)
+      .filter((item) => item.slot === AUGMENT_CLASS && item.levelReq <= level);
+    if (augments.length === 0) continue;
+    out.push({ factionId: slot.id, factionName: faction.name, tier, reputation: rep.value, augments });
+  }
+  return out;
+}
+
 /**
  * Every component and augment the document actually offers: the ones installed
- * in gear (§5/§7), the loose ones in the census (§8), and the faction stock the
+ * in gear (§5/§7), the loose and craftable ones in §8, and the faction stock the
  * character can buy today (§9).
  *
  * Stage 6 checks socket proposals against exactly this set, which is why it is
  * derived here rather than from the whole database — a component the document
- * never showed is a hallucination even though the game has one.
+ * never showed is a hallucination even though the game has one. Conversely a
+ * component §8 marks craftable *was* offered, so it belongs here: leaving it out
+ * would report a legal CRAFT as invented.
  */
 export function documentSocketables(input: ContextInput): DbItem[] {
   const { save, db, aggregate, resolved } = input;
@@ -1065,16 +1328,13 @@ export function documentSocketables(input: ContextInput): DbItem[] {
     add(item.augment);
   }
 
-  for (const rep of save.factions) {
-    if (!rep.unlocked) continue;
-    const slot = factionSlot(rep.id);
-    if (!slot) continue;
-    const reached = tiersUpTo(factionTier(rep.value));
-    if (reached.length === 0) continue;
-    if (!db.factions().find((f) => f.id === slot.id)?.hasVendor) continue;
-    for (const item of db.vendorItems(slot.id, reached.at(-1)!)) {
-      if (item.slot === AUGMENT_CLASS && item.levelReq <= aggregate.level) add(item);
-    }
+  for (const stock of vendorStock(save, db, aggregate.level)) {
+    for (const augment of stock.augments) add(augment);
+  }
+
+  for (const recipe of recipeView(input).relevant) {
+    const result = recipe.resultRecord ? db.getItem(recipe.resultRecord) : undefined;
+    if (result?.slot === COMPONENT_CLASS) add(result);
   }
 
   return [...out.values()];
@@ -1085,27 +1345,12 @@ function factionAugments(out: Writer, ctx: RenderContext): void {
   out.h(2, '9. Faction augments available now');
   out.line('Only factions this character has unlocked, only tiers actually reached, only augments at or below the character\'s level. Prices are per augment; iron on hand is in §1.');
 
-  let any = false;
-  for (const rep of save.factions) {
-    if (!rep.unlocked) continue;
-    const slot = factionSlot(rep.id);
-    if (!slot) continue;
-    const tier = factionTier(rep.value);
-    const reached = tiersUpTo(tier);
-    if (reached.length === 0) continue;
-    const faction = db.factions().find((f) => f.id === slot.id);
-    if (!faction?.hasVendor) continue;
-
-    const stock = db
-      .vendorItems(slot.id, reached.at(-1)!)
-      .filter((item) => item.slot === AUGMENT_CLASS && item.levelReq <= aggregate.level);
-    if (stock.length === 0) continue;
-
-    any = true;
+  const groups = vendorStock(save, db, aggregate.level);
+  for (const group of groups) {
     out.line();
-    out.line(`### ${faction.name} — ${tier} (${Math.round(rep.value).toLocaleString('en-US')} reputation)`);
-    for (const augment of stock.sort((a, b) => b.levelReq - a.levelReq || a.name.localeCompare(b.name))) {
-      const at = augment.vendors?.find((v) => v.factionId === slot.id)?.repTier ?? tier;
+    out.line(`### ${group.factionName} — ${group.tier} (${Math.round(group.reputation).toLocaleString('en-US')} reputation)`);
+    for (const augment of [...group.augments].sort((a, b) => b.levelReq - a.levelReq || a.name.localeCompare(b.name))) {
+      const at = augment.vendors?.find((v) => v.factionId === group.factionId)?.repTier ?? group.tier;
       const cost = augment.stats['itemCost'];
       const lines = formatStats(augment.stats, { db, invested: ctx.invested });
       out.line(
@@ -1113,18 +1358,85 @@ function factionAugments(out: Writer, ctx: RenderContext): void {
       );
     }
   }
-  if (!any) out.line('\nNo faction vendor this character has unlocked stocks a level-appropriate augment.');
+  if (groups.length === 0) out.line('\nNo faction vendor this character has unlocked stocks a level-appropriate augment.');
 }
 
 // ---------------------------------------------------------------------------
 // 10 — blueprints and upgrade paths
 // ---------------------------------------------------------------------------
 
-function blueprints(out: Writer, ctx: RenderContext, selection: CandidateSelection, trim: Trim): void {
-  const { db, save, resolved, aggregate } = ctx;
-  out.h(2, '10. Blueprints and upgrade paths');
+/**
+ * The learned blueprints worth listing, with the materials check that decides
+ * whether each is craftable now.
+ *
+ * Scope is **components and relics only** (`ItemRelic` / `ItemArtifact`).
+ * Craftable armour and weapons are noise: §7 already ranks every candidate the
+ * character owns for those slots against their actual build, and a crafted
+ * base-stat piece cannot be compared to a rolled one from this data. Relics are
+ * not optional — one of `_Suchka`'s three dual-wield enablers is a relic.
+ */
+const CRAFTABLE_RESULT_CLASSES = new Set([COMPONENT_CLASS, 'ItemArtifact']);
 
-  // What the account can actually consume, pooled across every container.
+/**
+ * What it would take to craft one recipe, following the chain.
+ *
+ * A component recipe's reagents are often *other components*, and the character
+ * may hold the blueprint for the missing one. Reporting "missing Ballistic
+ * Plating 0/4" when four are two clicks away is a false negative that costs the
+ * advisor a real move, so the resolver crafts what it can and reports what is
+ * left. Materials are drawn from one shared pool as it descends, which is what
+ * stops a sub-craft and its parent spending the same Ugdenbloom twice.
+ */
+interface CraftPlan {
+  /** Reagent shortfalls no learned blueprint closes, as `name have/need`. */
+  missing: string[];
+  /** Sub-crafts to do first, deepest-first, as `4× Ballistic Plating`. */
+  prerequisites: string[];
+  /** Iron for this craft plus every prerequisite. */
+  ironTotal: number;
+  /** True when iron is the only thing missing. */
+  shortOfIron: boolean;
+}
+
+/** How deep the reagent chain is followed. Real component chains are 1–2 deep. */
+const MAX_CRAFT_DEPTH = 4;
+
+/**
+ * Collapse `1× Ectoplasm, 1× Ectoplasm, 3× Vengeful Wraith` into
+ * `2× Ectoplasm, 3× Vengeful Wraith`. The resolver crafts a shortfall one at a
+ * time — each pass spends from the same pool, which is what makes the count
+ * honest — so the raw list repeats a deeper prerequisite once per pass.
+ */
+function mergeCounts(entries: readonly string[]): string[] {
+  const totals = new Map<string, number>();
+  for (const entry of entries) {
+    const [, count, label] = /^(\d+)× (.+)$/.exec(entry) ?? [];
+    if (label === undefined) continue;
+    totals.set(label, (totals.get(label) ?? 0) + Number(count));
+  }
+  return [...totals].map(([label, count]) => `${count}× ${label}`);
+}
+
+interface RecipeView {
+  /** Blueprints the character has learned whose result is in scope. */
+  relevant: DbRecipe[];
+  /** Of those, the ones needing nothing but iron already on hand. */
+  craftable: DbRecipe[];
+  /** Craftable only after crafting a prerequisite the character can also make. */
+  craftableAfterChain: DbRecipe[];
+  /** The full resolution for one recipe, prerequisites included. */
+  planFor(recipe: DbRecipe): CraftPlan;
+  /** Learned blueprint record paths. */
+  known: Set<string>;
+  /** Record path → count, pooled across every container the character can reach. */
+  onHand: Map<string, number>;
+}
+
+function recipeView(input: ContextInput): RecipeView {
+  const { db, save, resolved, aggregate } = input;
+
+  // What the account can actually consume, pooled across every container —
+  // including the reagent store, which is where the materials really live.
   const onHand = new Map<string, number>();
   for (const item of resolved.items) {
     onHand.set(item.record, (onHand.get(item.record) ?? 0) + Math.max(1, item.stackCount));
@@ -1133,14 +1445,79 @@ function blueprints(out: Writer, ctx: RenderContext, selection: CandidateSelecti
   const known = new Set(resolved.recipes.map((r) => r.record));
   const byRecord = new Map(db.recipes().map((r) => [r.record, r]));
 
-  const missingFor = (recipe: DbRecipe): string[] => {
-    const gaps: string[] = [];
-    for (const reagent of [...(recipe.baseReagent ? [recipe.baseReagent] : []), ...recipe.reagents]) {
-      const have = onHand.get(reagent.record) ?? 0;
-      if (have < reagent.quantity) gaps.push(`${reagent.name ?? reagent.record} ${have}/${reagent.quantity}`);
+  // Learned blueprints indexed by what they *produce*, so a missing reagent can
+  // be looked up as something the character might simply make.
+  const makes = new Map<string, DbRecipe>();
+  for (const record of known) {
+    const recipe = byRecord.get(record);
+    if (recipe?.resultRecord && !makes.has(recipe.resultRecord)) makes.set(recipe.resultRecord, recipe);
+  }
+
+  const reagentsOf = (recipe: DbRecipe): { record: string; name?: string; quantity: number }[] => [
+    ...(recipe.baseReagent ? [recipe.baseReagent] : []),
+    ...recipe.reagents,
+  ];
+
+  /**
+   * Draw one recipe's needs out of `pool`, crafting sub-recipes where the pool
+   * falls short. `building` breaks a reagent cycle; the depth cap is the
+   * backstop for a chain the data may grow later.
+   */
+  function resolve(
+    recipe: DbRecipe,
+    pool: Map<string, number>,
+    building: Set<string>,
+    depth: number,
+    out: { missing: string[]; prerequisites: string[]; iron: number },
+  ): void {
+    out.iron += recipe.ironCost ?? 0;
+    for (const reagent of reagentsOf(recipe)) {
+      const have = pool.get(reagent.record) ?? 0;
+      const taken = Math.min(have, reagent.quantity);
+      pool.set(reagent.record, have - taken);
+      let short = reagent.quantity - taken;
+      if (short <= 0) continue;
+
+      const sub = makes.get(reagent.record);
+      const label = reagent.name ?? reagent.record;
+      if (!sub || depth >= MAX_CRAFT_DEPTH || building.has(reagent.record)) {
+        out.missing.push(`${label} ${have}/${reagent.quantity}`);
+        continue;
+      }
+
+      // Craft the shortfall one at a time: each pass spends from the same pool,
+      // so a chain that runs the shared materials dry says so instead of
+      // pretending the first success repeats.
+      building.add(reagent.record);
+      let made = 0;
+      for (; short > 0; short--) {
+        const attempt = { missing: [] as string[], prerequisites: [] as string[], iron: 0 };
+        const snapshot = new Map(pool);
+        resolve(sub, pool, building, depth + 1, attempt);
+        if (attempt.missing.length) {
+          // Roll back the partial spend; this one could not be made.
+          pool.clear();
+          for (const [k, v] of snapshot) pool.set(k, v);
+          break;
+        }
+        out.prerequisites.push(...attempt.prerequisites);
+        out.iron += attempt.iron;
+        made++;
+      }
+      building.delete(reagent.record);
+      if (made > 0) out.prerequisites.push(`${made}× ${label}`);
+      if (short > 0) out.missing.push(`${label} ${have + made}/${reagent.quantity}`);
     }
-    if ((recipe.ironCost ?? 0) > save.iron) gaps.push(`iron ${save.iron.toLocaleString('en-US')}/${(recipe.ironCost ?? 0).toLocaleString('en-US')}`);
-    return gaps;
+  }
+
+  const planFor = (recipe: DbRecipe): CraftPlan => {
+    const out = { missing: [] as string[], prerequisites: [] as string[], iron: 0 };
+    resolve(recipe, new Map(onHand), new Set(), 0, out);
+    const shortOfIron = out.missing.length === 0 && out.iron > save.iron;
+    if (shortOfIron) {
+      out.missing.push(`iron ${save.iron.toLocaleString('en-US')}/${out.iron.toLocaleString('en-US')}`);
+    }
+    return { missing: out.missing, prerequisites: mergeCounts(out.prerequisites), ironTotal: out.iron, shortOfIron };
   };
 
   const relevant = [...known]
@@ -1149,33 +1526,80 @@ function blueprints(out: Writer, ctx: RenderContext, selection: CandidateSelecti
     .filter((recipe) => {
       const result = recipe.resultRecord ? db.getItem(recipe.resultRecord) : undefined;
       if (!result) return false;
-      // Materials and consumables are means, not ends; gear and relics are ends.
+      // Materials and consumables are means, not ends.
       if (result.record.startsWith(MATERIAL_PREFIX)) return false;
-      return result.levelReq <= aggregate.level + 10 && result.levelReq >= aggregate.level - 25;
+      if (!CRAFTABLE_RESULT_CLASSES.has(result.slot)) return false;
+      // An over-level result is unusable; an under-level one is not. A
+      // component's value does not decay with the character's level the way a
+      // piece of gear's does, so only the ceiling applies here.
+      return result.levelReq <= aggregate.level + 10;
     })
     .sort((a, b) => (db.getItem(b.resultRecord ?? '')?.levelReq ?? 0) - (db.getItem(a.resultRecord ?? '')?.levelReq ?? 0));
 
-  const craftable = relevant.filter((r) => missingFor(r).length === 0);
+  const plans = new Map(relevant.map((r) => [r.record, planFor(r)]));
+  return {
+    relevant,
+    craftable: relevant.filter((r) => {
+      const plan = plans.get(r.record)!;
+      return plan.missing.length === 0 && plan.prerequisites.length === 0;
+    }),
+    craftableAfterChain: relevant.filter((r) => {
+      const plan = plans.get(r.record)!;
+      return plan.missing.length === 0 && plan.prerequisites.length > 0;
+    }),
+    planFor: (recipe) => plans.get(recipe.record) ?? planFor(recipe),
+    known,
+    onHand,
+  };
+}
 
-  out.line(`Learned blueprints: ${resolved.recipes.length}. Within the level window and not a raw material: ${relevant.length}, of which **${craftable.length} are craftable right now**.`);
+function blueprints(out: Writer, ctx: RenderContext, selection: CandidateSelection, trim: Trim): void {
+  const { db, save, resolved, aggregate } = ctx;
+  const { relevant, planFor, known } = ctx.recipes;
+
+  // Components are craftable *and* ownable, so they live with the rest of the
+  // component supply in §8. What is left here is relics — which are gear, and
+  // compete in §7's Relic slot — plus the purchase and awakening paths.
+  const relics = relevant.filter((r) => {
+    const result = r.resultRecord ? db.getItem(r.resultRecord) : undefined;
+    return result !== undefined && result.slot !== COMPONENT_CLASS;
+  });
+  const craftableNow = relics.filter((r) => planFor(r).missing.length === 0);
+
+  out.h(2, '10. Craftable relics, blueprints on sale, and upgrade paths');
+  out.line(
+    `Learned blueprints: ${resolved.recipes.length}. **Craftable components are in §8 with the rest of the component supply**, and craftable armour and weapons are omitted entirely — §7 already ranks everything this character owns for those slots. ` +
+      `What is left here is relics: ${relics.length} in the level window, **${craftableNow.length} craftable right now**. Reagent chains are resolved, so a "missing" reagent really is missing — a prerequisite the character can craft is named instead.`,
+  );
+
+  const line = (recipe: DbRecipe): string => {
+    const plan = planFor(recipe);
+    const reagents = [...(recipe.baseReagent ? [recipe.baseReagent] : []), ...recipe.reagents]
+      .map((r) => `${r.quantity}× ${r.name ?? r.record}`)
+      .join(', ');
+    const result = recipe.resultRecord ? db.getItem(recipe.resultRecord) : undefined;
+    const cost = plan.prerequisites.length
+      ? `${plan.ironTotal.toLocaleString('en-US')} iron incl. prerequisites`
+      : `${(recipe.ironCost ?? 0).toLocaleString('en-US')} iron`;
+    const verdict = plan.missing.length
+      ? `missing ${plan.missing.join(', ')}`
+      : plan.prerequisites.length
+        ? `**craftable now**, after first crafting ${plan.prerequisites.join(', ')}`
+        : '**craftable now**';
+    const stats = result ? formatStats(result.stats, { db, invested: ctx.invested }) : [];
+    return (
+      `- **${recipe.resultName ?? recipe.name}** (lvl ${result?.levelReq ?? '?'}) — ${reagents || 'no reagents'}, ${cost} — ${verdict}` +
+      (stats.length ? `\n  - ${stats.join('; ')}` : '')
+    );
+  };
 
   if (trim.compressRecipes) {
     out.line();
-    out.bullets(craftable.slice(0, 15).map((r) => `**${r.resultName ?? r.name}** — craftable now (${(r.ironCost ?? 0).toLocaleString('en-US')} iron)`));
-    if (craftable.length > 15) out.line(`- … and ${craftable.length - 15} more craftable now`);
+    out.bullets(craftableNow.slice(0, 15).map((r) => `**${r.resultName ?? r.name}** — craftable now (${planFor(r).ironTotal.toLocaleString('en-US')} iron)`));
+    if (craftableNow.length > 15) out.line(`- … and ${craftableNow.length - 15} more craftable now`);
   } else {
     out.line();
-    for (const recipe of relevant) {
-      const gaps = missingFor(recipe);
-      const reagents = [...(recipe.baseReagent ? [recipe.baseReagent] : []), ...recipe.reagents]
-        .map((r) => `${r.quantity}× ${r.name ?? r.record}`)
-        .join(', ');
-      const result = recipe.resultRecord ? db.getItem(recipe.resultRecord) : undefined;
-      out.line(
-        `- **${recipe.resultName ?? recipe.name}** (lvl ${result?.levelReq ?? '?'}) — ${reagents || 'no reagents'}, ${(recipe.ironCost ?? 0).toLocaleString('en-US')} iron — ` +
-          (gaps.length ? `missing ${gaps.join(', ')}` : '**craftable now**'),
-      );
-    }
+    for (const recipe of relics) out.line(line(recipe));
   }
 
   // Blueprints on sale that the character has not learned yet.
@@ -1214,11 +1638,15 @@ function blueprints(out: Writer, ctx: RenderContext, selection: CandidateSelecti
       const reagents = [...(recipe.baseReagent ? [recipe.baseReagent] : []), ...recipe.reagents]
         .map((r) => `${r.quantity}× ${r.name ?? r.record}`)
         .join(' + ');
-      const gaps = missingFor(recipe);
+      const plan = planFor(recipe);
       notes.add(
         `**${item.display}** upgrades to **${recipe.resultName ?? recipe.name}** — ${reagents}, ${(recipe.ironCost ?? 0).toLocaleString('en-US')} iron` +
           (known.has(recipe.record) ? '' : ' *(blueprint not learned)*') +
-          (gaps.length ? ` — missing ${gaps.join(', ')}` : ' — **all reagents on hand**'),
+          (plan.missing.length
+            ? ` — missing ${plan.missing.join(', ')}`
+            : plan.prerequisites.length
+              ? ` — **all reagents reachable**, after first crafting ${plan.prerequisites.join(', ')}`
+              : ' — **all reagents on hand**'),
       );
     }
   }
@@ -1273,6 +1701,8 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line('Give the projection as concrete numbers where §3–§5 gave numbers, and say plainly when a figure cannot be derived from this document instead of estimating it silently.');
   out.line();
+  out.line('Then a **Next levels** section, ordered cheapest-first, using the thresholds §12 has already grouped and costed. One line per threshold: what to spend, what it unlocks, and whether it is worth committing to. Attribute points and farming targets are in scope; skill and devotion trees are not.');
+  out.line();
   out.line('Hard constraints:');
   out.bullets([
     'never propose a socketable for a slot its use-on restriction rejects',
@@ -1282,4 +1712,183 @@ function task(out: Writer, ctx: RenderContext): void {
     'never count `+% speed` past the caps in §2, and never count a resistance past its cap as a gain',
     'state when a recommendation depends on something §3 lists as not counted',
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// 12 — the unlock ladder
+// ---------------------------------------------------------------------------
+
+/** One threshold, and everything that clears when it is met. */
+interface Rung {
+  /** Sort key: levels for a level rung, points for an attribute rung. */
+  cost: number;
+  heading: string;
+  attr?: AttrKey;
+  /** Attribute rungs only — how many unspent points this rung costs. */
+  points?: number;
+  items: { id: string; candidate: Candidate; also?: string }[];
+}
+
+/** How many stat lines a ladder entry shows before it is cut off. */
+const LADDER_STAT_LINES = 4;
+
+const plural = (n: number, one: string, many = `${one}s`): string => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * What the next levels and attribute points actually buy.
+ *
+ * The HOLD data already knows every threshold, but as one free-text row per
+ * item: twelve unordered lines in which the single most actionable fact — that
+ * nine of them clear at the same level, two away — is something the reader has
+ * to notice for themselves. Grouping makes it structural, and the arithmetic
+ * (`ceil(deficit / attribute-per-point)`, both figures read from the game's own
+ * level table) turns "short 24 spirit" into "spend your next 3 points on
+ * Spirit", which is a move rather than an observation.
+ *
+ * The builder emits the ladder; the advisor decides what is worth buying. That
+ * is the same seam `checkRequirements` draws by reporting rather than filtering.
+ */
+function unlockLadder(out: Writer, ctx: RenderContext, selection: CandidateSelection): void {
+  const { aggregate, db } = ctx;
+  const lp = db.levelProgression();
+  const blocked = [...selection.byGroup.values()].flat().filter((c) => !c.check.meets && c.check.gaps.length);
+
+  out.h(2, '12. Unlock ladder — what the next levels and attribute points buy');
+
+  if (blocked.length === 0) {
+    out.line('Every candidate in §7 already meets its requirements. Nothing is waiting on a level or an attribute point.');
+    return;
+  }
+
+  // Cost is reported in the currency it is actually paid in. Levels and points
+  // are *not* interconverted in the prose even though the game's level table
+  // states the rate (1 attribute point per level) — a level also costs XP, and
+  // the two are different things to spend.
+  const pointsFor = (attr: AttrKey, deficit: number): number =>
+    Math.ceil(deficit / (lp.attributePerPoint[attr] || 1));
+
+  const rungs = new Map<string, Rung>();
+  const rung = (key: string, make: () => Rung): Rung => {
+    const existing = rungs.get(key) ?? make();
+    rungs.set(key, existing);
+    return existing;
+  };
+
+  for (const candidate of blocked) {
+    const id = ctx.ids.get(candidate.item) ?? candidate.item.id;
+    const others = (self: RequirementGap): string | undefined => {
+      const rest = candidate.check.gaps.filter((g) => g !== self);
+      if (!rest.length) return undefined;
+      return `also needs ${rest
+        .map((g) => (g.attr === 'level' ? `level ${g.need}` : `${plural(pointsFor(g.attr, g.deficit), 'point')} into ${ATTR_LABEL[g.attr]}`))
+        .join(' and ')}`;
+    };
+
+    for (const gap of candidate.check.gaps) {
+      const also = others(gap);
+      const item = { id, candidate, ...(also ? { also } : {}) };
+      if (gap.attr === 'level') {
+        const away = gap.need - aggregate.level;
+        const key = `level:${gap.need}`;
+        const target = rung(key, () => ({
+          cost: away,
+          heading: `At level ${gap.need} (${away === 1 ? '1 level' : `${away} levels`} away)`,
+          items: [],
+        }));
+        target.items.push(item);
+      } else {
+        const points = pointsFor(gap.attr, gap.deficit);
+        const key = `${gap.attr}:${points}`;
+        const label = ATTR_LABEL[gap.attr];
+        const target = rung(key, () => ({
+          cost: points,
+          attr: gap.attr as AttrKey,
+          points,
+          heading:
+            `${plural(points, 'attribute point')} into ${label} ` +
+            `(${points * lp.attributePerPoint[gap.attr as AttrKey]} ${label}: ${Math.round(gap.have)} → ${Math.round(gap.have) + points * lp.attributePerPoint[gap.attr as AttrKey]})`,
+          items: [],
+        }));
+        target.items.push(item);
+      }
+    }
+  }
+
+  const ordered = [...rungs.values()].sort((a, b) => a.cost - b.cost || b.items.length - a.items.length);
+  const biggest = [...ordered].sort((a, b) => b.items.length - a.items.length)[0]!;
+
+  out.line(
+    `${plural(blocked.length, 'candidate')} in §7 fail a requirement. They are grouped below by the **threshold they share**, cheapest first, so a single purchase can be weighed against everything it unlocks at once — ` +
+      `the largest group is "${biggest.heading}", which alone unlocks ${biggest.items.length}. ` +
+      `Unspent now: **${plural(aggregate.attributes.unspentPoints, 'attribute point')}**. One point is ${lp.attributePerPoint.physique} Physique / ${lp.attributePerPoint.cunning} Cunning / ${lp.attributePerPoint.spirit} Spirit, and each level grants ${lp.attributePointsPerLevel} (both from the game's level table). ` +
+      `An item with two gaps appears under both and says so — it unlocks only when **all** of them are met.`,
+  );
+
+  for (const entry of ordered) {
+    out.line();
+    out.line(`### ${entry.heading} — ${plural(entry.items.length, 'item')} unlock${entry.items.length === 1 ? 's' : ''}`);
+    for (const { id, candidate, also } of entry.items) {
+      const bits = [
+        candidate.covers.length ? `covers ${candidate.covers.join(', ')}` : '',
+        ladderStats(candidate, ctx),
+        also,
+      ].filter(Boolean);
+      out.line(`- **${candidate.item.display}** \`#${id}\` (${candidate.group}) — ${bits.join('; ')}`);
+    }
+  }
+
+  attributeBudget(out, ordered, aggregate.attributes.unspentPoints);
+}
+
+const ATTR_LABEL: Readonly<Record<AttrKey, string>> = {
+  physique: 'Physique',
+  cunning: 'Cunning',
+  spirit: 'Spirit',
+};
+
+function ladderStats(candidate: Candidate, ctx: RenderContext): string {
+  const merged: Record<string, number | string> = {};
+  for (const stats of itemStatBlocks(candidate.item)) Object.assign(merged, stats);
+  const lines = formatStats(merged, { db: ctx.db, invested: ctx.invested });
+  if (lines.length === 0) return '';
+  const shown = lines.slice(0, LADDER_STAT_LINES).join('; ');
+  return lines.length > LADDER_STAT_LINES ? `${shown}; … (full entry in §7)` : shown;
+}
+
+/**
+ * Attribute points are one decision, not one per item.
+ *
+ * Points are near-permanent (§2: the Tonic of Reshaping is scarce), so the
+ * advisor has to pick a line rather than satisfy every held item. Totalling the
+ * competing demands per attribute is what makes that choice visible: "3 into
+ * Spirit unlocks 1" against "3 into Physique unlocks 2" is a comparison; twelve
+ * separate per-item deficits are not.
+ */
+function attributeBudget(out: Writer, rungs: readonly Rung[], unspent: number): void {
+  const byAttr = new Map<AttrKey, Map<number, number>>();
+  for (const rung of rungs) {
+    if (!rung.attr || rung.points === undefined) continue;
+    const tiers = byAttr.get(rung.attr) ?? new Map<number, number>();
+    tiers.set(rung.points, (tiers.get(rung.points) ?? 0) + rung.items.length);
+    byAttr.set(rung.attr, tiers);
+  }
+  if (byAttr.size === 0) return;
+
+  out.line();
+  out.line(
+    '**Attribute allocation is one decision.** Points are near-permanent (§2 — the Tonic of Reshaping is scarce), ' +
+      `so this is a line to commit to, not a per-item fix. ${plural(unspent, 'point')} unspent right now. Cumulative, per attribute:`,
+  );
+  const rows: string[] = [];
+  for (const [attr, tiers] of byAttr) {
+    let running = 0;
+    const steps = [...tiers.keys()]
+      .sort((a, b) => a - b)
+      .map((points) => {
+        running += tiers.get(points) ?? 0;
+        return `${plural(points, 'point')} unlocks ${running}`;
+      });
+    rows.push(`**${ATTR_LABEL[attr]}**: ${steps.join('; ')}`);
+  }
+  out.bullets(rows);
 }

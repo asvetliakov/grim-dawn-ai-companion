@@ -13,10 +13,16 @@ import { parseAdvice, type AdvisorProvider, type AdvisorRequest, type AdvisorRes
 export const MOCK_ID = 'mock';
 
 export interface MockOptions {
-  /** Fixed answer. Ignored when `script` is given. */
+  /** Fixed answer. Ignored when `script` or `answers` is given. */
   text?: string;
   /** Answer computed from the request — for asserting on what was sent. */
   script?: (req: AdvisorRequest) => string;
+  /**
+   * One answer per call, in order — the last repeats once exhausted. This is
+   * what makes the repair loop testable: a bad plan first, a corrected one
+   * second, no live call and no non-determinism.
+   */
+  answers?: readonly string[];
   available?: boolean;
   /** Throw instead of answering, to exercise the CLI's error path. */
   fail?: Error;
@@ -77,9 +83,11 @@ export function createMockProvider(opts: MockOptions = {}): AdvisorProvider {
     id: MOCK_ID,
     available: async () => opts.available !== false,
     async advise(req: AdvisorRequest): Promise<AdvisorResult> {
+      const turn = calls.length;
       calls.push(req);
       if (opts.fail) throw opts.fail;
-      const text = opts.script ? opts.script(req) : (opts.text ?? CANNED_ANSWER);
+      const scripted = opts.answers?.[Math.min(turn, opts.answers.length - 1)];
+      const text = opts.script ? opts.script(req) : (scripted ?? opts.text ?? CANNED_ANSWER);
       const structured = parseAdvice(text);
       return {
         text,

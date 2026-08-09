@@ -16,6 +16,7 @@ registerProvider(OPENAI_ID, () => createOpenAiProvider());
 
 export * from './provider.js';
 export * from './verify.js';
+export * from './repair.js';
 export { ADVISOR_SYSTEM_PROMPT } from './prompt.js';
 export {
   CLAUDE_CLI_ID,
@@ -26,5 +27,5 @@ export {
   type ClaudeCliOptions,
   type SpawnFn,
 } from './claude-cli.js';
-export { MOCK_ID, CANNED_ANSWER, createMockProvider } from './mock.js';
+export { MOCK_ID, CANNED_ANSWER, createMockProvider, type MockOptions } from './mock.js';
 export { OPENAI_ID, OPENAI_NOT_CONFIGURED, createOpenAiProvider } from './openai.js';

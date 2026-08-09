@@ -13,7 +13,7 @@
  */
 
 import type { DbAffix, DbItem, GameDb } from './db/types.js';
-import type { FormulasFile } from './save/gst.js';
+import type { FormulasFile, MaterialStore } from './save/gst.js';
 import type { TransferStash } from './save/gst.js';
 import {
   EQUIP_SLOT_NAMES,
@@ -22,7 +22,13 @@ import {
   type PositionedItem,
 } from './save/types.js';
 
-export type ItemSource = 'equipped' | 'inventory' | 'stash' | 'transfer';
+/**
+ * Where an item was found. `materials` is the account-wide reagent store
+ * (`reagents.gst`) — crafting materials *and every loose component*, which is
+ * where components actually live: the game moves one there the moment it is
+ * picked up, so a bag copy is the exception rather than the rule.
+ */
+export type ItemSource = 'equipped' | 'inventory' | 'stash' | 'transfer' | 'materials';
 
 /**
  * What this rolled item demands of a character, before any `-% Requirement`
@@ -293,23 +299,61 @@ function position(item: PositionedItem): string {
 }
 
 /**
- * Resolve everything a character can reach: what they are wearing, both weapon
- * sets, the carried sacks, the personal stash, the shared transfer stash, and the
- * account's learned blueprints.
+ * A reagent-store entry as an item instance.
  *
- * `stash` and `formulas` are optional because they are account-wide files that
- * may legitimately be absent (a fresh install has no transfer stash). Pass a
+ * The store records only a record path and a count — no seed, no affixes, no
+ * sockets — because nothing it holds can carry any. Synthesizing the instance
+ * (rather than resolving these by a separate path) is what lets a loose
+ * component flow into the census, the socketable index and the recipe
+ * materials-on-hand map without any of them special-casing it.
+ */
+function materialInstance(record: string, quantity: number): ItemInstance {
+  return {
+    baseName: record,
+    prefixName: '',
+    suffixName: '',
+    modifierName: '',
+    transmuteName: '',
+    seed: 0,
+    relicName: '',
+    relicBonus: '',
+    relicSeed: 0,
+    augmentName: '',
+    unknown: 0,
+    augmentSeed: 0,
+    relicCompletionLevel: 0,
+    stackCount: quantity,
+    unknownExtra: [0, 0, 0, 0],
+  };
+}
+
+/** The account-wide save files, all optional — a fresh install has none of them. */
+export interface AccountFiles {
+  /** `transfer.gst` — the shared transfer stash. */
+  stash?: TransferStash | undefined;
+  /** `formulas.gst` — learned blueprints. */
+  formulas?: FormulasFile | undefined;
+  /** `reagents.gst` — crafting materials and loose components. */
+  materials?: MaterialStore | undefined;
+}
+
+/**
+ * Resolve everything a character can reach: what they are wearing, both weapon
+ * sets, the carried sacks, the personal stash, the shared transfer stash, the
+ * account's reagent store, and its learned blueprints.
+ *
+ * Every account file is optional because each may legitimately be absent. Pass a
  * shared `track` to pool coverage across several characters — it counts distinct
  * record paths, so pooling is the only way to get an honest total when two
  * characters carry the same item.
  */
 export function resolveCharacter(
   save: CharacterSave,
-  stash: TransferStash | undefined,
-  formulas: FormulasFile | undefined,
+  account: AccountFiles,
   db: GameDb,
   track: CoverageTracker = new CoverageTracker(),
 ): ResolvedCharacter {
+  const { stash, formulas, materials } = account;
   const items: ResolvedItem[] = [];
 
   save.equipment.forEach((item, i) => {
@@ -342,6 +386,18 @@ export function resolveCharacter(
       items.push(resolveItem(item, db, 'transfer', `tab ${i + 1} ${position(item)}`, track));
     }
   });
+
+  for (const entry of materials?.entries ?? []) {
+    // The store keeps a row for anything the account has *ever* held, so a
+    // quantity of zero means "none left", not "one". Passing it through would
+    // read as a copy on hand everywhere downstream — the census, the recipe
+    // materials pool — because a save's own `stackCount` is 0 for
+    // non-stackables and every consumer floors it at 1.
+    if (entry.quantity < 1) continue;
+    items.push(
+      resolveItem(materialInstance(entry.record, entry.quantity), db, 'materials', 'materials store', track),
+    );
+  }
 
   const recipes: ResolvedRecipe[] = (formulas?.entries ?? []).map((entry) => {
     const item = db.getItem(entry.record);

@@ -18,24 +18,28 @@ import {
   type ContextInput,
 } from '../core/context/builder.js';
 import {
-  checkPlan,
+  adviseWithRepair,
   createProvider,
+  verdictRows,
   normalizeName,
   providerIds,
+  totalUsage,
   DEFAULT_EFFORT,
   DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
   type AdvisorPlan,
+  type PlanWarning,
 } from '../core/ai/index.js';
 import { loadGameDb } from '../core/db/index.js';
 import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
 import { createIconService } from '../core/icons/index.js';
 import { aggregateCharacter, type CharacterAggregate } from '../core/mechanics/aggregate.js';
 import { RESIST_COLUMNS, type ResistVector } from '../core/mechanics/stats.js';
-import { characterSavePath, formulasPath, transferStashPath } from '../core/paths.js';
+import { characterSavePath, formulasPath, reagentsPath, transferStashPath } from '../core/paths.js';
 import {
   CoverageTracker,
   resolveCharacter,
+  type AccountFiles,
   type ResolvedCharacter,
   type ResolvedItem,
 } from '../core/resolve.js';
@@ -43,8 +47,10 @@ import { listCharacters, resolveSettings } from '../core/settings.js';
 import { parseGdc } from '../core/save/gdc.js';
 import {
   parseFormulasFile,
+  parseReagents,
   parseTransferStash,
   type FormulasFile,
+  type MaterialStore,
   type TransferStash,
 } from '../core/save/gst.js';
 import {
@@ -271,6 +277,37 @@ program
     }
   });
 
+program
+  .command('reagents')
+  .description('parse the shared material store (reagents.gst): crafting materials and every loose component')
+  .argument('[path]', 'path to reagents.gst', reagentsPath())
+  .option('--json', 'emit the parsed store as JSON instead of a summary')
+  .action((path: string, opts: { json?: boolean }) => {
+    const store = parseReagents(readSave(path), { path });
+    if (opts.json) {
+      console.log(JSON.stringify(store, null, 2));
+      return;
+    }
+
+    const total = store.entries.reduce((n, e) => n + e.quantity, 0);
+    console.log(`Material store — ${store.entries.length} kind(s), ${total.toLocaleString('en-US')} item(s)`);
+    console.log(`  format         version ${store.version}, block ${store.blockId}`);
+    console.log(`  mod            ${store.mod || '(vanilla)'}`);
+    console.log('');
+    for (const e of store.entries) {
+      console.log(`  ${String(e.quantity).padStart(4)}× ${shortRecord(e.record)}`);
+    }
+
+    printBlocks(store.blocks);
+    const verified = store.blocks.filter((b) => b.checksumOk).length;
+    console.log(`\n${store.blocks.length} block(s), ${verified} checksum-verified`);
+    if (store.warnings.length) {
+      console.log('\nWarnings');
+      for (const w of store.warnings) console.log(`  ! ${w}`);
+    }
+    if (store.blocks.some((b) => !b.checksumOk)) process.exitCode = 1;
+  });
+
 // ---------------------------------------------------------------------------
 // Stage 3 — the game database and the resolver
 // ---------------------------------------------------------------------------
@@ -376,6 +413,21 @@ function readOptionalSave(path: string): Buffer | undefined {
 }
 
 /**
+ * The three account-wide files, each skipped if absent. One helper so `resolve`,
+ * `context` and `advise` cannot end up reading a different set of containers —
+ * which is exactly how the reagent store went unread for five stages.
+ */
+function accountFiles(dir: string): AccountFiles {
+  const stashBuf = readOptionalSave(transferStashPath(dir));
+  const formulasBuf = readOptionalSave(formulasPath(dir));
+  const reagentsBuf = readOptionalSave(reagentsPath(dir));
+  const stash: TransferStash | undefined = stashBuf ? parseTransferStash(stashBuf) : undefined;
+  const formulas: FormulasFile | undefined = formulasBuf ? parseFormulasFile(formulasBuf) : undefined;
+  const materials: MaterialStore | undefined = reagentsBuf ? parseReagents(reagentsBuf) : undefined;
+  return { stash, formulas, materials };
+}
+
+/**
  * Resolve every character the user asked for (all of them by default), against
  * one shared coverage tracker.
  *
@@ -394,22 +446,13 @@ function resolveAllCharacters(
     process.exit(1);
   }
 
-  const stashBuf = readOptionalSave(transferStashPath(settings.saveDir));
-  const formulasBuf = readOptionalSave(formulasPath(settings.saveDir));
-  const stash: TransferStash | undefined = stashBuf ? parseTransferStash(stashBuf) : undefined;
-  const formulas: FormulasFile | undefined = formulasBuf ? parseFormulasFile(formulasBuf) : undefined;
+  const account = accountFiles(settings.saveDir);
 
   const track = new CoverageTracker();
   const characters = names.map((name) => {
     const path = characterSavePath(name, settings.saveDir);
     const first = name === names[0];
-    return resolveCharacter(
-      parseGdc(readSave(path), { path }),
-      first ? stash : undefined,
-      first ? formulas : undefined,
-      db,
-      track,
-    );
+    return resolveCharacter(parseGdc(readSave(path), { path }), first ? account : {}, db, track);
   });
   return { characters, track };
 }
@@ -925,14 +968,7 @@ function contextFor(db: GameDb, opts: DocRequest): { name: string; input: Contex
     ? requireDifficulty(opts.difficulty)
     : (settings.difficultyOverride ?? save.difficulty);
 
-  const stashBuf = readOptionalSave(transferStashPath(settings.saveDir));
-  const formulasBuf = readOptionalSave(formulasPath(settings.saveDir));
-  const resolved = resolveCharacter(
-    save,
-    stashBuf ? parseTransferStash(stashBuf) : undefined,
-    formulasBuf ? parseFormulasFile(formulasBuf) : undefined,
-    db,
-  );
+  const resolved = resolveCharacter(save, accountFiles(settings.saveDir), db);
 
   const input: ContextInput = { save, aggregate: aggregateCharacter(save, db, difficulty), resolved, db };
   const doc = buildContextDoc(input, {
@@ -1008,6 +1044,46 @@ function printPlan(plan: AdvisorPlan): void {
   );
 }
 
+/**
+ * The per-slot verdict table, rendered from the structured plan rather than
+ * trusted to the model's prose.
+ *
+ * Formatting then does not depend on the answer at all, and it dogfoods the
+ * Stage 7 contract: the UI will paint the same grid from the same fields, with
+ * `isReplacement` — not a local guess — deciding which rows are swaps.
+ */
+function printVerdictTable(plan: AdvisorPlan, itemsById: ReadonlyMap<string, ResolvedItem>): void {
+  if (plan.verdicts.length === 0) return;
+  const rows = verdictRows(plan, (id) => itemsById.get(id)?.display).map((r) => [
+    r.slot,
+    r.current,
+    r.next,
+    r.action,
+    r.why,
+  ]);
+
+  const headers = ['Slot', 'Current', 'New', 'Action', 'Why'];
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
+  const line = (cells: readonly string[]): string =>
+    `| ${cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join(' | ')} |`;
+
+  console.log('\nPer-slot verdicts (rendered from the structured plan):');
+  console.log(line(headers));
+  console.log(`|${widths.map((w) => '-'.repeat(w + 2)).join('|')}|`);
+  for (const row of rows) console.log(line(row));
+
+  if (plan.nextLevels?.length) {
+    console.log('\nNext levels:');
+    for (const step of plan.nextLevels) {
+      const unlocks = step.unlocks.map((id) => itemsById.get(id)?.display ?? `#${id}`);
+      console.log(
+        `  ${step.threshold} → ${unlocks.length ? `${unlocks.length} item(s): ${unlocks.join(', ')}` : 'nothing listed'}` +
+          (step.recommendation ? `\n    ${step.recommendation}` : ''),
+      );
+    }
+  }
+}
+
 program
   .command('advise')
   .description('compile the context document and ask an AI for equip/replace/hold recommendations')
@@ -1022,6 +1098,7 @@ program
   .option('-o, --out <file>', 'also write the answer here')
   .option('--save-context <file>', 'write the exact document that was sent')
   .option('--dry-run', 'build and report the document without calling the provider')
+  .option('--no-repair', 'do not spend a second call correcting a plan that fails the checks')
   .option('--refresh', 'rebuild the database first')
   .action(
     async (opts: {
@@ -1036,6 +1113,7 @@ program
       out?: string;
       saveContext?: string;
       dryRun?: boolean;
+      repair?: boolean;
       refresh?: boolean;
     }) => {
       await withDb({ refresh: opts.refresh, quiet: true }, async (db) => {
@@ -1087,19 +1165,33 @@ program
           return;
         }
 
+        const socketables = new Map(
+          documentSocketables(input).map((item) => [normalizeName(item.name), item]),
+        );
+        const check = { itemsById: doc.itemsById, socketables };
+
         console.error(`asking ${providerId} (${model}, effort ${effort})…`);
         const started = Date.now();
-        let result;
+        let outcome;
         try {
-          result = await provider.advise({
-            contextDoc: doc.markdown,
-            ...(opts.question ? { question: opts.question } : {}),
-          });
+          outcome = await adviseWithRepair(
+            provider,
+            { contextDoc: doc.markdown, ...(opts.question ? { question: opts.question } : {}) },
+            check,
+            {
+              repair: opts.repair !== false,
+              onRepair: (warnings: readonly PlanWarning[]) =>
+                console.error(
+                  `plan had ${warnings.length} warning(s); asking for one revision (this doubles the cost)…`,
+                ),
+            },
+          );
         } catch (err) {
           console.error(`error: ${(err as Error).message}`);
           process.exit(1);
         }
 
+        const result = outcome.result;
         console.log(result.text);
         if (opts.out) {
           writeFileSync(opts.out, result.text);
@@ -1109,27 +1201,37 @@ program
         console.log('');
         if (result.structured) {
           printPlan(result.structured);
-          const socketables = new Map(
-            documentSocketables(input).map((item) => [normalizeName(item.name), item]),
-          );
-          const warnings = checkPlan(result.structured, { itemsById: doc.itemsById, socketables });
-          if (warnings.length) {
-            console.log(`\n${warnings.length} plan check warning(s):`);
-            for (const w of warnings) console.log(`  ! [${w.kind}] ${w.message}`);
+          printVerdictTable(result.structured, doc.itemsById);
+          if (outcome.revised) {
+            console.log(
+              `\nplan had ${outcome.firstWarnings.length} warning(s); asked for one revision → ` +
+                (outcome.revisionRejected
+                  ? `still ${outcome.warnings.length}, so the original answer is shown`
+                  : outcome.warnings.length === 0
+                    ? 'clean'
+                    : `${outcome.warnings.length} left`),
+            );
+          }
+          if (outcome.warnings.length) {
+            console.log(`\n${outcome.warnings.length} plan check warning(s):`);
+            for (const w of outcome.warnings) console.log(`  ! [${w.kind}] ${w.message}`);
             process.exitCode = 1;
           } else {
-            console.log('plan checks: every item id exists, no illegal socket, no destroyed host reused');
+            console.log('plan checks: every item id exists, no illegal socket, no destroyed host reused, every stat qualified');
           }
         } else {
           console.log('plan: not parseable — text only');
         }
 
-        const usage = result.usage;
+        // Usage covers *every* call the repair loop made, not just the one whose
+        // answer is shown — the second call is spent whether or not it wins.
+        const usage = totalUsage(outcome.results);
         const bits = [
           `${result.provider} / ${result.model ?? '?'}${result.effort ? ` (effort ${result.effort})` : ''}`,
-          usage?.inputTokens !== undefined ? `${usage.inputTokens.toLocaleString('en-US')} in` : '',
-          usage?.outputTokens !== undefined ? `${usage.outputTokens.toLocaleString('en-US')} out` : '',
-          usage?.costUsd !== undefined ? `$${usage.costUsd.toFixed(4)}` : '',
+          outcome.results.length > 1 ? `${outcome.results.length} calls` : '',
+          `${usage.inputTokens.toLocaleString('en-US')} in`,
+          `${usage.outputTokens.toLocaleString('en-US')} out`,
+          usage.costUsd ? `$${usage.costUsd.toFixed(4)}` : '',
           `${((Date.now() - started) / 1000).toFixed(1)}s`,
         ].filter(Boolean);
         console.log(`\n${bits.join(' · ')}`);

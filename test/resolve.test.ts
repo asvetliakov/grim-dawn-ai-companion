@@ -4,17 +4,19 @@ import { describe, expect, it } from 'vitest';
 import type { DbItem, GameDb } from '../src/core/db/types.js';
 import { CoverageTracker, resolveCharacter, resolveItem } from '../src/core/resolve.js';
 import { parseGdc } from '../src/core/save/gdc.js';
-import { parseFormulasFile, parseTransferStash } from '../src/core/save/gst.js';
+import { parseFormulasFile, parseReagents, parseTransferStash } from '../src/core/save/gst.js';
 import type { ItemInstance } from '../src/core/save/types.js';
 import {
   CHARACTERS,
   FORMULAS_PATH,
   MISSING_GAME_MESSAGE,
   MISSING_SAVES_MESSAGE,
+  REAGENTS_PATH,
   TRANSFER_STASH_PATH,
   gameDb,
   haveFormulas,
   haveGameInstall,
+  haveReagents,
   haveSaves,
   haveTransferStash,
   snapshotCharacterSave,
@@ -42,9 +44,16 @@ function stubDb(items: Record<string, DbItem>, affixes: Record<string, string>):
     getSkill: () => undefined,
     getSet: () => undefined,
     skillName: () => undefined,
+    skillClass: () => undefined,
     difficultyPenalty: () => ({}),
     armorAbsorptionBase: () => 70,
     speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
+    levelProgression: () => ({
+      attributePointsPerLevel: 1,
+      attributePerPoint: { physique: 8, cunning: 8, spirit: 8 },
+      maxLevel: 100,
+      maxDevotionPoints: 55,
+    }),
     factions: () => [],
     vendorItems: () => [],
     recipes: () => [],
@@ -179,6 +188,9 @@ describe.skipIf(!canRunLive)(`live saves (${canRunLive ? 'live' : skipReason})`,
     const formulas = haveFormulas()
       ? parseFormulasFile(readFileSync(snapshotSharedSave(FORMULAS_PATH)))
       : undefined;
+    const materials = haveReagents()
+      ? parseReagents(readFileSync(snapshotSharedSave(REAGENTS_PATH)))
+      : undefined;
 
     const resolved = CHARACTERS.map((name, i) => {
       const path = snapshotCharacterSave(name);
@@ -186,8 +198,7 @@ describe.skipIf(!canRunLive)(`live saves (${canRunLive ? 'live' : skipReason})`,
       // attribute them once or the coverage denominator counts them twice.
       return resolveCharacter(
         parseGdc(readFileSync(path), { path }),
-        i === 0 ? stash : undefined,
-        i === 0 ? formulas : undefined,
+        i === 0 ? { stash, formulas, materials } : {},
         db,
         track,
       );
@@ -217,7 +228,7 @@ describe.skipIf(!canRunLive)(`live saves (${canRunLive ? 'live' : skipReason})`,
     const track = new CoverageTracker();
     for (const name of CHARACTERS) {
       const path = snapshotCharacterSave(name);
-      resolveCharacter(parseGdc(readFileSync(path), { path }), undefined, undefined, db, track);
+      resolveCharacter(parseGdc(readFileSync(path), { path }), {}, db, track);
     }
     const coverage = track.report();
     expect(coverage.affixTotal).toBeGreaterThan(20);
@@ -236,8 +247,7 @@ describe.skipIf(!canRunLive)(`live saves (${canRunLive ? 'live' : skipReason})`,
     const path = snapshotCharacterSave(CHARACTERS[0]);
     const character = resolveCharacter(
       parseGdc(readFileSync(path), { path }),
-      undefined,
-      parseFormulasFile(readFileSync(snapshotSharedSave(FORMULAS_PATH))),
+      { formulas: parseFormulasFile(readFileSync(snapshotSharedSave(FORMULAS_PATH))) },
       db,
     );
     expect(character.recipes.length).toBeGreaterThan(0);

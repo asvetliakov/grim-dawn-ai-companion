@@ -7,19 +7,22 @@ import { describeSlots, formatStats } from '../src/core/context/statfmt.js';
 import type { DbItem, GameDb } from '../src/core/db/types.js';
 import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../src/core/mechanics/stats.js';
+import { ambiguousStats } from '../src/core/ai/verify.js';
 import { itemId, resolveCharacter, type ResolvedItem } from '../src/core/resolve.js';
 import { factionSlot, factionTier } from '../src/core/save/factions.js';
 import { parseGdc } from '../src/core/save/gdc.js';
-import { parseFormulasFile, parseTransferStash } from '../src/core/save/gst.js';
+import { parseFormulasFile, parseReagents, parseTransferStash } from '../src/core/save/gst.js';
 import { parseDifficulty, type ItemInstance } from '../src/core/save/types.js';
 import {
   FORMULAS_PATH,
   MISSING_GAME_MESSAGE,
   MISSING_SAVES_MESSAGE,
+  REAGENTS_PATH,
   TRANSFER_STASH_PATH,
   gameDb,
   haveFormulas,
   haveGameInstall,
+  haveReagents,
   haveSaves,
   haveTransferStash,
   snapshotCharacterSave,
@@ -40,9 +43,16 @@ function stubDb(skills: Record<string, string> = {}, items: Record<string, DbIte
     getSkill: () => undefined,
     getSet: () => undefined,
     skillName: (record) => skills[record],
+    skillClass: () => undefined,
     difficultyPenalty: () => ({}),
     armorAbsorptionBase: () => 70,
     speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
+    levelProgression: () => ({
+      attributePointsPerLevel: 1,
+      attributePerPoint: { physique: 8, cunning: 8, spirit: 8 },
+      maxLevel: 100,
+      maxDevotionPoints: 55,
+    }),
     factions: () => [],
     vendorItems: () => [],
     recipes: () => [],
@@ -244,6 +254,7 @@ describe('selectCandidates', () => {
     shortfalls: new Set<'fire'>(['fire']),
     topDamage: new Set<'pierce'>(['pierce']),
     unspentPoints: 0,
+    attributePerPoint: { physique: 8, cunning: 8, spirit: 8 },
     perGroup: 8,
   };
 
@@ -332,7 +343,7 @@ describe('itemId', () => {
 // The real document, against the live saves
 // ---------------------------------------------------------------------------
 
-const canRunLive = haveSaves() && haveGameInstall() && haveTransferStash() && haveFormulas();
+const canRunLive = haveSaves() && haveGameInstall() && haveTransferStash() && haveFormulas() && haveReagents();
 const skipReason = !haveSaves()
   ? MISSING_SAVES_MESSAGE
   : !haveGameInstall()
@@ -352,12 +363,20 @@ async function context(character: string, difficulty?: 'Normal' | 'Elite' | 'Ult
   const save = parseGdc(readFileSync(snapshotCharacterSave(character)));
   const stash = parseTransferStash(readFileSync(snapshotSharedSave(TRANSFER_STASH_PATH)));
   const formulas = parseFormulasFile(readFileSync(snapshotSharedSave(FORMULAS_PATH)));
+  const materials = parseReagents(readFileSync(snapshotSharedSave(REAGENTS_PATH)));
   return {
     save,
     aggregate: aggregateCharacter(save, db, difficulty ?? save.difficulty),
-    resolved: resolveCharacter(save, stash, formulas, db),
+    resolved: resolveCharacter(save, { stash, formulas, materials }, db),
     db,
   };
+}
+
+/** One numbered section of the document, heading included. */
+function section(markdown: string, n: number): string {
+  const start = markdown.indexOf(`\n## ${n}. `);
+  const next = markdown.indexOf(`\n## ${n + 1}. `);
+  return markdown.slice(start, next === -1 ? undefined : next);
 }
 
 /** Pull one row out of a markdown table by its leading cell. */
@@ -371,9 +390,11 @@ function tableRow(markdown: string, label: string): number[] | undefined {
 }
 
 describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReason})`, () => {
-  it('emits all eleven sections inside the default budget, untrimmed', async () => {
+  it('emits all twelve sections inside the default budget, untrimmed', async () => {
     const doc = buildContextDoc(await context('_Suchka'));
-    for (let n = 2; n <= 11; n++) {
+    // Twelve since Stage 6B: §12 is the unlock ladder, which sits after the
+    // task because the task now points at it.
+    for (let n = 2; n <= 12; n++) {
       expect(doc.markdown, `section ${n}`).toContain(`\n## ${n}. `);
     }
     expect(doc.markdown.startsWith('# Suchka — level ')).toBe(true);
@@ -387,7 +408,7 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
   it('still fits the plan’s 30k ceiling when asked to', async () => {
     const doc = buildContextDoc(await context('_Suchka'), { maxTokens: PLAN_TOKEN_BUDGET });
     expect(doc.tokenEstimate).toBeLessThanOrEqual(PLAN_TOKEN_BUDGET);
-    for (let n = 2; n <= 11; n++) {
+    for (let n = 2; n <= 12; n++) {
       expect(doc.markdown, `section ${n}`).toContain(`\n## ${n}. `);
     }
   });
@@ -539,5 +560,177 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     const doc = buildContextDoc(await context('_abcdef'));
     expect(doc.markdown).toContain('\n## 11. Task');
     expect(doc.tokenEstimate).toBeLessThanOrEqual(PLAN_TOKEN_BUDGET);
+  });
+
+  it('reads the reagent store, so loose components are tagged [materials]', async () => {
+    const input = await context('_Suchka');
+    const doc = buildContextDoc(input);
+
+    // Every loose component lives in reagents.gst, not in a bag — the file this
+    // tool did not open until Stage 6B.
+    expect(input.resolved.items.some((i) => i.source === 'materials')).toBe(true);
+    expect(section(doc.markdown, 8)).toContain('[materials]');
+    // A zero-quantity row is a "have held this" marker, not stock.
+    expect(input.resolved.items.every((i) => i.source !== 'materials' || i.stackCount > 0)).toBe(true);
+  });
+
+  it('prints stats for every census entry, and never a Grants without them', async () => {
+    const doc = buildContextDoc(await context('_Suchka'));
+    const eight = section(doc.markdown, 8);
+
+    const entries = eight.split('\n').filter((l) => l.startsWith('- **'));
+    expect(entries.length).toBeGreaterThan(10);
+
+    // A bare "Grants: <skill>" anywhere in the document is the defect Part 2b
+    // fixes: the buff hop must follow and render what the skill does.
+    for (const line of doc.markdown.split('\n')) {
+      const grants = /Grants: ([^;\n]+)/.exec(line);
+      if (!grants) continue;
+      const tail = grants[1]!;
+      const named = tail.includes('pet skill') || tail.includes(' — ');
+      expect(named, `bare Grants in: ${line.slice(0, 140)}`).toBe(true);
+    }
+  });
+
+  it('says how each granted skill is obtained, not just that it exists', async () => {
+    const doc = buildContextDoc(await context('_Suchka'));
+    const kinds = new Set(
+      [...doc.markdown.matchAll(/Grants: [^(]+\(([^)]+)\)/g)].map((m) => m[1]!.split(' —')[0]!.split(' on')[0]!),
+    );
+    // A passive's numbers are simply true; a toggle's cost energy; an activated
+    // skill needs a button; a proc is a chance. The reader should not have to
+    // infer which from the presence of an "Energy Reserved" line.
+    expect(kinds.has('passive')).toBe(true);
+    expect(kinds.has('toggle')).toBe(true);
+    expect(kinds.has('activated')).toBe(true);
+    expect([...kinds].some((k) => k.startsWith('auto-cast'))).toBe(true);
+    expect([...kinds]).not.toContain('unknown activation');
+    expect(section(doc.markdown, 2)).toContain('**Granted skills.**');
+  });
+
+  it('obeys the qualified-stat rule it imposes on the answer', async () => {
+    // The prompt tells the model never to write a bare "+12 Fire", and
+    // `verify.ts` reports one as an error. The document has to hold itself to
+    // that: the first live run under the check copied "57% pierce · 32%
+    // bleeding" straight out of §4's composition line and was flagged for it.
+    const doc = buildContextDoc(await context('_Suchka'));
+    const bare = new Map<string, string>();
+    for (const line of doc.markdown.split('\n')) {
+      for (const hit of ambiguousStats(line)) if (!bare.has(hit)) bare.set(hit, line.trim().slice(0, 120));
+    }
+    expect([...bare].map(([hit, line]) => `${hit} — ${line}`)).toEqual([]);
+  });
+
+  it('states the per-copy component stacking rule', async () => {
+    expect(section(buildContextDoc(await context('_Suchka')).markdown, 2)).toContain('per copy');
+  });
+
+  it('lists components with their craft origin, and relics only in §10', async () => {
+    const input = await context('_Suchka');
+    const doc = buildContextDoc(input);
+    const eight = section(doc.markdown, 8);
+    const ten = section(doc.markdown, 10);
+
+    // Components are one list, whatever their origin.
+    expect(eight).toMatch(/\*\*craftable now\*\* from /);
+    // A reagent chain the character can close is resolved rather than reported
+    // as a shortfall.
+    expect(eight).toContain('after first crafting');
+
+    // §10 keeps relics and drops gear. Slaughter is a relic and one of this
+    // character's dual-wield enablers, so its line has to survive.
+    expect(doc.markdown).toContain('Slaughter');
+    for (const line of ten.split('\n').filter((l) => l.startsWith('- **'))) {
+      const name = /^- \*\*(.+?)\*\*/.exec(line)?.[1];
+      if (!name || line.includes('purchasable at')) continue;
+      const recipe = input.db.recipes().find((r) => (r.resultName ?? r.name) === name);
+      const result = recipe?.resultRecord ? input.db.getItem(recipe.resultRecord) : undefined;
+      if (result) expect(result.slot, `${name} should not be in §10`).not.toBe('ItemRelic');
+    }
+  });
+
+  it('names the evidence on both sides of the on-type note', async () => {
+    const doc = buildContextDoc(await context('_Suchka'));
+    const seven = section(doc.markdown, 7);
+
+    // No bare boolean survives.
+    expect(seven).not.toContain('note: matches the build focus');
+    expect(seven).not.toContain('note: **off-type** for the current build focus');
+    expect(seven).toMatch(/note: on-type via .+ Damage/);
+    expect(seven).toMatch(/note: off-type — .+ This is not a rejection/);
+  });
+
+  it('splits permanent from gear-granted dual-wield enablers', async () => {
+    const input = await context('_Suchka');
+    const doc = buildContextDoc(input);
+
+    expect(input.aggregate.wielding.permanentEnablers).toBe(2);
+    expect(doc.markdown).toContain('Enabled by **2 permanent**');
+    expect(doc.markdown).toContain('no gear swap can end dual wielding');
+    expect(doc.markdown).not.toContain('Any swap must keep at least one of these');
+  });
+
+  it('declares iron a non-constraint for a rich character', async () => {
+    const input = await context('_Suchka');
+    const doc = buildContextDoc(input);
+    expect(input.save.iron).toBeGreaterThan(1_000_000);
+    expect(section(doc.markdown, 2)).toContain('**Iron is not a constraint for this character**');
+    expect(section(doc.markdown, 2)).toContain('do not write a budget section');
+    // Prices stay in the listings either way — they cost a token each and
+    // matter the moment a character is poor.
+    expect(section(doc.markdown, 9)).toMatch(/\d[\d,]* iron\)/);
+  });
+
+  it('inverts the enabler warning when nothing permanent backs the dual wield', async () => {
+    // No live character has a gear-only dual wield, and this is the branch where
+    // the constraint is real — so it is stubbed rather than left to rot.
+    const input = await context('_Suchka');
+    input.aggregate.wielding.enablers = input.aggregate.wielding.enablers.filter((e) => e.source !== 'skill');
+    input.aggregate.wielding.permanentEnablers = 0;
+
+    const markdown = buildContextDoc(input).markdown;
+    expect(markdown).toContain('**No permanent enabler.**');
+    expect(markdown).toContain('is illegal, not merely weak');
+    expect(markdown).not.toContain('no gear swap can end dual wielding');
+  });
+
+  it('keeps the iron budget for a character who is actually poor', async () => {
+    const input = await context('_Suchka');
+    input.save = { ...input.save, iron: 5_000 };
+
+    const two = section(buildContextDoc(input).markdown, 2);
+    expect(two).toContain('**Iron is a constraint for this character**');
+    expect(two).toContain('keep a running total');
+    expect(two).not.toContain('do not write a budget section');
+  });
+
+  it('groups the unlock ladder by shared threshold and costs it in points', async () => {
+    const input = await context('_Suchka');
+    const doc = buildContextDoc(input);
+    const twelve = section(doc.markdown, 12);
+    const progression = input.db.levelProgression();
+
+    // The level group is the fact the old flat HOLD list buried: many items,
+    // one threshold, two levels away.
+    const levelHeading = /### At level (\d+) \((\d+) levels away\) — (\d+) items? unlocks?/.exec(twelve);
+    expect(levelHeading, twelve.slice(0, 400)).not.toBeNull();
+    expect(Number(levelHeading![1]) - input.aggregate.level).toBe(Number(levelHeading![2]));
+    expect(Number(levelHeading![3])).toBeGreaterThan(5);
+
+    // Attribute costs are stated in points *and* in raw attribute value, with
+    // the rate read from the game's level table rather than hardcoded.
+    const attr = /### (\d+) attribute points? into (Physique|Cunning|Spirit) \((\d+) \2: (\d+) → (\d+)\)/.exec(twelve);
+    expect(attr, twelve.slice(0, 800)).not.toBeNull();
+    const [, points, name, raw, from, to] = attr!;
+    const perPoint = progression.attributePerPoint[name!.toLowerCase() as 'physique' | 'cunning' | 'spirit'];
+    expect(Number(raw)).toBe(Number(points) * perPoint);
+    expect(Number(to) - Number(from)).toBe(Number(raw));
+
+    // Allocation is presented as one decision, cumulative per attribute.
+    expect(twelve).toContain('**Attribute allocation is one decision.**');
+    expect(twelve).toMatch(/\*\*(Physique|Cunning|Spirit)\*\*: \d+ points? unlocks \d+/);
+
+    // An item gated on two thresholds appears under both and says so.
+    expect(twelve).toMatch(/also needs (level \d+|\d+ points? into)/);
   });
 });

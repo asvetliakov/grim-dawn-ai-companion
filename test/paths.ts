@@ -18,6 +18,7 @@ import type { GameDb } from '../src/core/db/types.js';
 import {
   characterSavePath as coreCharacterSavePath,
   formulasPath as coreFormulasPath,
+  reagentsPath as coreReagentsPath,
   saveDir,
   transferStashPath as coreTransferStashPath,
 } from '../src/core/paths.js';
@@ -33,6 +34,7 @@ export function characterSavePath(name: string): string {
 
 export const TRANSFER_STASH_PATH = coreTransferStashPath(SAVE_DIR);
 export const FORMULAS_PATH = coreFormulasPath(SAVE_DIR);
+export const REAGENTS_PATH = coreReagentsPath(SAVE_DIR);
 
 export function haveSaves(): boolean {
   return CHARACTERS.every((c) => existsSync(characterSavePath(c)));
@@ -46,12 +48,16 @@ export function haveFormulas(): boolean {
   return existsSync(FORMULAS_PATH);
 }
 
+export function haveReagents(): boolean {
+  return existsSync(REAGENTS_PATH);
+}
+
 export const MISSING_SAVES_MESSAGE =
   `live Grim Dawn saves not found under ${SAVE_DIR} — ` +
   'set GD_SAVE_DIR to a save directory containing main/<character>/player.gdc to run these tests';
 
 export const MISSING_GST_MESSAGE =
-  `live transfer.gst / formulas.gst not found under ${SAVE_DIR} — ` +
+  `live transfer.gst / formulas.gst / reagents.gst not found under ${SAVE_DIR} — ` +
   'set GD_SAVE_DIR to a save directory containing them to run these tests';
 
 /** Git-ignored snapshot copies, so a test can pin a byte-exact fixture. */

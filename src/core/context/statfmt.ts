@@ -640,6 +640,63 @@ function conversionLines(
  * level, so rendering them as paths (which is what the raw fallback would do)
  * would be the single most useless thing this module could print.
  */
+/**
+ * What a granted skill actually does, rendered inline at rank 1.
+ *
+ * `Grants: Empowered Impaling Weapons` on its own is a dead end — the buff's
+ * `+flat pierce` is invisible to the reader, and item-granted skills are a
+ * documented exclusion from the resistance totals, so nothing else in the
+ * document supplies it either. Following the activator→buff hop here (the same
+ * one toggled auras use) makes the numbers *visible* without summing them: the
+ * matrix stays row-attributable, and the advisor stops having to guess.
+ *
+ * Recursion is cut off by `expandModifiers === false`, so a granted skill's own
+ * granted skill is named but not expanded.
+ */
+/**
+ * How a granted skill is *obtained*: always on, held on, cast, or rolled for.
+ *
+ * Without this the reader has to infer it — a toggle from an "Energy Reserved"
+ * line, a passive from the absence of one — and the inference is wrong often
+ * enough to matter. It changes what the stats mean: a passive's numbers are
+ * simply true, a toggle's are true while it is held (at the energy cost the
+ * stats already state), an activated skill's require a button, and a proc's are
+ * a chance per hit. The classes come from the game's own template names.
+ */
+function grantedKind(record: string, trigger: string | undefined, ctx: StatContext): string {
+  if (trigger) return `auto-cast ${trigger}`;
+  const cls = ctx.db.skillClass(record) ?? ctx.db.getSkill(record)?.class ?? '';
+
+  if (/Toggled/.test(cls)) return 'toggle — stays on until switched off';
+  if (/^Skill_(WPAttack|WeaponPool)_/.test(cls)) return 'weapon-pool proc — a share of your basic attacks';
+  if (/^Skill_PassiveOnLife/.test(cls)) return 'passive, triggers at low health';
+  if (/^Skill_PassiveOnHit/.test(cls)) return 'passive, triggers when you are hit';
+  if (/^(Skill|SkillBuff)_Passive/.test(cls)) return 'passive — always on';
+  if (/SpawnPet|SpawnMiniPet/.test(cls)) return 'summons a pet';
+  if (/^Skill_/.test(cls)) return 'activated — you have to cast it';
+  return 'unknown activation';
+}
+
+function grantedDetail(record: string, ctx: StatContext): string {
+  if (ctx.expandModifiers === false) return '';
+  const skill = ctx.db.getSkill(record);
+  const buff = skill?.buffRecord ? ctx.db.getSkill(skill.buffRecord) : undefined;
+  const source = buff ?? skill;
+  const lines = source ? formatStats(source.stats, { ...ctx, expandModifiers: false, read: atRank(1) }) : [];
+  if (lines.length) return ` — ${lines.join('; ')}`;
+
+  // Nothing to show is still worth saying: a bare "Grants: X" leaves the reader
+  // unable to tell an unindexed record from a skill that genuinely does
+  // nothing. Pet summons are the common case and are excluded on purpose.
+  const cls = ctx.db.skillClass(record) ?? '';
+  // The kind already said "summons a pet"; this only adds why there are no
+  // numbers beside it.
+  if (PET_SKILL.test(record) || /SpawnPet|SpawnMiniPet/.test(cls)) {
+    return ' — *pet skill trees are out of scope for this tool*';
+  }
+  return ' — *stats not indexed for this skill*';
+}
+
 function skillLines(
   stats: Record<string, StatValue>,
   read: (v: StatValue) => number,
@@ -670,12 +727,12 @@ function skillLines(
       claim('itemSkillName', 'itemSkillLevel', 'itemSkillLevelEq', 'itemSkillAutoController');
       const controller = stats['itemSkillAutoController'];
       const trigger = typeof controller === 'string' ? autoCastTrigger(controller) : undefined;
-      add(Bucket.Skills, `Grants: ${name(raw)}${trigger ? ` (auto-cast ${trigger})` : ''}`);
+      add(Bucket.Skills, `Grants: ${name(raw)} (${grantedKind(raw, trigger, ctx)})${grantedDetail(raw, ctx)}`);
       continue;
     }
     if (field === 'skillName') {
       claim('skillName');
-      add(Bucket.Skills, `Grants: ${name(raw)}`);
+      add(Bucket.Skills, `Grants: ${name(raw)} (${grantedKind(raw, undefined, ctx)})${grantedDetail(raw, ctx)}`);
       continue;
     }
     const modified = /^modifiedSkillName(\d*)$/.exec(field);

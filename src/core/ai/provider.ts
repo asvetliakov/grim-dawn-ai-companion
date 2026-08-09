@@ -69,6 +69,65 @@ export const SOCKET_VERDICTS: readonly Verdict[] = [
   'BUY-AUGMENT',
 ];
 
+/**
+ * The one verdict that *replaces* the item in the slot. Everything else keeps
+ * it — a re-augment or a new component changes what the item carries, not which
+ * item it is. Exported so the CLI's verdict table and Stage 7's grid cannot
+ * disagree about which rows are swaps.
+ */
+export function isReplacement(verdict: Verdict): boolean {
+  return verdict === 'EQUIP';
+}
+
+/** The `Slot | Current | New | Action | Why` row for one verdict. */
+export interface VerdictRow {
+  slot: string;
+  current: string;
+  /** `— (keep)` unless the item itself is replaced. */
+  next: string;
+  /** The socketable move, or `KEEP`. Empty on a plain replacement. */
+  action: string;
+  why: string;
+  replaces: boolean;
+}
+
+/** What a row shows when the slot keeps the item it already has. */
+export const KEEP_CELL = '— (keep)';
+
+/**
+ * Derive the per-slot verdict table from the plan rather than from the model's
+ * prose.
+ *
+ * The live run improvised its own columns and showed only the current item in
+ * every row but one, so "this slot keeps its item and gains an augment" and
+ * "this slot's item is replaced" looked identical — the single most important
+ * distinction in the table. Deriving it here means the CLI and Stage 7's grid
+ * paint the same thing from the same fields, and neither has to guess which
+ * verdicts are swaps.
+ *
+ * `nameFor` resolves a dossier id to a display name; ids the document never
+ * defined are left visible rather than hidden, because `checkPlan` is about to
+ * report them anyway.
+ */
+export function verdictRows(plan: AdvisorPlan, nameFor: (id: string) => string | undefined): VerdictRow[] {
+  const label = (id: string | undefined): string =>
+    !id ? '' : `${nameFor(id) ?? '(not in the dossier)'} #${id}`;
+
+  return plan.verdicts.map((v) => {
+    const replaces = isReplacement(v.verdict);
+    return {
+      slot: v.slot,
+      current: label(v.itemId) || '—',
+      next: replaces ? label(v.target) || `EQUIP ${v.target ?? '?'}` : KEEP_CELL,
+      // A socketable change belongs in Action, never in New: a re-augment is
+      // not a new item.
+      action: replaces ? '' : v.verdict === 'KEEP' ? 'KEEP' : `${v.verdict}${v.target ? ` ${v.target}` : ''}`,
+      why: v.reason,
+      replaces,
+    };
+  });
+}
+
 const verdictSchema = z.object({
   slot: z.string(),
   /** Dossier id of what is in the slot; empty string when the slot is empty. */
@@ -80,6 +139,15 @@ const verdictSchema = z.object({
   enablers: z.array(z.string()).optional(),
   /** Extraction source: the host item id, which the extraction DESTROYS. */
   componentFrom: z.string().optional(),
+  /**
+   * What this move adds and what it costs, as **fully-qualified** stat strings
+   * (`+12% Fire Resistance`, not `+12 Fire`). Deliberately strings rather than a
+   * typed effects tree: the dossier already types every stat, and duplicating
+   * that here would create a second source of truth to keep in sync. The point
+   * is only that the UI can render a delta without re-parsing prose.
+   */
+  gains: z.array(z.string()).optional(),
+  costs: z.array(z.string()).optional(),
   reason: z.string().default(''),
 });
 
@@ -92,11 +160,46 @@ export const advisorPlanSchema = z.object({
         reason: z.string().default(''),
         /** "level 84", "42 more spirit" — the threshold that ends the hold. */
         until: z.string().optional(),
+        /**
+         * The same threshold, machine-readable, so the UI can sort holds by
+         * what they cost instead of parsing `until`. Optional: an older answer
+         * that only carries the free text still validates.
+         */
+        needs: z
+          .object({
+            levels: z.number().optional(),
+            attributePoints: z
+              .object({
+                attribute: z.enum(['physique', 'cunning', 'spirit']),
+                points: z.number(),
+              })
+              .optional(),
+          })
+          .optional(),
       }),
     )
     .default([]),
   sell: z.array(z.string()).default([]),
+  /**
+   * Post-change **effective** resistance percentages — after the difficulty
+   * penalty, before nothing else — keyed by the §3 column labels. Effective, not
+   * pre-penalty: the same ambiguity the qualified-stat rule fixes in the prose
+   * would otherwise live on in the machine-readable half.
+   */
   projectedResistances: z.record(z.string(), z.number()).optional(),
+  /**
+   * The "Next levels" ladder: one entry per threshold worth committing to,
+   * cheapest first. `unlocks` holds dossier item ids.
+   */
+  nextLevels: z
+    .array(
+      z.object({
+        threshold: z.string(),
+        unlocks: z.array(z.string()).default([]),
+        recommendation: z.string().default(''),
+      }),
+    )
+    .optional(),
 });
 
 export type AdvisorPlan = z.infer<typeof advisorPlanSchema>;
@@ -154,6 +257,9 @@ function normalizePlan(plan: AdvisorPlan): AdvisorPlan {
     })),
     hold: plan.hold.map((h) => ({ ...h, itemId: normalizeId(h.itemId) })),
     sell: plan.sell.map(normalizeId),
+    ...(plan.nextLevels
+      ? { nextLevels: plan.nextLevels.map((n) => ({ ...n, unlocks: n.unlocks.map(normalizeId) })) }
+      : {}),
   };
 }
 

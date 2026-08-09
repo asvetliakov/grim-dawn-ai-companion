@@ -291,7 +291,7 @@ describe.skipIf(!haveGameInstall())(`game icons (${haveGameInstall() ? 'live' : 
         const missing: string[] = [];
         for (const name of CHARACTERS) {
           const path = characterSavePath(name);
-          const character = resolveCharacter(parseGdc(readFileSync(path), { path }), undefined, undefined, db);
+          const character = resolveCharacter(parseGdc(readFileSync(path), { path }), {}, db);
           const equipped = character.items.filter((i) => i.source === 'equipped');
           expect(equipped.length).toBeGreaterThan(0);
 

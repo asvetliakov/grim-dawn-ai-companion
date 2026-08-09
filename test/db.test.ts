@@ -8,7 +8,7 @@ import { cleanText } from '../src/core/db/build.js';
 import { archivesFingerprint, findGameDir, gameArchives, readGameVersion } from '../src/core/db/gamefiles.js';
 import { availableLocales, parseTagFile, readGameText } from '../src/core/db/gametext.js';
 import { loadGameDb } from '../src/core/db/index.js';
-import { REP_TIERS } from '../src/core/db/types.js';
+import { REP_TIERS, type DbItem } from '../src/core/db/types.js';
 import { MISSING_GAME_MESSAGE, gameDb, haveGameInstall } from './paths.js';
 
 // ---------------------------------------------------------------------------
@@ -232,6 +232,31 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
     }
     // 107 components + the augments; gear never carries the field.
     expect(db.stats().socketables).toBeGreaterThan(450);
+  });
+
+  it('gives no socketable a parenthesis in its display name', { timeout: BUILD_TIMEOUT }, async () => {
+    // `nameWithoutQualifier` falls back to stripping a trailing "(loose)" from
+    // an advisor's target so a *correct* move is not reported as a
+    // hallucination. That fallback is only safe while no real socketable name
+    // has parentheses of its own — pin it here rather than in a comment.
+    const db = await gameDb();
+    const named = Object.values((db as unknown as { raw: { items: Record<string, DbItem> } }).raw.items).filter(
+      (i) => i.slot === 'ItemRelic' || i.slot === 'ItemEnchantment',
+    );
+    expect(named.length).toBeGreaterThan(450);
+    expect(named.filter((i) => /[()]/.test(i.name)).map((i) => i.name)).toEqual([]);
+  });
+
+  it('reads the levelling rates out of the player-levels record', { timeout: BUILD_TIMEOUT }, async () => {
+    // The unlock ladder turns a requirement deficit into "spend N points" with
+    // these. The difficulty penalty taught the lesson: the game states them, so
+    // do not assume them.
+    const db = await gameDb();
+    const lp = db.levelProgression();
+    expect(lp.attributePointsPerLevel).toBe(1);
+    expect(lp.attributePerPoint).toEqual({ physique: 8, cunning: 8, spirit: 8 });
+    expect(lp.maxLevel).toBe(100);
+    expect(lp.maxDevotionPoints).toBe(55);
   });
 
   it('knows crafting-bonus affixes even though they have no name', { timeout: BUILD_TIMEOUT }, async () => {

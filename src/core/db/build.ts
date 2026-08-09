@@ -22,12 +22,13 @@ import {
   type DbSet,
   type DbSkill,
   type RepTier,
+  type LevelProgression,
   type SpeedCaps,
   type StatValue,
 } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 9;
+export const DB_SCHEMA_VERSION = 10;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -60,6 +61,8 @@ export interface NormalizedDb {
   armorAbsorptionBase: number;
   /** Player speed caps from the engine record — `+% speed` past these is wasted. */
   speedCaps: SpeedCaps;
+  /** Attribute/skill points per level, from the player-levels record. */
+  levelProgression: LevelProgression;
   factions: DbFaction[];
   /** faction id → market tier → item record paths. */
   vendor: Record<string, Partial<Record<RepTier, string[]>>>;
@@ -82,6 +85,7 @@ const WANTED_PREFIXES = [
   'records/game/gamefactions.dbr',
   'records/game/balancingadjustment_mp+difficulty_players01.dbr',
   'records/game/gameengine.dbr',
+  'records/creatures/pc/playerlevels.dbr',
   // The 13 itemcost records whose equations produce attribute requirements.
   'records/game/itemcostformulas',
 ];
@@ -102,6 +106,37 @@ const DEFAULT_ARMOR_ABSORPTION = 70;
  * values in case the record ever goes missing.
  */
 const DEFAULT_SPEED_CAPS = { attack: 200, cast: 200, run: 135 };
+
+/**
+ * Levelling rates. The game states all of them, which is the point: "one point
+ * is 8 attribute" and "one level is one point" are folklore-shaped constants,
+ * and the unlock ladder turns a requirement deficit into a spending instruction
+ * with them. The defaults match 1.3.0.6 in case the record ever moves.
+ */
+const PLAYER_LEVELS_RECORD = 'records/creatures/pc/playerlevels.dbr';
+const DEFAULT_LEVEL_PROGRESSION: LevelProgression = {
+  attributePointsPerLevel: 1,
+  attributePerPoint: { physique: 8, cunning: 8, spirit: 8 },
+  maxLevel: 100,
+  maxDevotionPoints: 55,
+};
+
+function buildLevelProgression(records: Map<string, ArzRecord>): LevelProgression {
+  const rec = records.get(PLAYER_LEVELS_RECORD);
+  const d = DEFAULT_LEVEL_PROGRESSION;
+  return {
+    attributePointsPerLevel: num(rec, 'characterModifierPoints') ?? d.attributePointsPerLevel,
+    attributePerPoint: {
+      // The data's names, one more time: strength=Physique, dexterity=Cunning,
+      // intelligence=Spirit.
+      physique: num(rec, 'strengthIncrement') ?? d.attributePerPoint.physique,
+      cunning: num(rec, 'dexterityIncrement') ?? d.attributePerPoint.cunning,
+      spirit: num(rec, 'intelligenceIncrement') ?? d.attributePerPoint.spirit,
+    },
+    maxLevel: num(rec, 'maxPlayerLevel') ?? d.maxLevel,
+    maxDevotionPoints: num(rec, 'maxDevotionPoints') ?? d.maxDevotionPoints,
+  };
+}
 
 const GAME_FACTIONS_RECORD = 'records/game/gamefactions.dbr';
 
@@ -609,6 +644,7 @@ export function buildDb(input: BuildInput): NormalizedDb {
     cast: num(engine, 'playerSpellCastSpeedCapMax') ?? DEFAULT_SPEED_CAPS.cast,
     run: num(engine, 'playerRunSpeedCapMax') ?? DEFAULT_SPEED_CAPS.run,
   };
+  const levelProgression = buildLevelProgression(records);
   const { factions, vendor } = buildFactions(records, items, localize);
   const recipes = buildRecipes(records, items);
 
@@ -628,6 +664,7 @@ export function buildDb(input: BuildInput): NormalizedDb {
     difficultyPenalty,
     armorAbsorptionBase,
     speedCaps,
+    levelProgression,
     factions,
     vendor,
     recipes,

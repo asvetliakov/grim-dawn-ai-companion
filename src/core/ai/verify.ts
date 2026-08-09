@@ -21,7 +21,8 @@ export type PlanWarningKind =
   | 'unknown-socketable'
   | 'missing-target'
   | 'destroyed-host'
-  | 'illegal-socket';
+  | 'illegal-socket'
+  | 'ambiguous-stat';
 
 export interface PlanWarning {
   kind: PlanWarningKind;
@@ -59,7 +60,93 @@ export function normalizeName(name: string): string {
     .toLowerCase();
 }
 
-export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput): PlanWarning[] {
+/**
+ * A socketable name with a trailing parenthetical stripped: `Dread Skull
+ * (loose)` → `dread skull`.
+ *
+ * The model annotates a target with its sourcing about as often as not, and
+ * nothing in the prompt forbids it. Raising `unknown-socketable` for that would
+ * be a false alarm on a *correct* move, which is worse than no check at all —
+ * so the lookup tries the full name first and falls back to the stripped one.
+ * Verified against the installed database: **0 of 491 socketables** have
+ * parentheses in their display name, so the fallback cannot shadow a real item.
+ * `test/db.test.ts` pins that, since the fallback stops being safe if it changes.
+ */
+export function nameWithoutQualifier(name: string): string {
+  return normalizeName(name.replace(/\s*\([^()]*\)\s*$/, ''));
+}
+
+/**
+ * Damage types that read identically as damage, as resistance and as
+ * retaliation. `+99% Pierce` and `+22 Fire` say nothing about which — and the
+ * first live run put both meanings four words apart in one clause.
+ */
+const DAMAGE_TYPE_WORD =
+  '(?:Physical|Pierce|Piercing|Fire|Cold|Lightning|Acid|Poison|Vitality|Aether|Chaos|Bleeding|Elemental|Burn|Frostburn|Electrocute)';
+
+/**
+ * The second word of a two-word damage type. Listing `Vitality Decay` among the
+ * type names instead does *not* work: the engine backtracks out of the longer
+ * alternative when the negative lookahead rejects it, matches the bare
+ * `Vitality`, and then finds `Decay` where it wanted a qualifier. Letting the
+ * link step over the word is what actually closes it.
+ */
+const TYPE_TAIL_WORD = '(?:\\bDecay\\b|\\bTrauma\\b)';
+
+/**
+ * What makes a stat reference unambiguous. A conversion arrow counts: in
+ * `30% Vitality Damage → Pierce Damage` the arrow is what tells you the first
+ * type is a source, and both ends still have to name their kind themselves.
+ */
+const QUALIFIER = '(?:Resist|Res\\b|Damage|Dmg|Retaliation|Retal|Armor|Armour|Duration|Conversion|Converted|→)';
+
+/**
+ * What may sit between a damage type and the qualifier that names its kind.
+ *
+ * Two real forms need it, and the first live run under this check tripped on
+ * both — six warnings, every one a false alarm on correct output:
+ *
+ *  - the game's own compound stat names, `+24% Fire, Cold and Lightning
+ *    Resistance`, where one qualifier covers three types;
+ *  - a conversion, `30% Elemental→Pierce conversion`.
+ *
+ * A false alarm on a right answer is worse than no check, so the link may span
+ * further type names, list punctuation and an arrow — but nothing else, which is
+ * what keeps `+48 Pierce, +60 Acid Resistance` flagged on its first half.
+ */
+const TYPE_LINK = `(?:[*_\`)\\s,/]|→|->|\\band\\b|\\bto\\b|${TYPE_TAIL_WORD}|${DAMAGE_TYPE_WORD})`;
+
+/**
+ * A number followed by a bare damage type, with no qualifier after it.
+ *
+ * Decidable, so decided rather than hoped for. The sign is optional because
+ * "but costs 35 Acid" — a real line from the first live run, meaning
+ * resistance — carries none.
+ */
+const AMBIGUOUS_STAT = new RegExp(
+  `[+\\-−]?\\s?\\d[\\d,.]*\\s?%?\\s+${DAMAGE_TYPE_WORD}\\b(?!${TYPE_LINK}*${QUALIFIER})`,
+  'gi',
+);
+
+/**
+ * Every bare damage-type stat reference in a piece of text, deduplicated.
+ * Exported so the CLI can scan the prose as well as the structured plan.
+ */
+export function ambiguousStats(text: string): string[] {
+  const found = new Set<string>();
+  for (const match of text.matchAll(AMBIGUOUS_STAT)) found.add(match[0].trim());
+  return [...found];
+}
+
+export interface PlanCheckOptions {
+  /**
+   * The answer's prose, scanned for bare stat references alongside the plan.
+   * Optional because the plan alone is checkable — the CLI passes both.
+   */
+  answer?: string;
+}
+
+export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCheckOptions = {}): PlanWarning[] {
   const warnings: PlanWarning[] = [];
   const warn = (kind: PlanWarningKind, message: string): void => {
     warnings.push({ kind, message });
@@ -114,7 +201,42 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput): PlanWarning
     }
   }
 
+  checkStatClarity(plan, opts.answer, warn);
   return warnings;
+}
+
+/**
+ * Every stat reference must say which kind of stat it is. A summary the reader
+ * has to open the dossier to disambiguate has failed at the one job a summary
+ * has.
+ */
+function checkStatClarity(
+  plan: AdvisorPlan,
+  answer: string | undefined,
+  warn: (kind: PlanWarningKind, message: string) => void,
+): void {
+  // A long answer can carry dozens; the warning is a pointer, not a transcript.
+  const SHOWN = 8;
+  const scan = (text: string, where: string): void => {
+    const bare = ambiguousStats(text);
+    if (bare.length === 0) return;
+    const shown = bare.slice(0, SHOWN).map((b) => `"${b}"`).join(', ');
+    warn(
+      'ambiguous-stat',
+      `${where} writes ${shown}${bare.length > SHOWN ? `, and ${bare.length - SHOWN} more` : ''} ` +
+        'without saying Resistance / Damage / Retaliation',
+    );
+  };
+
+  for (const v of plan.verdicts) {
+    const where = `${v.verdict} on ${v.slot}`;
+    if (v.reason) scan(v.reason, `${where} reason`);
+    for (const gain of v.gains ?? []) scan(gain, `${where} gains`);
+    for (const cost of v.costs ?? []) scan(cost, `${where} costs`);
+  }
+  for (const h of plan.hold) if (h.reason) scan(h.reason, 'HOLD reason');
+  for (const n of plan.nextLevels ?? []) if (n.recommendation) scan(n.recommendation, 'Next levels recommendation');
+  if (answer) scan(answer, 'the answer');
 }
 
 function checkSocket(
@@ -126,7 +248,8 @@ function checkSocket(
     warn('missing-target', `${v.verdict} on ${v.slot} names no component or augment`);
     return;
   }
-  const socketable = input.socketables.get(normalizeName(v.target));
+  const socketable =
+    input.socketables.get(normalizeName(v.target)) ?? input.socketables.get(nameWithoutQualifier(v.target));
   if (!socketable) {
     warn(
       'unknown-socketable',

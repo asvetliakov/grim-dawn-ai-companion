@@ -3,13 +3,24 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { GST_MAGIC, parseFormulas, parseFormulasFile, parseTransferStash } from '../src/core/save/gst.js';
+import {
+  GST_MAGIC,
+  MATERIAL_BLOCK_IDS,
+  MATERIAL_STORE_MAGIC,
+  parseFormulas,
+  parseFormulasFile,
+  parsePotions,
+  parseReagents,
+  parseTransferStash,
+} from '../src/core/save/gst.js';
 import { GdWriter, writeItem } from './gdwriter.js';
 import {
   FORMULAS_PATH,
   MISSING_GST_MESSAGE,
+  REAGENTS_PATH,
   TRANSFER_STASH_PATH,
   haveFormulas,
+  haveReagents,
   haveTransferStash,
   snapshotSharedSave,
 } from './paths.js';
@@ -281,6 +292,128 @@ describe.skipIf(!haveTransferStash())('live transfer.gst', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// reagents.gst — synthetic
+// ---------------------------------------------------------------------------
+
+/**
+ * A material store in memory.
+ *
+ * The framing is what made this file resist a straight read for five stages:
+ * each entry is a *nested block*, so its length word and its trailing checksum
+ * are both consumed without advancing the cipher. Writing one here is how a
+ * failure points at the reader rather than at a guess.
+ */
+function synthStore(blockId: number, entries: { record: string; quantity?: number }[], mod = ''): Buffer {
+  const w = new GdWriter(0x5a5a5a5a);
+  w.writeU32(MATERIAL_STORE_MAGIC);
+
+  const block = w.beginBlock(blockId);
+  w.writeU32(1); // version
+  w.writeU32NoAdvance(0); // the same non-advancing quirk word the stash carries
+  w.writeStr(mod);
+  w.writeU32(entries.length);
+  for (const entry of entries) {
+    const nested = w.beginBlock(0);
+    w.writeStr(entry.record);
+    if (entry.quantity !== undefined) w.writeU32(entry.quantity);
+    w.endBlock(nested);
+  }
+  w.endBlock(block);
+  return w.toBuffer();
+}
+
+describe('reagents.gst framing', () => {
+  it('round-trips records and quantities through the nested blocks', () => {
+    const store = parseReagents(
+      synthStore(MATERIAL_BLOCK_IDS.reagents, [
+        { record: 'records/items/materia/compa_bristlyfur.dbr', quantity: 7 },
+        { record: 'records/items/crafting/materials/craft_royaljelly.dbr', quantity: 117 },
+      ]),
+    );
+
+    expect(store.warnings).toEqual([]);
+    expect(store.blocks).toEqual([{ id: 20, length: expect.any(Number), status: 'parsed', checksumOk: true }]);
+    expect(store.version).toBe(1);
+    expect(store.mod).toBe('');
+    expect(store.entries).toEqual([
+      { record: 'records/items/materia/compa_bristlyfur.dbr', quantity: 7 },
+      { record: 'records/items/crafting/materials/craft_royaljelly.dbr', quantity: 117 },
+    ]);
+  });
+
+  it('reads an entry with no quantity field as one, which is potions.gst', () => {
+    // The two stores share a format but not a body: a potions entry stops after
+    // the record path, so the nested block's length is the only thing that says
+    // whether a count follows.
+    const store = parsePotions(
+      synthStore(MATERIAL_BLOCK_IDS.potions, [
+        { record: 'records/items/crafting/blueprints/potions/potions_container_a302.dbr' },
+      ]),
+    );
+    expect(store.warnings).toEqual([]);
+    expect(store.entries).toEqual([
+      { record: 'records/items/crafting/blueprints/potions/potions_container_a302.dbr', quantity: 1 },
+    ]);
+  });
+
+  it('carries the mod name through', () => {
+    expect(parseReagents(synthStore(MATERIAL_BLOCK_IDS.reagents, [], 'GrimmestDawn')).mod).toBe('GrimmestDawn');
+  });
+
+  it('rejects a file that is not a material store', () => {
+    const buf = Buffer.alloc(64);
+    buf.writeUInt32LE(0x55555555, 0); // seed 0 — the magic decodes to 0, not 1
+    expect(() => parseReagents(buf)).toThrow(/not a Grim Dawn material store/);
+  });
+
+  it('reports an unrelated block rather than misreading it', () => {
+    // transmutes.gst is block 19 and deliberately out of scope. Asking for 20
+    // must leave the file alone and say so, not decode it as reagents.
+    const store = parseReagents(
+      synthStore(MATERIAL_BLOCK_IDS.transmutes, [{ record: 'records/items/x.dbr', quantity: 1 }]),
+    );
+    expect(store.entries).toEqual([]);
+    expect(store.warnings.join('\n')).toMatch(/no block 20 in file/);
+  });
+});
+
+describe.skipIf(!haveReagents())('live reagents.gst', () => {
+  if (!haveReagents()) it.skip(MISSING_GST_MESSAGE, () => {});
+
+  it('parses with block 20’s checksum passing', () => {
+    const store = parseReagents(readFileSync(REAGENTS_PATH), { path: REAGENTS_PATH });
+
+    // The gate for this parser. A passing checksum proves the nested-block
+    // framing — the thing four earlier hypotheses got wrong — is right.
+    const unverified = store.blocks.filter((b) => !b.checksumOk);
+    expect(unverified, `blocks failing checksum: ${JSON.stringify(unverified)}`).toEqual([]);
+    expect(store.warnings).toEqual([]);
+    expect(store.blocks.map((b) => b.id)).toEqual([20]);
+    expect(store.blocks[0]!.status).toBe('parsed');
+  });
+
+  it('holds components and materials with plausible counts', () => {
+    const store = parseReagents(readFileSync(snapshotSharedSave(REAGENTS_PATH)));
+
+    expect(store.version).toBe(1);
+    expect(store.entries.length).toBeGreaterThan(10);
+    for (const entry of store.entries) {
+      expect(entry.record).toMatch(/^records\/items\/.*\.dbr$/);
+      // Zero is legal and meaningful: the store keeps a row for anything the
+      // account has ever held, so "none left" and "never seen" are different
+      // states. `resolveCharacter` drops the zeroes rather than counting them.
+      expect(entry.quantity).toBeGreaterThanOrEqual(0);
+    }
+    expect(store.entries.some((e) => e.quantity > 1)).toBe(true);
+    // This store is where loose components actually live — the whole reason the
+    // census used to report almost none.
+    expect(store.entries.some((e) => e.record.startsWith('records/items/materia/'))).toBe(true);
+    expect(store.entries.some((e) => e.record.startsWith('records/items/crafting/materials/'))).toBe(true);
+    expect(new Set(store.entries.map((e) => e.record)).size).toBe(store.entries.length);
+  });
+});
+
 describe.skipIf(!haveFormulas())('live formulas.gst', () => {
   if (!haveFormulas()) it.skip(MISSING_GST_MESSAGE, () => {});
 
@@ -304,7 +437,7 @@ describe.skipIf(!haveFormulas())('live formulas.gst', () => {
 // ---------------------------------------------------------------------------
 
 describe('CLI error handling', () => {
-  it.each(['stash', 'formulas'])('reports a missing file for `%s` without a stack trace', (command) => {
+  it.each(['stash', 'formulas', 'reagents'])('reports a missing file for `%s` without a stack trace', (command) => {
     const missing = join(REPO_ROOT, 'test', 'does-not-exist.gst');
     let stderr = '';
     let status = 0;
