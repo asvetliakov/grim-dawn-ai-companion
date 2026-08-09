@@ -215,7 +215,7 @@ export function ContainerPanel({
  */
 function MaterialList({ items }: { items: UiItem[] }): React.ReactNode {
   const tooltip = useTooltip();
-  const { isHighlighted, actionFor, adviceFor, highlight, litKind } = useHighlight();
+  const { isHighlighted, actionFor, adviceFor, highlight, litKind, spotlight } = useHighlight();
   if (items.length === 0) return <Empty what="materials" />;
 
   const effect = (item: UiItem): string => item.tooltip.blocks.flatMap((b) => b.lines).join(' · ');
@@ -232,9 +232,12 @@ function MaterialList({ items }: { items: UiItem[] }): React.ReactNode {
         // Same two ways to be lit as a grid cell: the pointer, or the legend
         // pointing at this whole kind of action.
         const lit = isHighlighted(item.docId) || (action !== undefined && action === litKind);
+        // And the same dimming: the legend pointing at a kind steps every other
+        // row back, so its members read as a set. See `ItemCell`.
+        const dim = (litKind !== null && action !== litKind) || (spotlight && !lit);
         return (
           <div
-            className={`material-row ${lit ? 'highlighted' : ''} ${action ? `action action-${action}` : ''}`}
+            className={`material-row ${lit ? 'highlighted' : ''} ${dim ? 'dimmed' : ''} ${action ? `action action-${action}` : ''}`}
             key={item.docId}
             // The whole row is the hover target, not just the icon — the name is
             // what the eye lands on and the icon is 32 px of it.

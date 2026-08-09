@@ -555,9 +555,9 @@ check('a gesture over the panel scrolls the pane 1:1', nudged === paneTop + 24, 
 const followed = await page.evaluate(() => {
   const card = document.querySelector('.slot-row .slot-current .item-face').getBoundingClientRect();
   const tip = document.querySelector('.tooltip:not(.action-tooltip)').getBoundingClientRect();
-  return Math.round(tip.top - card.bottom);
+  return Math.round(tip.left - card.right);
 });
-check('and the panel comes with its card', followed >= 0 && followed <= 12, `${followed}px below it`);
+check('and the panel comes with its card', followed >= 0 && followed <= 12, `${followed}px beside it`);
 
 // A mouse notch is the other device, and the browser treats it differently over
 // an ordinary scroller: one ~100 px event, *animated*. Forwarding it unchanged
@@ -589,9 +589,10 @@ await clearTip();
 await showTip(page.locator('.slot-name').first());
 check('hovering a slot label shows the equipped item', (await tooltip.count()) === 1);
 
-// The panel opens *below* the card it describes, left-aligned with it. A
-// loadout row is a comparison two cards wide, and a panel opening to the side
-// of either card lands on the other one — the very item being compared against.
+// In the loadout the panel opens to the *right* of the card, centred on its
+// height. Below-the-card covered the very rows the reader was walking down;
+// to the right it overlays the rest of the row instead — deliberately, on a
+// higher layer — and hovering the other card gives that card its own panel.
 const boxes = [];
 for (const sel of ['.slot-current .face-art', '.slot-current .face-name', '.slot-current .socket-chip.filled']) {
   await clearTip();
@@ -599,18 +600,17 @@ for (const sel of ['.slot-current .face-art', '.slot-current .face-name', '.slot
   boxes.push(
     await page.evaluate(() => {
       const card = document.querySelector('.slot-row .slot-current .item-face').getBoundingClientRect();
-      const other = document.querySelector('.slot-row .slot-proposed').getBoundingClientRect();
       const tip = document.querySelector('.tooltip:not(.action-tooltip)').getBoundingClientRect();
       return {
-        below: Math.round(tip.top) >= Math.round(card.bottom),
-        clearsOther: Math.round(tip.top) >= Math.round(other.bottom) || Math.round(tip.right) <= Math.round(other.left),
+        beside: Math.round(tip.left) >= Math.round(card.right),
+        overlapsRow: tip.top < card.bottom && tip.bottom > card.top,
         left: Math.round(tip.left),
       };
     }),
   );
 }
-check('the tooltip opens below the card', boxes.every((b) => b.below), JSON.stringify(boxes.map((b) => b.left)));
-check('clear of the card it is being compared against', boxes.every((b) => b.clearsOther));
+check('the tooltip opens beside the card', boxes.every((b) => b.beside), JSON.stringify(boxes.map((b) => b.left)));
+check('on the card\'s own row, not under it', boxes.every((b) => b.overlapsRow));
 check(
   'and in one place however you point at that card',
   new Set(boxes.map((b) => b.left)).size === 1,

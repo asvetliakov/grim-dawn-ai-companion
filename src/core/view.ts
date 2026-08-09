@@ -56,6 +56,12 @@ export async function buildUiSnapshot(snap: CharacterSnapshot, icons: IconServic
 
   const standing = standingOf(snap.aggregate);
   const sizes = await iconSizes(snap.resolved.items, icons);
+  // Which skills the character has points in, for the "Modifies: …" lines. The
+  // same set the context document builds — without it every skill modifier in
+  // every tooltip claimed "(no points invested)", Onslaught at 16 included.
+  const invested: ReadonlySet<string> = new Set(
+    snap.save.skills.filter((s) => s.level > 0).map((s) => s.record),
+  );
 
   // Socketables are identified by record path, so one id serves the installed
   // copy and the loose one — which is exactly what a plan needs when it says
@@ -64,7 +70,7 @@ export async function buildUiSnapshot(snap: CharacterSnapshot, icons: IconServic
   const socketables: Record<string, UiSocketable> = {};
   for (const [id, part] of snap.doc.socketablesById) {
     socketableIds.set(part.record, id);
-    socketables[id] = describeSocketable(part, id, db);
+    socketables[id] = describeSocketable(part, id, db, invested);
   }
 
   const toUi = (item: ResolvedItem): UiItem => {
@@ -80,7 +86,7 @@ export async function buildUiSnapshot(snap: CharacterSnapshot, icons: IconServic
       position: item.position,
       source: item.source,
       stackCount: Math.max(1, item.stackCount),
-      tooltip: buildTooltip(item, db, standing, socketableIds),
+      tooltip: buildTooltip(item, db, standing, socketableIds, invested),
     };
   };
 
@@ -278,12 +284,17 @@ function slotLabel(slot: string | undefined): string {
  * *proposes* — which has no host to be read off, and is the whole reason the
  * snapshot carries a socketable dictionary at all.
  */
-function describeSocketable(part: DbItem, id: string | undefined, db: GameDb): UiSocketable {
+function describeSocketable(
+  part: DbItem,
+  id: string | undefined,
+  db: GameDb,
+  invested?: ReadonlySet<string>,
+): UiSocketable {
   const useOn = describeSlots(part.allowedSlots);
   return {
     ...(id ? { id } : {}),
     name: part.name,
-    lines: formatStats(part.stats, { db }),
+    lines: formatStats(part.stats, { db, ...(invested ? { invested } : {}) }),
     iconPath: part.iconPath || null,
     ...(useOn ? { useOn } : {}),
   };
@@ -294,12 +305,13 @@ function buildTooltip(
   db: GameDb,
   standing: CharacterStanding,
   socketableIds?: ReadonlyMap<string, string>,
+  invested?: ReadonlySet<string>,
 ): UiTooltip {
   const base = item.base;
   const grantedSkills: string[] = [];
   const statLines = (stats: Record<string, StatValue> | undefined): string[] => {
     if (!stats) return [];
-    const lines = formatStats(stats, { db });
+    const lines = formatStats(stats, { db, ...(invested ? { invested } : {}) });
     const kept: string[] = [];
     for (const line of lines) {
       if (GRANTS.test(line)) grantedSkills.push(line);
@@ -334,7 +346,7 @@ function buildTooltip(
    * part it comes from, it is stated once and in the right place.
    */
   const socketable = (part: DbItem): UiSocketable =>
-    describeSocketable(part, socketableIds?.get(part.record), db);
+    describeSocketable(part, socketableIds?.get(part.record), db, invested);
 
   const sockets: string[] = [];
   const slot = base?.slot ?? '';

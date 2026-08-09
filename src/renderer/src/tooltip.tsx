@@ -213,28 +213,33 @@ function AdviceNote({ subject }: { subject: TooltipSubject }): ReactNode {
 
 export function TooltipProvider({ children }: { children: ReactNode }): ReactNode {
   const [subject, setSubject] = useState<TooltipSubject | null>(null);
+  // Where the panel opens depends on which pane the subject lives in — decided
+  // with the anchor, in the open timer, so a pending switch cannot re-place a
+  // panel that is still describing the old subject.
+  const [placement, setPlacement] = useState<'bottom' | 'right'>('bottom');
   // The card the panel describes stays lit while the panel is up. See
   // `holdHighlight` for why this is a second set rather than a sticky pointer.
   const hold = useHoldHighlight();
   const { refs, floatingStyles } = useFloating({
     open: subject !== null,
-    // Below the subject and **centred on it** — not beside it, and no longer
-    // left-aligned with it.
+    // Two placements, by pane.
     //
-    // Below rather than beside, because a loadout row is a comparison two cards
-    // wide and a panel opening to the side of either card lands on the other one:
-    // exactly the item the reader is comparing against. Below, it covers the rows
-    // underneath, which are not part of the comparison. `flip` puts it above when
-    // there is no room below.
-    //
-    // Centred rather than left-aligned, because the layer holds *two* panels for a
-    // marked item. Left-aligned, the pair extended right from the card until it hit
-    // the viewport, at which point `shift` slid the whole thing left — so the
-    // item's own panel sat somewhere different depending on whether the plan had
+    // The default is below the subject and **centred on it** — not left-aligned
+    // with it. Centred, because the layer holds *two* panels for a marked item:
+    // left-aligned, the pair extended right from the card until it hit the
+    // viewport, at which point `shift` slid the whole thing left — so the item's
+    // own panel sat somewhere different depending on whether the plan had
     // anything to say about that item, and jumped as the pointer crossed from a
     // marked cell to an unmarked one. Centred, the pair grows symmetrically and
     // `shift` has far less to correct.
-    placement: 'bottom',
+    //
+    // In the **loadout** the panel opens to the *right* of the card, centred on
+    // its height. Below-the-card there covered the very rows the reader was
+    // walking down — fourteen slot rows read top to bottom, and the next row is
+    // exactly where the panel landed. To the right it sits over the reason
+    // column and the pane's open ground instead, and `flip` swaps it to the
+    // left when a wide pair runs out of viewport.
+    placement,
     middleware: [offset(8), flip(), shift({ padding: 10 })],
     whileElementsMounted: autoUpdate,
   });
@@ -317,7 +322,9 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
           // top-left, over whatever lives there, with no mouseleave ever coming.
           if (!pending.anchor.isConnected) return;
           // The anchor moves *with* the subject: the panel must not slide to the
-          // new card while it is still describing the old one.
+          // new card while it is still describing the old one — and the
+          // placement moves with the anchor, for the same reason.
+          setPlacement(pending.anchor.closest('.loadout') ? 'right' : 'bottom');
           anchor.current = pending.anchor;
           refs.setPositionReference(pending.anchor);
           live.current = pending.subject;

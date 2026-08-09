@@ -154,7 +154,9 @@ export function AdvicePanel({
             )}
           </p>
         )}
-        {activity && <ActivityLog activity={activity} running={running} />}
+        {activity && (running || activity.text.trim() !== '') && (
+          <ActivityLog activity={activity} running={running} />
+        )}
         {ask}
         {error && <p className="advice-error">{error}</p>}
       </section>
@@ -215,7 +217,12 @@ export function AdvicePanel({
         {control}
       </header>
 
-      {activity && <ActivityLog activity={activity} running={running} />}
+      {/* After the run, a transcript that never received any text has nothing
+          to re-open — current models redact the reasoning stream — so the box
+          only outlives the run when there is something in it. */}
+      {activity && (running || activity.text.trim() !== '') && (
+        <ActivityLog activity={activity} running={running} />
+      )}
       {ask}
       {error && <p className="advice-error">{error}</p>}
 
@@ -251,7 +258,7 @@ export function AdvicePanel({
               {plan.keyMoves.map((move, i) => (
                 <li
                   key={i}
-                  onMouseEnter={() => highlight.highlight(move.itemIds)}
+                  onMouseEnter={() => highlight.highlight(move.itemIds, { spotlight: true })}
                   onMouseLeave={() => highlight.highlight(null)}
                 >
                   <b>{move.title}</b>
@@ -307,7 +314,7 @@ export function AdvicePanel({
                   className={`${row.replaces ? 'replaces' : ''} ${doneSlots.has(slotKey(row.slot)) ? 'done' : ''}`}
                   // Both halves of the move: what comes off and what goes on. The
                   // reader is comparing two items, so lighting one is half an answer.
-                  onMouseEnter={() => highlight.highlight([row.currentId, row.nextId])}
+                  onMouseEnter={() => highlight.highlight([row.currentId, row.nextId], { spotlight: true })}
                   onMouseLeave={() => highlight.highlight(null)}
                   onClick={() => {
                     const item = byId.get(row.nextId);
@@ -364,7 +371,7 @@ export function AdvicePanel({
                     key={h.itemId}
                     // A hold is about two items as much as a swap is: the one
                     // being kept and the one it will displace.
-                    onMouseEnter={() => highlight.highlight([h.itemId, h.beats])}
+                    onMouseEnter={() => highlight.highlight([h.itemId, h.beats], { spotlight: true })}
                     onMouseLeave={() => highlight.highlight(null)}
                     onClick={() => {
                       const it = byId.get(h.itemId);
@@ -415,7 +422,7 @@ export function AdvicePanel({
                 {plan.nextLevels.map((step, i) => (
                   <li
                     key={i}
-                    onMouseEnter={() => highlight.highlight(step.unlocks)}
+                    onMouseEnter={() => highlight.highlight(step.unlocks, { spotlight: true })}
                     onMouseLeave={() => highlight.highlight(null)}
                   >
                     <b className="level-threshold">{step.threshold}</b>
@@ -583,6 +590,11 @@ function ActivityLog({ activity, running }: { activity: RunActivity; running: bo
 
   const lines = activity.text.split('\n');
   const lastLine = lines.filter((l) => l.trim() !== '').pop() ?? '';
+  // Current models redact the reasoning stream — every thinking delta arrives
+  // as an empty string, and only the token estimate moves. The box still earns
+  // its place while the run is live (the count is the heartbeat), but it has to
+  // say why it is otherwise blank rather than looking broken.
+  const silent = activity.text.trim() === '';
 
   return (
     <div className={`activity-log ${open ? 'open' : ''}`}>
@@ -603,7 +615,13 @@ function ActivityLog({ activity, running }: { activity: RunActivity; running: bo
             is alive. Expanded, it would be a duplicate of the last line below. */}
         {!open && <span className="activity-peek">{lastLine}</span>}
       </button>
-      {open && (
+      {open && silent && (
+        <p className="activity-silent">
+          This model keeps its reasoning to itself — nothing to read here. The token count above is the live
+          part: it only moves while the model is working.
+        </p>
+      )}
+      {open && !silent && (
         <pre
           className="activity-text"
           ref={box}

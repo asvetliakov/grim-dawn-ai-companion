@@ -889,6 +889,14 @@ function damageSection(out: Writer, ctx: RenderContext): void {
         .map((e) => [`${e.label}${e.overTime ? ' *(over time)*' : ''}`, `${signed(e.percent)}%`, e.flat ? num(e.flat) : '·']),
     );
     out.line();
+    // The composition rule, because the table alone invites the wrong weighing:
+    // a model reading `+24%` beside `+10 flat` has no way to know the flat is
+    // multiplied by the whole accumulated pool. Stated with the same caveat as
+    // the attack-speed composition — the combining is engine behaviour.
+    out.line(
+      'Reading the table: on a weapon attack, flat damage joins the pool first and the type\'s whole `+%` column then scales it — so against `+N%`, one more point of on-type flat damage delivers roughly `1 + N/100` points, while another `+25%` of the same type is only a `25/(100+N)` relative gain. Flat damage on gear reaches weapon attacks and `% Weapon Damage` skills only (§2). How flat and `+%` combine is engine behaviour, inferred like the attack-speed composition in §3 — treat it as a strong direction, not an exact figure (the Cunning/Spirit bonus multiplies on top and is given no number).',
+    );
+    out.line();
   }
   if (d.totalDamagePercent) out.line(`\`+${num(d.totalDamagePercent)}% Total Damage\` scales every type at once and so ranks none of them.`);
 

@@ -1369,6 +1369,17 @@ h3 {
   color: var(--accent);
 }
 
+/* The redacted-reasoning case: the box is open and no text will ever stream
+   into it. Prose rather than a transcript — the window explaining itself. */
+.activity-silent {
+  margin: 0;
+  padding: 0 8px 8px;
+  font-size: 12px;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
 /* What it is doing inside the phase, beside the phase label. */
 .run-activity {
   color: var(--ink-faint);
@@ -2042,6 +2053,16 @@ h3 {
   border: 2px solid var(--lit);
   opacity: 1;
   box-shadow: 0 0 12px rgb(255 215 110 / 70%);
+}
+
+/* While the legend points at a kind, everything that is not that kind steps
+   back. Opacity rather than a grey filter: the rarity colours stay themselves,
+   just further away. Eased both ways so sweeping along the legend reads as
+   light moving, not cells flickering. */
+.item-cell.dimmed,
+.material-row.dimmed {
+  opacity: 0.3;
+  transition: opacity 120ms ease;
 }
 
 /*

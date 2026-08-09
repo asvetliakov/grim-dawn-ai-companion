@@ -269,20 +269,30 @@ function activityReader(onActivity: ActivityListener, onThinkingTokens?: (n: num
 
       // The CLI's own running estimate, which is cheaper and steadier than
       // counting deltas — and it counts thinking tokens the deltas do not carry.
+      // Emitted as activity in its own right: since CLI 2.1.x the reasoning
+      // *text* arrives redacted (every `thinking_delta` carries an empty
+      // string), so during the thinking phase — three quarters of a run — this
+      // estimate is the only signal that the call is alive. Without the emit,
+      // nothing at all reached the window until the answer began.
       if (event.type === 'system' && event.subtype === 'thinking_tokens') {
         if (typeof event.estimated_tokens === 'number') outputTokens = event.estimated_tokens;
+        onActivity({ kind: 'thinking', text: '', ...(outputTokens !== undefined ? { outputTokens } : {}) });
         continue;
       }
       if (event.type !== 'stream_event') continue;
       const delta = event.event?.delta;
       const usage = event.event?.usage;
       if (typeof usage?.output_tokens === 'number') outputTokens = usage.output_tokens;
+      if (typeof delta?.estimated_tokens === 'number') outputTokens = delta.estimated_tokens;
       // The final `message_delta` states what the reasoning actually cost —
       // the one figure in the stream that is a count rather than an estimate.
       const thinking = usage?.output_tokens_details?.thinking_tokens;
       if (typeof thinking === 'number') onThinkingTokens?.(thinking);
       const text = delta?.thinking ?? delta?.text;
-      if (typeof text !== 'string' || text === '') continue;
+      if (typeof text !== 'string') continue;
+      // An empty *thinking* delta still moves the token count — that is the
+      // redacted-reasoning heartbeat. An empty answer delta says nothing.
+      if (text === '' && delta?.thinking === undefined) continue;
       onActivity({
         kind: delta?.thinking !== undefined ? 'thinking' : 'answer',
         text,
@@ -298,7 +308,7 @@ interface StreamLine {
   subtype?: string;
   estimated_tokens?: number;
   event?: {
-    delta?: { thinking?: string; text?: string };
+    delta?: { thinking?: string; text?: string; estimated_tokens?: number | null };
     usage?: { output_tokens?: number; output_tokens_details?: { thinking_tokens?: number } };
   };
 }

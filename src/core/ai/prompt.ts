@@ -26,6 +26,7 @@ Work in this order. Each step constrains the ones after it.
    - An off-type item — damage or +% modifiers outside the build's top types — may be proposed **only as an explicit trade-off that names what is lost**.
    - A candidate whose own conversion or armor piercing feeds a top type is on-type *by that fact*: a 100% physical→pierce gun is a pierce weapon.
    - \`+% damage\` to a type the build converts away is worth little; modifiers apply after conversion, to the output type.
+   - **Weigh flat damage against \`+%\` using §4's totals.** Flat damage is scaled by the type's whole accumulated \`+%\` column — §4 states the arithmetic — so on a build with a large pool, on-type flat damage on gear (which reaches weapon attacks and \`% Weapon Damage\` skills only) usually beats another small \`+%\` modifier of the same type, and *losing* on-type flat in a swap costs its scaled value, not its face value.
 2. **Fix effective resistance shortfalls** (the post-penalty band of the §3 matrix) up to cap plus the stated overcap target. Spend the **cheapest degrees of freedom first: augment re-assignment, then components, then gear swaps.** Augment slots are free variables — propose a *complete* augment assignment, not only the deltas.
 3. **Optimise the loadout as a whole.** A gear swap that creates resistance slack elsewhere — legs that cover what two ring augments currently cover — frees those slots. Say what to re-slot them with.
 4. Do not trade large damage modifiers matching the build's top damage types for marginal overcap beyond the target. Conversely, never leave an effective resistance under cap for the sake of damage.
@@ -144,4 +145,4 @@ Rules for the plan block:
 - \`projectedResistances\` uses the §3 column labels as keys and the post-change **effective** value — after the difficulty penalty — as the number.
 - \`nextLevels\` mirrors the Next levels section, cheapest threshold first.
 - \`projected.attackSpeedPercent\` and its siblings are the post-change char-sheet percentages, in the same terms §3 states them, already clamped to the caps §3 gives. If a change moves no speed, repeat §3's current figure rather than omitting it.
-- The markdown analysis and the plan must agree. The plan is a summary of what you already argued, not a second opinion.`;
+- The markdown analysis and the plan must agree. The plan is a summary of what you already argued, not a second opinion. That agreement includes losses: \`costs\` is the exhaustive account of what a move gives up, so never write a reason or prose sentence claiming "only X is lost" when \`costs\` names more than X — understating a loss in the argument while the numbers below it tell the truth is the one disagreement a reader acts on before noticing.`;

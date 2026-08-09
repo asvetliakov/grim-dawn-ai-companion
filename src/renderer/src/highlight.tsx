@@ -35,8 +35,18 @@ interface HighlightApi {
   isHighlighted: (docId: string) => boolean;
   /** Whether anything at all is highlighted — for the "no dots" case. */
   any: boolean;
-  /** Pass one id, several, or nothing to clear. */
-  highlight: (docIds: string | readonly string[] | null) => void;
+  /**
+   * Pass one id, several, or nothing to clear.
+   *
+   * `spotlight` marks this highlight as one that should also *dim* everything
+   * it does not name — set by the loadout and advice panels, whose hovers are
+   * "find these two among two hundred", and never by a container cell's own
+   * hover, where dimming the grid under the pointer would flicker the whole
+   * pane on every mouse move across it.
+   */
+  highlight: (docIds: string | readonly string[] | null, opts?: { spotlight?: boolean }) => void;
+  /** True while the current pointer highlight asked for the dimmed field. */
+  spotlight: boolean;
   /**
    * A second, *held* set, unioned with the pointer's.
    *
@@ -83,14 +93,17 @@ export function useHighlight(): HighlightApi {
 
 export function HighlightProvider({ children }: { children: ReactNode }): ReactNode {
   const [highlighted, setHighlighted] = useState<readonly string[]>(EMPTY);
+  const [spotlight, setSpotlight] = useState(false);
   const [held, setHeld] = useState<readonly string[]>(EMPTY);
   const [actions, setActionsState] = useState<Readonly<Record<string, ActionKind>>>(NO_ACTIONS);
   const [advice, setAdviceState] = useState<ReadonlyMap<string, AdviceMark[]>>(NO_ADVICE);
   const [litKind, setLitKind] = useState<ActionKind | null>(null);
   const [reveal, setReveal] = useState<RevealRequest | null>(null);
 
-  const highlight = useCallback((docIds: string | readonly string[] | null) => {
-    setHighlighted(asIds(docIds));
+  const highlight = useCallback((docIds: string | readonly string[] | null, opts?: { spotlight?: boolean }) => {
+    const ids = asIds(docIds);
+    setHighlighted(ids);
+    setSpotlight(ids.length > 0 && opts?.spotlight === true);
   }, []);
   const holdHighlight = useCallback((docIds: string | readonly string[] | null) => {
     // Same ids again must not re-render every cell in the window: the tooltip
@@ -121,6 +134,7 @@ export function HighlightProvider({ children }: { children: ReactNode }): ReactN
       isHighlighted: (docId: string) => highlighted.includes(docId) || held.includes(docId),
       any: highlighted.length > 0 || held.length > 0,
       highlight,
+      spotlight,
       holdHighlight,
       litKind,
       highlightKind,
@@ -133,6 +147,7 @@ export function HighlightProvider({ children }: { children: ReactNode }): ReactN
     }),
     [
       highlighted,
+      spotlight,
       held,
       highlight,
       holdHighlight,

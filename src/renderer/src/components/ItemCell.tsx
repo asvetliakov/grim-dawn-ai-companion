@@ -43,11 +43,18 @@ export function ItemCell({
   // it), or the container legend is pointing at this whole kind of action —
   // which is how "sell or salvage 13" becomes thirteen visible cells.
   const lit = highlight.isHighlighted(item.docId) || (action !== undefined && action === highlight.litKind);
+  // While the legend is pointing at a kind, everything that is *not* that kind
+  // steps back — lighting thirteen cells in a bright grid of two hundred was
+  // findable; thirteen lit cells over a dimmed field is legible at a glance.
+  // A loadout/advice hover that names items asks for the same field via
+  // `spotlight`; a plain grid hover never dims, so browsing stays calm.
+  const dim =
+    (highlight.litKind !== null && action !== highlight.litKind) || (highlight.spotlight && !lit);
   const mark = primaryMark(highlight.adviceFor(item.docId));
 
   return (
     <div
-      className={`item-cell ${rarityClass(item.rarity)} ${lit ? 'highlighted' : ''} ${
+      className={`item-cell ${rarityClass(item.rarity)} ${lit ? 'highlighted' : ''} ${dim ? 'dimmed' : ''} ${
         action ? `action action-${action}` : ''
       } ${className}`}
       style={style}

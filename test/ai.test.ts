@@ -309,12 +309,16 @@ describe('claude-cli provider', () => {
 
     expect(seen.map((a) => `${a.kind}:${a.text}`)).toEqual([
       'thinking:Pierce',
+      // The `thinking_tokens` estimate is activity in its own right — on a
+      // redacted stream it is the only heartbeat the thinking phase has.
+      'thinking:',
       'thinking: build',
       'answer:## Reading',
     ]);
     // The CLI's own running estimate, picked up from the `thinking_tokens` line
     // that arrived between the two deltas.
     expect(seen[1]!.outputTokens).toBe(33);
+    expect(seen[2]!.outputTokens).toBe(33);
     // And the run still produced its answer: the result line is parsed exactly as
     // the non-streaming envelope was.
     expect(result.text).toBe(CANNED_ANSWER);
@@ -322,6 +326,45 @@ describe('claude-cli provider', () => {
     // The message_delta's counted figure wins over the running estimate (33) —
     // recorded in usage so an effort A/B can read it from the stored envelope.
     expect(result.usage?.thinkingTokens).toBe(106);
+  });
+
+  /**
+   * The stream the installed CLI (2.1.220) actually produces: every
+   * `thinking_delta` carries an **empty string** — the reasoning text is
+   * redacted — and the token estimates are all that moves during the thinking
+   * phase. Before the heartbeat emit, this stream produced *no activity at all*
+   * until the answer began, which is the empty reasoning box a live run showed.
+   */
+  it('keeps the token count ticking on a redacted thinking stream', async () => {
+    const stream = [
+      '{"type":"system","subtype":"thinking_tokens","estimated_tokens":50,"estimated_tokens_delta":50}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}}}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"","estimated_tokens":null}}}',
+      '{"type":"system","subtype":"thinking_tokens","estimated_tokens":72,"estimated_tokens_delta":22}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"xyz"}}}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"## Reading"}}}',
+      envelope(CANNED_ANSWER),
+      '',
+    ].join('\n');
+
+    const spawn = fakeSpawn((_run, child) => finish(child, stream));
+    const provider = createClaudeCliProvider({ spawn: spawn.fn });
+    const seen: { kind: string; text: string; outputTokens?: number }[] = [];
+
+    const result = await provider.advise({ contextDoc: 'x' }, undefined, (a) => seen.push(a));
+
+    // Four thinking heartbeats — the two estimate lines and the two empty
+    // deltas — then the answer. The signature delta says nothing and is skipped.
+    expect(seen.map((a) => `${a.kind}:${a.text}:${a.outputTokens ?? '-'}`)).toEqual([
+      'thinking::50',
+      'thinking::50',
+      'thinking::50',
+      'thinking::72',
+      'answer:## Reading:72',
+    ]);
+    expect(result.text).toBe(CANNED_ANSWER);
+    // With no message_delta count in this stream, the estimate is the record.
+    expect(result.usage?.thinkingTokens).toBe(72);
   });
 
   it('reassembles a delta split across two stdout chunks', async () => {

@@ -312,7 +312,7 @@ function SlotRow({
           <ItemFace
             item={proposed}
             highlighted={highlight.isHighlighted(proposed.docId)}
-            onHover={(id) => highlight.highlight(id)}
+            onHover={(id) => highlight.highlight(id, { spotlight: true })}
             onClick={() => highlight.requestReveal(proposed.docId, proposed.position)}
           />
         ) : afterSocket ? (
@@ -333,7 +333,7 @@ function SlotRow({
             }
             onHover={(docId) => {
               setSide('proposed');
-              if (socket?.from) highlight.highlight(docId ? socket.from : null);
+              if (socket?.from) highlight.highlight(docId ? socket.from : null, { spotlight: true });
             }}
           />
         ) : advice ? (
