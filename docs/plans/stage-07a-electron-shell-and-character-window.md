@@ -686,3 +686,39 @@ worse than the question assumed:
   and `stories:check` asserts none of them widens the panel.
 
 93 story assertions.
+
+### Eleventh pass (same session): the panel can be entered, and a grant stays with its part
+
+Two small reports, one of them a real data bug.
+
+- **The tooltip is a hover target now.** It sat behind `pointer-events: none`
+  and closed the instant the pointer left its card, so there was no way to move
+  into it — to read a long block, or to select a line out of it. It now takes
+  the pointer and closes 140 ms *after* the pointer leaves; every `show` and the
+  panel's own `mouseenter` cancel that pending close. The delay is not a nicety:
+  the panel sits 8 px below its card, and an immediate close fires in the gap.
+  The cost, stated rather than hidden: an open panel covers what is beneath it,
+  so a sweep *down* a container grid now meets the panel where before it passed
+  through. A sweep along a row — the common one — is unaffected, because the
+  panel opens below rather than beside.
+  `check-stories.mjs` needed one structural change for this: hovering a new
+  target while a panel is up is a deadlock, because Playwright's `.hover()`
+  retries by moving the mouse onto the covering panel, which keeps it alive.
+  `clearTip()` parks the pointer and waits for `.tooltip` to detach. The new
+  assertion is a real one — reverting `pointer-events` makes it fail by opening
+  *a different item's* panel, which is what "passes the pointer through" means.
+- **A component's granted skill was being credited to its host.** Reported from
+  live data: Vicious Spikes shows no `Grants:` of its own, while the weapon it
+  is installed in shows one. `buildTooltip` was lifting every `Grants:` line out
+  of an installed socketable into the item's own granted-skill block. That cost
+  twice. The component's *own* panel — the one on its chip, and the one a merely
+  **proposed** component gets, which has no host at all — was built from the
+  stripped lines, so a component whose entire point is the buff it grants
+  described itself as two small stat lines. And in the host's panel the grant
+  read as the item's own: it is not, it leaves with the component, and a
+  `SWAP-COMPONENT` is precisely the move that takes it away. The socketable now
+  keeps its own lines, which states the grant once and attributes it correctly.
+  The **context document was already right** (§8 prints the grant with the
+  component) — this was a UI-only regression, and its bytes are unchanged.
+
+100 story assertions, 320 tests.

@@ -53,6 +53,22 @@ function socketable(part: { name: string; lines: string[]; useOn?: string }): Ui
 }
 
 /**
+ * A component whose point is the skill it grants, not its one stat line.
+ *
+ * Written once and used for both the installed copy and the dictionary entry,
+ * the way the real snapshot builds both from one record. The grant belongs to
+ * the *component*: it arrives with it and leaves with it, so the host item's
+ * granted-skill block must not claim it.
+ */
+const SEAL_OF_MIGHT = {
+  name: 'Seal of Might',
+  lines: [
+    '+40% Physical Damage',
+    'Grants: Might of Empyrion (toggle — stays on until switched off) — +60 Physical Damage; +12% Physical Damage; 15% Energy Reserved',
+  ],
+};
+
+/**
  * Socketables the dossier offered, including ones installed nowhere.
  *
  * The last two exist only here: a plan routinely proposes a component the
@@ -62,7 +78,7 @@ function socketable(part: { name: string; lines: string[]; useOn?: string }): Ui
 const SOCKETABLES: UiSocketable[] = [
   socketable({ name: 'Runestone', lines: ['+12% Fire, Cold and Lightning Resistance'] }),
   socketable({ name: 'Sanctified Bone', lines: ['+18% Vitality Resistance', '+12% Chaos Resistance'] }),
-  socketable({ name: 'Seal of Might', lines: ['+40% Physical Damage'] }),
+  socketable(SEAL_OF_MIGHT),
   socketable({
     name: 'Mark of Mogdrogen',
     lines: ['+25% Bleeding Resistance', '+3% Health Regenerated per second'],
@@ -237,7 +253,7 @@ const WEAPONS: ItemSpec[] = [
     type: 'Legendary · Sword',
     cells: [2, 4],
     stats: ['+146–248 Physical Damage', '+120% Pierce Damage', '+65% Internal Trauma Damage', '1.21 Attacks per Second'],
-    component: { name: 'Seal of Might', lines: ['+40% Physical Damage'] },
+    component: SEAL_OF_MIGHT,
     requirements: ['level 80', '620 cunning'],
   },
   {

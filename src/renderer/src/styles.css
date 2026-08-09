@@ -1466,12 +1466,19 @@ h3 {
 
 /* --- tooltip ------------------------------------------------------------ */
 
+/* The panel takes the pointer rather than passing it through: it is a hover
+   target of its own, which is what lets a long stat block be read at leisure
+   and a line be selected out of it. The cost is that it covers the cells it
+   opens over — it opens *below* its card, so a sweep along a row is untouched
+   and only a sweep downwards meets it, and it gets out of the way a breath
+   after the pointer leaves. */
 .tooltip-layer {
   z-index: 100;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .tooltip {
+  user-select: text;
   max-width: 480px;
   padding: 12px 14px;
   background: rgb(12 10 8 / 97%);

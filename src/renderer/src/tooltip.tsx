@@ -12,7 +12,16 @@
  */
 
 import { autoUpdate, flip, FloatingPortal, offset, shift, useFloating } from '@floating-ui/react';
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 
 import type { UiItem, UiSocketable } from '../../shared/ipc.js';
 import { Tooltip, type TooltipSubject } from './components/ItemTooltip.js';
@@ -41,6 +50,17 @@ function anchorFor(element: Element): Element {
   return element.closest('.item-face, .item-cell, .material-row') ?? element;
 }
 
+/**
+ * How long the panel outlives the pointer leaving its target.
+ *
+ * The panel is a hover target itself — a long item's stats are worth reading at
+ * leisure, and worth selecting — and it sits 8 px below the card, so a close on
+ * `mouseleave` would fire in the gap and the panel would vanish on the way to
+ * it. Long enough to cross that gap without hurrying, short enough that a panel
+ * opened by a pointer passing through is gone before it is read as sticky.
+ */
+const HIDE_DELAY_MS = 140;
+
 const TooltipContext = createContext<TooltipApi | undefined>(undefined);
 
 export function useTooltip(): TooltipApi {
@@ -63,19 +83,34 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
     whileElementsMounted: autoUpdate,
   });
 
-  // Both are called from `mouseover`, which fires again on every boundary the
-  // pointer crosses *inside* one item's face. Returning the previous subject
-  // when nothing changed is what keeps that from re-rendering the panel — and
-  // the whole window under it — on the way from an icon to a name.
+  // The pending close, so that arriving anywhere — a new card, or the panel
+  // itself — cancels it. Without the cancel the delay would only postpone the
+  // flicker rather than remove it.
+  const closing = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const keep = useCallback(() => {
+    if (closing.current !== undefined) {
+      clearTimeout(closing.current);
+      closing.current = undefined;
+    }
+  }, []);
+  useEffect(() => keep, [keep]);
+
+  // The two `show`s are called from `mouseover`, which fires again on every
+  // boundary the pointer crosses *inside* one item's face. Returning the
+  // previous subject when nothing changed is what keeps that from re-rendering
+  // the panel — and the whole window under it — on the way from an icon to a
+  // name.
   const show = useCallback(
     (element: Element, item: UiItem) => {
+      keep();
       refs.setPositionReference(anchorFor(element));
       setSubject((prev) => (prev?.kind === 'item' && prev.item === item ? prev : { kind: 'item', item }));
     },
-    [refs],
+    [refs, keep],
   );
   const showSocketable = useCallback(
     (element: Element, label: string, part: UiSocketable, note?: string) => {
+      keep();
       refs.setPositionReference(anchorFor(element));
       setSubject((prev) =>
         prev?.kind === 'socketable' && prev.part === part && prev.note === note
@@ -83,9 +118,15 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
           : { kind: 'socketable', label, part, ...(note ? { note } : {}) },
       );
     },
-    [refs],
+    [refs, keep],
   );
-  const hide = useCallback(() => setSubject(null), []);
+  const hide = useCallback(() => {
+    keep();
+    closing.current = setTimeout(() => {
+      closing.current = undefined;
+      setSubject(null);
+    }, HIDE_DELAY_MS);
+  }, [keep]);
   const api = useMemo(() => ({ show, showSocketable, hide }), [show, showSocketable, hide]);
 
   return (
@@ -93,7 +134,17 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
       {children}
       {subject && (
         <FloatingPortal>
-          <div ref={refs.setFloating} style={floatingStyles} className="tooltip-layer">
+          {/* The panel keeps itself open while the pointer is on it, and closes
+              on the same delay when it leaves — so the reader can go into it to
+              read a long stat block or select a line, and does not have to
+              hurry back out. */}
+          <div
+            ref={refs.setFloating}
+            style={floatingStyles}
+            className="tooltip-layer"
+            onMouseEnter={keep}
+            onMouseLeave={hide}
+          >
             <Tooltip subject={subject} />
           </div>
         </FloatingPortal>

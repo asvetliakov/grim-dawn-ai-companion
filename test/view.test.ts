@@ -344,6 +344,28 @@ describe.skipIf(skipSaves)('buildUiSnapshot', () => {
       for (const part of installed) {
         if (!part.id) continue; // worn but never offered as a candidate
         expect(ui.socketables[part.id]?.name).toBe(part.name);
+        // And the *same* stats, whether it is being read off its host or out of
+        // the dictionary. The installed copy used to have its `Grants:` line
+        // lifted into the host item's granted-skill block, which left a
+        // component whose whole point is the buff it grants describing itself
+        // as two small stat lines — and credited the item with a skill that
+        // leaves the moment the component does.
+        expect(ui.socketables[part.id]?.lines).toEqual(part.lines);
+      }
+
+      // Concretely: plenty of components grant a skill, and they say so
+      // themselves. (Asserted over the dictionary rather than over what this
+      // character happens to be wearing, which changes every time they re-gear.)
+      const granting = Object.values(ui.socketables).filter((p) => p.lines.some((l) => l.startsWith('Grants: ')));
+      expect(granting.length, 'no socketable grants a skill').toBeGreaterThan(0);
+
+      // Stated once, on the part it belongs to: an item's own granted-skill
+      // block must not repeat what its component or augment already said.
+      for (const it of [...ui.equipment, ...ui.weaponSets.flat()].filter((i) => i !== null)) {
+        const fromParts = [...(it.tooltip.component?.lines ?? []), ...(it.tooltip.augment?.lines ?? [])];
+        for (const line of it.tooltip.grantedSkills) {
+          expect(fromParts, `${it.display} repeats a socketable's grant`).not.toContain(line);
+        }
       }
     } finally {
       icons.close();

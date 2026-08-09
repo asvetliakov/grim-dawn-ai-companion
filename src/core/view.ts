@@ -319,12 +319,22 @@ function buildTooltip(
   if (item.modifier) block(item.modifierName ?? 'crafting bonus', statLines(item.modifier.stats));
   if (item.completion) block('relic completion bonus', statLines(item.completion.stats));
 
-  const socketable = (part: DbItem): UiSocketable => ({
-    ...describeSocketable(part, socketableIds?.get(part.record), db),
-    // The host's own granted-skill block collects the grant, so it is not
-    // repeated in the socketable's stat lines.
-    lines: statLines(part.stats),
-  });
+  /**
+   * A socketable keeps its own granted skill instead of surrendering it to the
+   * host's block.
+   *
+   * Lifting it out was wrong twice over. The component's *own* panel — the one
+   * that opens on its chip, and the one the plan shows for a component it
+   * merely proposes — was built from the stripped lines, so a component whose
+   * whole point is the skill it grants (Vicious Spikes, Seal of the Void)
+   * described itself as three small stat lines and said nothing about the buff.
+   * And in the host's panel the grant appeared under the *item*, which reads as
+   * the item's own: it is not, it leaves with the component, and a
+   * `SWAP-COMPONENT` is exactly the move that takes it away. Attributed to the
+   * part it comes from, it is stated once and in the right place.
+   */
+  const socketable = (part: DbItem): UiSocketable =>
+    describeSocketable(part, socketableIds?.get(part.record), db);
 
   const sockets: string[] = [];
   const slot = base?.slot ?? '';

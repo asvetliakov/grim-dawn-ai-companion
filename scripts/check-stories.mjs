@@ -23,6 +23,19 @@ function check(name, ok, detail = '') {
 
 const browser = await chromium.launch();
 const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+
+/**
+ * Park the pointer in the corner and wait for the panel to actually be gone.
+ *
+ * A fixed pause is not enough any more: the panel outlives the pointer leaving
+ * by a beat, and it takes the pointer rather than passing it through. Hovering
+ * the next target while the old panel is still up would land the pointer on the
+ * panel — which keeps it open, so the wait would never end.
+ */
+async function clearTip() {
+  await page.mouse.move(5, 5);
+  await page.locator('.tooltip').waitFor({ state: 'detached', timeout: 2000 });
+}
 const problems = [];
 page.on('pageerror', (e) => problems.push(e.message));
 
@@ -113,8 +126,7 @@ await page.waitForTimeout(220);
 const afterTip = await page.locator('.tooltip').innerText();
 check('the proposal tooltip carries the new component', afterTip.includes('Bloodied Crystal'), afterTip.split('\n')[0]);
 check('and says what replacing costs', /destroy/i.test(afterTip));
-await page.mouse.move(5, 5);
-await page.waitForTimeout(100);
+await clearTip();
 
 // ---------------------------------------------------------------------------
 // The standing mark: which of two hundred items the advice touches at all
@@ -203,8 +215,7 @@ check(
   actionTip.some((l) => l.includes('socket is empty')),
   actionTip[actionTip.length - 1],
 );
-await page.mouse.move(5, 5);
-await page.waitForTimeout(100);
+await clearTip();
 
 // A verdict row is about two items; lighting one is half an answer.
 await page.locator('.verdict-table tbody').nth(1).hover();
@@ -232,8 +243,7 @@ await page.locator('.slot-row .face-name').first().hover();
 await page.waitForTimeout(200);
 check('hovering an item *name* shows its tooltip', (await tooltip.count()) === 1);
 check('and so does its icon', await (async () => {
-  await page.mouse.move(5, 5);
-  await page.waitForTimeout(80);
+  await clearTip();
   await page.locator('.slot-row .face-art').first().hover();
   await page.waitForTimeout(200);
   return (await tooltip.count()) === 1;
@@ -241,9 +251,29 @@ check('and so does its icon', await (async () => {
 check('the tooltip names its stats', (await tooltip.innerText()).includes('Resistance'));
 check('and colours them by type', (await page.locator('.tooltip [class*="stat-"]').count()) > 0);
 
-// The slot label is a hover target too.
+// The panel is a hover target of its own: a long stat block is worth reading at
+// leisure, and worth selecting out of. It sits 8 px below the card, so this is
+// also the check that the close is delayed — an immediate one would fire in the
+// gap and the panel would be gone before the pointer arrived.
+const tipTitle = await tooltip.locator('.tooltip-title').innerText();
+const tipBox = await tooltip.boundingBox();
+await page.mouse.move(tipBox.x + tipBox.width / 2, tipBox.y + tipBox.height / 2);
+await page.waitForTimeout(400);
+// The *same* panel, not merely one: a panel that passes the pointer through
+// hands it to whatever is underneath, which opens that item's panel instead.
+check(
+  'the pointer can move onto the panel without it closing',
+  (await tooltip.count()) === 1 && (await tooltip.locator('.tooltip-title').innerText()) === tipTitle,
+  tipTitle,
+);
+check('and its text can be selected', await tooltip.evaluate((e) => getComputedStyle(e).userSelect === 'text'));
+// It is not sticky, though: leaving it closes it on the same short delay.
 await page.mouse.move(5, 5);
-await page.waitForTimeout(100);
+await page.waitForTimeout(400);
+check('and leaving it closes the panel', (await tooltip.count()) === 0);
+
+// The slot label is a hover target too.
+await clearTip();
 await page.locator('.slot-name').first().hover();
 await page.waitForTimeout(200);
 check('hovering a slot label shows the equipped item', (await tooltip.count()) === 1);
@@ -253,8 +283,7 @@ check('hovering a slot label shows the equipped item', (await tooltip.count()) =
 // of either card lands on the other one — the very item being compared against.
 const boxes = [];
 for (const sel of ['.slot-current .face-art', '.slot-current .face-name', '.slot-current .socket-chip.filled']) {
-  await page.mouse.move(5, 5);
-  await page.waitForTimeout(80);
+  await clearTip();
   await page.locator(`.slot-row:first-child ${sel}`).first().hover();
   await page.waitForTimeout(220);
   boxes.push(
@@ -288,8 +317,7 @@ for (const [what, sel] of [
   ['an EQUIP proposal', '.slot-row:not(.socket-move) .slot-proposed .item-face'],
 ]) {
   const card = page.locator(sel).first();
-  await page.mouse.move(5, 5);
-  await page.waitForTimeout(80);
+  await clearTip();
   const before = await card.evaluate((e) => getComputedStyle(e).backgroundColor);
   await card.hover();
   await page.waitForTimeout(150);
@@ -300,8 +328,7 @@ for (const [what, sel] of [
 // One highlight, whatever caused it: what the advice says about an item is
 // carried by the row border and the corner flag, not by a second brightness.
 check('every card lights the same way', new Set(lit).size === 1, [...new Set(lit)].join(' / '));
-await page.mouse.move(5, 5);
-await page.waitForTimeout(100);
+await clearTip();
 
 // A component gets its own panel, not the host item's — and its *name* is as
 // much a hover target as its icon, which is the half the pointer usually lands
@@ -315,10 +342,27 @@ const chipTip = await tooltip.innerText();
 check('hovering a component name shows the component', chipTip.includes('Component'), chipTip.split('\n')[0]);
 check('and its stats keep their type colours', (await page.locator('.tooltip [class*="stat-"]').count()) > 0);
 
+// A component's granted skill belongs to the component: it arrives with it and
+// leaves with it, and a SWAP-COMPONENT is exactly the move that takes it away.
+// It used to be lifted into the host item's block, which left a component whose
+// whole point is the buff describing itself as one stat line.
+await clearTip();
+await page.locator('.slot-row', { hasText: 'MAIN HAND' }).locator('.socket-chip.filled .socket-name').first().hover();
+await page.waitForTimeout(220);
+const grantTip = await tooltip.innerText();
+check('a component that grants a skill says so itself', /Grants: Might of Empyrion/.test(grantTip), grantTip.split('\n')[0]);
+check('and how the skill is obtained', /toggle/.test(grantTip));
+// And says it once: the host's own granted-skill block must not repeat it.
+await clearTip();
+await page.locator('.slot-row', { hasText: 'MAIN HAND' }).locator('.slot-current .face-art').hover();
+await page.waitForTimeout(220);
+const hostTip = await tooltip.innerText();
+check('the host names it under the component', /Component: Seal of Might/.test(hostTip));
+check('and states the grant exactly once', (hostTip.match(/Might of Empyrion/g) ?? []).length === 1, hostTip.match(/Might of Empyrion/g)?.length + '×');
+
 // The socketable block inside a *whole item's* tooltip is stats too. It was
 // being flattened to the body colour by a rule meant for granted skills.
-await page.mouse.move(5, 5);
-await page.waitForTimeout(100);
+await clearTip();
 await page.locator('.slot-current .face-art').first().hover();
 await page.waitForTimeout(200);
 check(
@@ -328,8 +372,7 @@ check(
 
 // A damage-over-time type is its own stat, so it is its own shade — the same
 // family as its parent, not the same colour.
-await page.mouse.move(5, 5);
-await page.waitForTimeout(100);
+await clearTip();
 await page.locator('.slot-row', { hasText: 'OFF HAND' }).locator('.face-name').first().hover();
 await page.waitForTimeout(220);
 const dot = await page.locator('.tooltip .stat-burn, .tooltip .stat-fire').evaluateAll((els) =>
@@ -342,8 +385,7 @@ check('and not with the same colour', dot.length === 2 && dot[0][1] !== dot[1][1
 // The character sheet
 // ---------------------------------------------------------------------------
 
-await page.mouse.move(5, 5);
-await page.waitForTimeout(100);
+await clearTip();
 
 // The sheet's rows and the tooltips are about the same things, so they are
 // coloured by the same rule.
