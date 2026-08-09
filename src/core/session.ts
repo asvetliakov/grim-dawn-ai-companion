@@ -152,3 +152,30 @@ export function loadSnapshot(
 
   return { character, savePath, save, difficulty, account, resolved, aggregate, input, doc };
 }
+
+/**
+ * The input and document an advice run should actually send.
+ *
+ * With the stash included this is the snapshot's own pair, untouched — one
+ * composition, no drift. With it excluded, the stored items are removed from the
+ * *resolved walk* and the document rebuilt, which takes the stashes out of every
+ * section at once: §7 stops ranking their gear, §8 stops counting components
+ * installed in it, §12 stops costing thresholds against it. The materials store
+ * is not a stash and always stays — it is the component census.
+ *
+ * The snapshot itself is never filtered: it also feeds the window, and a
+ * preference about what the *model* reads must not make items vanish from the
+ * screen. The ids still join across the two documents, because an item's id is a
+ * hash of the item itself, not of its position in the list — the only wobble is
+ * the disambiguating suffix on byte-identical duplicates, which can shift a mark
+ * between two copies of the same thing.
+ */
+export function adviceScope(
+  snapshot: CharacterSnapshot,
+  includeStash: boolean,
+): { input: ContextInput; doc: ContextDoc } {
+  if (includeStash) return { input: snapshot.input, doc: snapshot.doc };
+  const items = snapshot.resolved.items.filter((i) => i.source !== 'stash' && i.source !== 'transfer');
+  const input: ContextInput = { ...snapshot.input, resolved: { ...snapshot.resolved, items } };
+  return { input, doc: buildContextDoc(input) };
+}

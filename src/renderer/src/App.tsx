@@ -33,6 +33,7 @@ export function App(): React.ReactNode {
         onRunAdvice={() => session.startAdvice()}
         onSelectAdvice={session.selectAdvice}
         onNewRun={session.newRun}
+        onIncludeStash={(include) => session.updateSettings({ includeStashInAdvice: include })}
       />
 
       {error && <div className="banner error">{error}</div>}
@@ -45,11 +46,9 @@ export function App(): React.ReactNode {
           run={run}
           {...(activity ? { activity } : {})}
           history={adviceHistory}
-          {...(adviceId ? { adviceId } : {})}
           {...(adviceError ? { adviceError } : {})}
           onRunAdvice={session.startAdvice}
           onCancelAdvice={session.cancelAdvice}
-          onSelectAdvice={session.selectAdvice}
           onNewRun={session.newRun}
         />
       )}
@@ -92,11 +91,9 @@ export function Workspace({
   run = null,
   activity,
   history = [],
-  adviceId,
   adviceError,
   onRunAdvice,
   onCancelAdvice,
-  onSelectAdvice,
   onNewRun,
 }: {
   snapshot: UiSnapshot;
@@ -107,11 +104,9 @@ export function Workspace({
   activity?: RunActivity;
   /** Every stored run for this character, newest first. */
   history?: readonly AdviceRunRef[];
-  adviceId?: string;
   adviceError?: string;
   onRunAdvice?: (question?: string) => void;
   onCancelAdvice?: () => void;
-  onSelectAdvice?: (id: string) => void;
   /** Put the open run away and offer a fresh one. Deletes nothing. */
   onNewRun?: () => void;
 }): React.ReactNode {
@@ -144,11 +139,9 @@ export function Workspace({
           run={run}
           {...(activity ? { activity } : {})}
           history={history}
-          {...(adviceId ? { adviceId } : {})}
           {...(adviceError ? { error: adviceError } : {})}
           {...(onRunAdvice ? { onRun: onRunAdvice } : {})}
           {...(onCancelAdvice ? { onCancel: onCancelAdvice } : {})}
-          {...(onSelectAdvice ? { onSelect: onSelectAdvice } : {})}
           {...(onNewRun ? { onNewRun } : {})}
         />
       </div>

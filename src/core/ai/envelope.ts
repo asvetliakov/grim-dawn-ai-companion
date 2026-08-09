@@ -121,6 +121,15 @@ export const adviseEnvelopeSchema = z.object({
   wornSockets: z
     .record(z.string(), z.object({ component: z.string().optional(), augment: z.string().optional() }))
     .optional(),
+  /**
+   * Whether the dossier this run answered included the stashes.
+   *
+   * Scope is part of the answer's identity: a run that never saw the personal
+   * and transfer stash is not *wrong* about them — it was not asked. Optional so
+   * every run stored before the toggle existed still validates; those runs all
+   * included the stash, and a reader may treat `undefined` as `true`.
+   */
+  stashIncluded: z.boolean().optional(),
 });
 
 export type AdviseEnvelope = z.infer<typeof adviseEnvelopeSchema>;
@@ -169,6 +178,8 @@ export interface BuildEnvelopeArgs {
   worn?: Record<string, string>;
   /** Slot label → the socketable ids that item was carrying. See the schema. */
   wornSockets?: Record<string, { component?: string; augment?: string }>;
+  /** Whether the dossier included the stashes. See the schema field. */
+  stashIncluded?: boolean;
 }
 
 /**
@@ -210,6 +221,7 @@ export function buildEnvelope(args: BuildEnvelopeArgs): AdviseEnvelope {
     socketableNames: args.socketableNames,
     ...(args.worn ? { worn: args.worn } : {}),
     ...(args.wornSockets ? { wornSockets: args.wornSockets } : {}),
+    ...(args.stashIncluded !== undefined ? { stashIncluded: args.stashIncluded } : {}),
   };
 }
 
@@ -308,16 +320,17 @@ export interface AdviseStatus {
 export interface AdviseActivityState {
   kind: 'thinking' | 'answer';
   /**
-   * The last few hundred characters, not the transcript — and **only for a window
-   * that arrives late**.
+   * The last few hundred characters of the **reasoning**, not the transcript —
+   * and **only for a window that arrives late**.
    *
-   * The panel does show the whole transcript, but it builds it from the deltas on
+   * The panel does show the whole reasoning, but it builds it from the deltas on
    * `advise-activity`: sending the accumulation on every push would re-marshal a
    * hundred kilobytes across the process boundary several times a second to append
    * a few words to it. So this is not what the panel renders in the normal case. It
    * is what a renderer that mounted nine minutes in has instead of a transcript,
    * which is why the panel labels it as a fragment rather than presenting it as the
-   * whole.
+   * whole. Reasoning only, like the transcript itself: the answer's own text is
+   * never streamed into the box, only counted.
    */
   tail: string;
   outputTokens?: number;

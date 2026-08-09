@@ -34,7 +34,6 @@ import { useTooltip } from '../tooltip.js';
 import { ExplainedButton } from './ExplainedButton.js';
 import { currentWorn, itemsByDocId } from './LoadoutPanel.js';
 import { Markdown } from './Markdown.js';
-import { RunPicker } from './RunPicker.js';
 
 export function AdvicePanel({
   snapshot,
@@ -43,10 +42,8 @@ export function AdvicePanel({
   activity,
   error,
   history = [],
-  adviceId,
   onRun,
   onCancel,
-  onSelect,
   onNewRun,
 }: {
   snapshot: UiSnapshot;
@@ -56,13 +53,10 @@ export function AdvicePanel({
   activity?: RunActivity;
   /** A start that was refused, or a run that died. Never a blank pane. */
   error?: string;
-  /** Every stored run for this character, newest first. */
+  /** Every stored run for this character, newest first — the empty state counts them. */
   history?: readonly AdviceRunRef[];
-  /** Which of them is on screen. */
-  adviceId?: string;
   onRun?: (question?: string) => void;
   onCancel?: () => void;
-  onSelect?: (id: string) => void;
   /** Put the open answer away and offer a fresh run. Deletes nothing. */
   onNewRun?: () => void;
 }): React.ReactNode {
@@ -123,20 +117,11 @@ export function AdvicePanel({
     />
   );
 
-  /** How to reach an answer already paid for. The only way in — see `RunPicker`. */
-  const picker = onSelect ? (
-    <RunPicker history={history} {...(adviceId ? { adviceId } : {})} onSelect={onSelect} />
-  ) : null;
-
   if (!advice) {
     return (
       <section className="advice-panel empty">
         <header className="advice-header">
           <h2>Advice</h2>
-          {/* In the empty state the picker is the *door*, not a convenience: the
-              window no longer reopens the newest answer by itself, so without it a
-              run already paid for would be unreachable. */}
-          {picker}
           <div className="header-spacer" />
           {control}
         </header>
@@ -163,7 +148,7 @@ export function AdvicePanel({
                 {' '}
                 <span className="advice-kept">
                   {history.length} earlier answer{history.length === 1 ? '' : 's'} {history.length === 1 ? 'is' : 'are'}{' '}
-                  kept — open {history.length === 1 ? 'it' : 'one'} from the list above.
+                  kept — open {history.length === 1 ? 'it' : 'one'} from the list in the top bar.
                 </span>
               </>
             )}
@@ -196,16 +181,10 @@ export function AdvicePanel({
     <section className="advice-panel">
       <header className="advice-header">
         <h2>Advice</h2>
-        {/*
-          Which answer is on screen. A `<select>` when there is something to choose
-          between, the date in prose when there is not — a picker with one option
-          that cannot change reads as a control that is broken.
-
-          Runs are kept rather than overwritten because each one costs minutes and
-          real money: taking a second opinion, or asking the same dossier a
-          different question, should not be a decision to destroy the first answer.
-        */}
-        {picker ?? <span className="advice-meta">{new Date(advice.generatedAt).toLocaleString()}</span>}
+        {/* Which answer this is. The control that *switches* answers lives in the
+            top bar and only there — the panel scrolls with the loadout, so a
+            picker down here was sometimes off screen and always a duplicate. */}
+        <span className="advice-meta">{new Date(advice.generatedAt).toLocaleString()}</span>
         <span className="advice-meta">
           {advice.model ?? advice.provider}
           {advice.revised ? ' · revised once' : ''}
@@ -444,9 +423,27 @@ export function AdvicePanel({
                       <span className="level-unlocks">
                         {' '}
                         unlocks{' '}
-                        {step.unlocks
-                          .map((id) => byId.get(id)?.display ?? advice.itemNames[id] ?? `#${id}`)
-                          .join(', ')}
+                        {step.unlocks.map((id, j) => {
+                          const item = byId.get(id);
+                          return (
+                            <span key={id}>
+                              {j > 0 && ', '}
+                              {/* Clickable for the same reason a verdict row is:
+                                  an unlock is routinely in a stash tab that is
+                                  not on screen, and the first live reader went
+                                  hunting for one by eye. Clicking jumps the
+                                  containers to it. */}
+                              <span
+                                className={item ? 'level-item' : ''}
+                                onClick={() => {
+                                  if (item) highlight.requestReveal(item.docId, item.position);
+                                }}
+                              >
+                                {item?.display ?? advice.itemNames[id] ?? `#${id}`}
+                              </span>
+                            </span>
+                          );
+                        })}
                       </span>
                     )}
                     {step.recommendation && <span className="move-detail"> — {step.recommendation}</span>}
@@ -487,6 +484,9 @@ export function AdvicePanel({
         {formatDuration(advice.durationMs)}
         {advice.effort ? ` · effort ${advice.effort}` : ''}
         {advice.question ? ` · asked: “${advice.question}”` : ''}
+        {/* Scope is part of the answer's identity: a run that never saw the
+            stashes is not wrong about them, it was not asked about them. */}
+        {advice.stashIncluded === false ? ' · stash left out' : ''}
       </div>
     </section>
   );
@@ -540,7 +540,7 @@ function RunProgress({
 }
 
 /**
- * The model's own words — all of them, while it writes them and afterwards.
+ * The model's reasoning — all of it, while it is written and afterwards.
  *
  * The first version showed a 600-character tail on the argument that the panel has
  * two lines to spare and the transcript is not the product. Both true, and both
@@ -549,6 +549,15 @@ function RunProgress({
  * routinely raises and does not answer. So it is kept whole, and the panel's job
  * is only to stay out of the way — **expanded while the run is live, collapsed
  * once it ends**, and re-openable after that.
+ *
+ * The reasoning, and **only** the reasoning. The first live run streamed the
+ * answer through here too, and that buried the transcript twice over: thirty
+ * thousand tokens of markdown shoved the reasoning off the top mid-run, and the
+ * repair call then re-streamed a whole second answer under it — so what the box
+ * mostly showed was two copies of a document the panel was about to render
+ * properly anyway. Now the answer's progress is a token count on the header line
+ * (`RunProgress` shows the same), and the box holds the one thing that exists
+ * nowhere else once the run ends.
  *
  * Not persisted with the envelope. It is the working-out, not the answer, and a
  * stored transcript beside a stored answer invites the two to be compared as if
@@ -581,7 +590,12 @@ function ActivityLog({ activity, running }: { activity: RunActivity; running: bo
         <span className="activity-caret" aria-hidden>
           {open ? '▾' : '▸'}
         </span>
-        <span className="activity-kind">{activity.kind === 'thinking' ? 'reasoning' : 'writing the answer'}</span>
+        {/* The label says what the *model* is doing; the box always holds the
+            reasoning. While the answer is being written the reasoning is done,
+            and the token count is the live part. */}
+        <span className="activity-kind">
+          {running && activity.kind === 'answer' ? 'reasoning · the answer is being written' : 'reasoning'}
+        </span>
         {activity.outputTokens ? (
           <span className="activity-count">{activity.outputTokens.toLocaleString()} tokens</span>
         ) : null}

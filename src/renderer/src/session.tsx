@@ -219,14 +219,29 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
           startedAt: Date.now() - event.elapsedMs,
           elapsedMs: event.elapsedMs,
         });
+        // The repair call reasons afresh, and its reasoning lands in the same
+        // box: without a seam the two read as one argument that mysteriously
+        // starts over. Pushed exactly once — `advance` fires per transition.
+        if (event.phase === 'repair') {
+          setActivity((prev) =>
+            prev ? { ...prev, kind: 'thinking', text: `${prev.text}\n\n— revising the plan —\n\n` } : prev,
+          );
+        }
         setAdviceError(undefined);
       } else if (event.type === 'advise-activity') {
-        // Appended, because the push is a delta. The kind is whatever it most
-        // recently was: the reasoning gives way to the answer once and never back.
+        // Appended, because the push is a delta — and only the reasoning is.
+        // The answer's text is not accumulated: the panel renders the finished
+        // answer properly the moment it arrives, and streaming it through this
+        // box buried the one thing that exists nowhere else (see `ActivityLog`).
+        // Its progress still shows, as the token count.
         setActivity((prev) => ({
           kind: event.kind,
-          text: (prev?.text ?? '') + event.text,
-          ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+          text: (prev?.text ?? '') + (event.kind === 'thinking' ? event.text : ''),
+          ...(event.outputTokens !== undefined
+            ? { outputTokens: event.outputTokens }
+            : prev?.outputTokens !== undefined
+              ? { outputTokens: prev.outputTokens }
+              : {}),
           ...(prev?.partial ? { partial: true } : {}),
         }));
       } else if (event.type === 'advise-done') {

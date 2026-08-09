@@ -48,6 +48,7 @@ import {
 } from '../core/resolve.js';
 import {
   accountFiles,
+  adviceScope,
   loadSnapshot,
   readSave as coreReadSave,
   requireDifficulty,
@@ -962,6 +963,7 @@ interface DocRequest {
 function contextFor(
   db: GameDb,
   opts: DocRequest,
+  includeStash = true,
 ): {
   name: string;
   input: ContextInput;
@@ -977,12 +979,15 @@ function contextFor(
       perGroup: opts.perGroup,
     }),
   );
+  // `adviceScope` filters the stashes out of the document when asked; with them
+  // included it hands back the snapshot's own pair untouched.
+  const scope = adviceScope(snap, includeStash);
   // The loadout the document describes, so a stored envelope can later say
   // whether it is still describing the save in front of the reader.
   return {
     name: snap.character,
-    input: snap.input,
-    doc: snap.doc,
+    input: scope.input,
+    doc: scope.doc,
     worn: wornSlots(snap.resolved.items),
     wornSockets: wornSocketables(snap.resolved.items, shortHash),
   };
@@ -1123,6 +1128,7 @@ program
   .option('--save-context <file>', 'write the exact document that was sent')
   .option('--dry-run', 'build and report the document without calling the provider')
   .option('--no-repair', 'do not spend a second call correcting a plan that fails the checks')
+  .option('--no-stash', 'leave the personal and transfer stash out of the dossier (materials always ship)')
   .option('--refresh', 'rebuild the database first')
   .action(
     async (opts: {
@@ -1139,6 +1145,7 @@ program
       saveContext?: string;
       dryRun?: boolean;
       repair?: boolean;
+      stash?: boolean;
       refresh?: boolean;
     }) => {
       await withDb({ refresh: opts.refresh, quiet: true }, async (db) => {
@@ -1172,11 +1179,18 @@ program
           process.exit(1);
         }
 
-        const { name, input, doc, worn, wornSockets } = contextFor(db, {
-          char: opts.char,
-          difficulty: opts.difficulty,
-          maxTokens: Number(opts.maxTokens),
-        });
+        // The flag wins; without it the window's stored preference applies, so
+        // a CLI run and a window run on the same save read the same dossier.
+        const includeStash = opts.stash === false ? false : (settings.includeStashInAdvice ?? true);
+        const { name, input, doc, worn, wornSockets } = contextFor(
+          db,
+          {
+            char: opts.char,
+            difficulty: opts.difficulty,
+            maxTokens: Number(opts.maxTokens),
+          },
+          includeStash,
+        );
 
         console.error(
           `${name} — context document ${doc.markdown.length.toLocaleString('en-US')} chars, ` +
@@ -1193,7 +1207,12 @@ program
         const socketables = new Map(
           documentSocketables(input).map((item) => [normalizeName(item.name), item]),
         );
-        const check = { itemsById: doc.itemsById, socketables, socketablesById: doc.socketablesById };
+        const check = {
+          itemsById: doc.itemsById,
+          socketables,
+          socketablesById: doc.socketablesById,
+          candidateIds: doc.candidateIds,
+        };
 
         console.error(`asking ${providerId} (${model}, effort ${effort})…`);
         const started = Date.now();
@@ -1272,6 +1291,7 @@ program
             socketableNames: Object.fromEntries([...doc.socketablesById].map(([id, item]) => [id, item.name])),
             worn,
             wornSockets,
+            stashIncluded: includeStash,
           });
           writeFileSync(opts.json, `${JSON.stringify(envelope, null, 2)}\n`);
           console.error(`structured output written to ${opts.json}`);

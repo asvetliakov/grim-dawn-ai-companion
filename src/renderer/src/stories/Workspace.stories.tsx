@@ -104,6 +104,7 @@ function Screen({
           onRunAdvice={() => {}}
           onSelectAdvice={() => {}}
           onNewRun={() => {}}
+          onIncludeStash={() => {}}
         />
         {error && <div className="banner error">{error}</div>}
         {loading && !snapshot && <LoadingBanner {...(progress ? { progress } : {})} />}
@@ -114,11 +115,9 @@ function Screen({
             run={run ?? null}
             {...(activity ? { activity } : {})}
             history={history}
-            {...(adviceId ? { adviceId } : {})}
             {...(adviceError ? { adviceError } : {})}
             onRunAdvice={() => {}}
             onCancelAdvice={() => {}}
-            onSelectAdvice={() => {}}
             onNewRun={() => {}}
           />
         )}
@@ -215,8 +214,9 @@ export const AdviceAfterActing: Story = {
  *
  * Runs are kept rather than overwritten because each is minutes and real money:
  * taking a second opinion should not be a decision to destroy the first answer, and
- * nothing in the window deletes one. With one run *open* and no other, there is no
- * choice to offer and the picker is a date instead.
+ * nothing in the window deletes one. The header picker shows which is open and
+ * always offers the way back out (`New run` is its first entry); the panel shows
+ * the open run's date, and no second picker.
  */
 export const AdviceHistory: Story = {
   render: () => (

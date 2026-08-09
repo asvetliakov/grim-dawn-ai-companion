@@ -441,6 +441,22 @@ await page.waitForTimeout(150);
 const selectedTab = await page.locator('.container-panel .tab.selected').innerText();
 check('clicking a proposal reveals its container', selectedTab.startsWith('Inventory'), selectedTab.trim());
 
+// The chrome — tabs and legend — sticks while the grids scroll under it: deep
+// in a tall bag, "which container am I in" and "what do the marks mean" are
+// questions about the top of the pane, and scrolling back up to answer them was
+// the complaint. The fixture's containers happen to fit at 1080, so the pane has
+// nothing to scroll here — what is checked is the mechanism: pinned to the
+// pane's top edge, and opaque, so grids pass under it rather than through it.
+const chrome = await page.locator('.container-chrome').evaluate((bar) => {
+  const style = getComputedStyle(bar);
+  return { position: style.position, top: style.top, opaque: !/rgba\(.*,\s*0\)/.test(style.backgroundColor) };
+});
+check(
+  'the container chrome is pinned over the scrolling grids',
+  chrome.position === 'sticky' && chrome.top === '0px' && chrome.opaque,
+  JSON.stringify(chrome),
+);
+
 // ---------------------------------------------------------------------------
 // Tooltips
 // ---------------------------------------------------------------------------
@@ -768,6 +784,15 @@ check(
   (await page.locator('.material-row', { hasText: 'Ancient Heart' }).count()) === 1,
 );
 
+// A loose component's own panel states where it can go — the same "use-on"
+// line its chip shows once installed. It used to appear only on the installed
+// copy, where the question has already been answered.
+await clearTip();
+await showTip(page.locator('.material-row', { hasText: 'Manticore Eye' }));
+const materialTip = await page.locator('.tooltip:not(.action-tooltip)').innerText();
+check('a loose component says what it can be used on', /use-on: any armor/.test(materialTip), materialTip.replace(/\n/g, ' — ').slice(0, 120));
+await clearTip();
+
 // ---------------------------------------------------------------------------
 // Without advice, and the states that are easy to forget
 // ---------------------------------------------------------------------------
@@ -821,6 +846,9 @@ check('and how long it has been going', /^4m 0\ds$/.test(clock), clock);
 check('and offers a way out', await page.locator('.run-button.cancel').isEnabled());
 check('the run button is not offered twice', (await page.locator('.advice-panel .run-button:not(.cancel)').count()) === 0);
 check('the header agrees a run is in flight', (await page.locator('.chrome-button.primary').innerText()).includes('Thinking'));
+// The toggle configures the *next* run's dossier; mid-run it can only mislead,
+// so it waits.
+check('the stash toggle waits for the next run', await page.locator('.include-stash input').isDisabled());
 // No invented percentage anywhere: the call is one opaque subprocess that reports
 // nothing until it returns, and a bar stuck at 40% teaches distrust of the panel.
 check('and nothing pretends to know how far along it is', (await page.locator('.advice-panel progress, .advice-panel .progress-bar').count()) === 0);
@@ -959,24 +987,31 @@ check('and a border, so it reads as a stamp not a third line of the name', stamp
 
 // The window no longer reopens the newest answer by itself — that put a stale
 // plan's marks on the gear before the reader had asked for them. So the picker is
-// the *door*, and the empty state has to say the old answers are still behind it,
-// or starting fresh reads as having lost them.
+// the *door*, it lives in the header and only there, and the empty state has to
+// say the old answers are still behind it, or starting fresh reads as having
+// lost them.
 await page.goto(story('app-workspace--advice-nothing-open'), { waitUntil: 'networkidle' });
 await page.waitForTimeout(300);
 check('nothing is open on arrival', (await page.locator('.verdict-table').count()) === 0);
 check('and the proposal column reads as locked', (await page.locator('.face-locked.waiting').count()) === 14);
 check('with no marks on the containers', (await page.locator('.item-cell.action').count()) === 0);
-const doorOptions = await page.locator('.advice-panel .advice-runs option').allInnerTexts();
+const doorOptions = await page.locator('.app-header .advice-runs option').allInnerTexts();
 check('the stored answers are one click away', doorOptions.length === 3, doorOptions.join(' | '));
-check(
-  'and the list says how many there are',
-  /2 saved answers/.test(doorOptions[0] ?? ''),
-  doorOptions[0] ?? '(no placeholder)',
-);
+// The fresh session is a real entry, not a "N saved answers" placeholder: it is
+// the state the window is in, so the list reads as what it is — New run, then
+// every answer already paid for.
+check('and the fresh session leads the list', (doorOptions[0] ?? '').trim() === 'New run', doorOptions[0] ?? '(none)');
+check('with no second picker in the panel', (await page.locator('.advice-panel .advice-runs').count()) === 0);
 const keptNote = await page.locator('.advice-kept').innerText();
 check('the panel says they are kept', /2 earlier answers are kept/.test(keptNote), keptNote);
+check('and points at the top bar', /top bar/.test(keptNote), keptNote);
 check('the run is offered', (await page.locator('.advice-panel .run-button:not(.cancel)').count()) === 1);
 check('and there is nothing to put away yet', (await page.locator('.run-button.subtle').count()) === 0);
+// The stash toggle rides with the Run button: it configures the question the
+// next run asks, and its default is *include* — the first live run's three best
+// finds were all in the stash.
+check('the stash toggle is offered with the run', (await page.locator('.include-stash input').count()) === 1);
+check('and defaults to include', await page.locator('.include-stash input').isChecked());
 
 // ---------------------------------------------------------------------------
 // Several stored runs
@@ -986,20 +1021,23 @@ check('and there is nothing to put away yet', (await page.locator('.run-button.s
 // a second opinion must not be a decision to destroy the first answer.
 await page.goto(story('app-workspace--advice-history'), { waitUntil: 'networkidle' });
 await page.waitForTimeout(300);
-// Scoped to the panel: the same picker is in the header too, deliberately.
-const runOptions = await page.locator('.advice-panel .advice-runs option').allInnerTexts();
-check('two stored runs get a picker', runOptions.length === 2, runOptions.join(' | '));
-if (runOptions.length !== 2) runOptions.push('', '');
+// The picker lives in the header and only there — the panel copy was sometimes
+// off screen and always a duplicate. It is **always rendered once any run
+// exists**: the first version hid itself when there was "nothing to choose", and
+// with exactly one stored run open that removed the way back to the empty state.
+const runOptions = await page.locator('.app-header .advice-runs option').allInnerTexts();
+check('stored runs get a picker, led by the fresh session', runOptions.length === 3, runOptions.join(' | '));
+if (runOptions.length !== 3) runOptions.push('', '', '');
+check('whose first entry is New run', (runOptions[0] ?? '').trim() === 'New run', runOptions[0]);
 // The label is the run's identity. Two runs on one save differ by what was asked
 // far more usefully than by two timestamps half an hour apart.
-check('labelled by what was asked', /committing to bleeding/.test(runOptions[0]), runOptions[0]);
-check('and by what it cost', /\$4\.16/.test(runOptions[0]));
-check('the newest is marked as such', /newest/.test(runOptions[0]));
-// The same two controls are in the header as well, because the advice panel is
-// below the loadout and scrolls with it: on a fourteen-slot character it can be
-// entirely off screen while the marks it produced are still on the gear.
-check('the run picker is in the header too', (await page.locator('.app-header .advice-runs option').count()) === 2);
-check('and so is New run', (await page.locator('.header-advice .chrome-button.subtle').count()) === 1);
+check('labelled by what was asked', /committing to bleeding/.test(runOptions[1]), runOptions[1]);
+check('and by what it cost', /\$4\.16/.test(runOptions[1]));
+check('the newest is marked as such', /newest/.test(runOptions[1]));
+check('the open run is the selection', (await page.locator('.app-header .advice-runs').inputValue()) !== '');
+// The panel shows *which* answer is open — a date — and offers no second picker.
+check('the panel names its run without a second picker', (await page.locator('.advice-panel .advice-runs').count()) === 0);
+check('and New run is beside the picker', (await page.locator('.header-advice .chrome-button.subtle').count()) === 1);
 
 // One control at a time, and never both. A second opinion costs eight minutes and a
 // few dollars and does *not* replace the answer beside it, so offering a Re-run next

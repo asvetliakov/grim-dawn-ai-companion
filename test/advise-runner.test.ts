@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createMockProvider, loadLastAdvice, type AdvisorProvider, type AdvisorResult } from '../src/core/ai/index.js';
-import { loadSnapshot, type CharacterSnapshot } from '../src/core/session.js';
+import { adviceScope, loadSnapshot, type CharacterSnapshot } from '../src/core/session.js';
 import { resolveSettings } from '../src/core/settings.js';
 import type { Settings } from '../src/core/settings-schema.js';
 import type { PushEvent } from '../src/shared/ipc.js';
@@ -70,15 +70,21 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
 
   it('reports the phases in order and pushes the envelope when it is done', async () => {
     // An answer against the real dossier, so the ids resolve and the plan checks
-    // have something true to be true about.
+    // have something true to be true about. Every carried candidate goes into
+    // `sell`, because coverage is checked now: a plan silent about gear in the
+    // bags earns an `unaddressed-item` warning and a repair call this test does
+    // not want.
     const [worn] = [...snapshot.doc.itemsById.keys()];
+    const carried = [...snapshot.doc.candidateIds].filter(
+      (id) => snapshot.doc.itemsById.get(id)?.source === 'inventory',
+    );
     const answer =
       '## Verdicts\n\n```json\n' +
       JSON.stringify({
-        summary: 'Keep everything.',
+        summary: 'Keep everything worn; nothing carried earns a slot.',
         verdicts: [{ slot: 'Head', itemId: worn, verdict: 'KEEP', reason: 'nothing beats it' }],
         hold: [],
-        sell: [],
+        sell: carried,
       }) +
       '\n```\n';
 
@@ -181,10 +187,32 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     expect(runs.status()).toMatchObject({ phase: 'error', message: 'the model went away' });
   });
 
+  /**
+   * The stash toggle. Included, the run sends the snapshot's own document —
+   * one composition, no drift. Excluded, the stored items leave the resolved
+   * walk and the document is rebuilt without them; the materials store is not
+   * a stash and always ships, because it is the component census.
+   */
+  it('leaves the stashes out of the dossier when asked', () => {
+    expect(adviceScope(snapshot, true).doc).toBe(snapshot.doc);
+
+    const filtered = adviceScope(snapshot, false);
+    expect(filtered.doc.itemsById.size).toBeLessThan(snapshot.doc.itemsById.size);
+    for (const item of filtered.doc.itemsById.values()) {
+      expect(item.source).not.toBe('stash');
+      expect(item.source).not.toBe('transfer');
+    }
+    expect(filtered.doc.markdown).not.toContain('[stash]');
+    expect(filtered.doc.markdown).not.toContain('[transfer]');
+    expect([...filtered.doc.itemsById.values()].some((i) => i.source === 'materials')).toBe(true);
+  });
+
   it('checks the plan against the document, not against the database', () => {
     const check = planCheckInput(snapshot);
     expect(check.itemsById).toBe(snapshot.doc.itemsById);
     expect(check.socketablesById).toBe(snapshot.doc.socketablesById);
+    // Coverage is measured against what §7 offered, not against every id.
+    expect(check.candidateIds).toBe(snapshot.doc.candidateIds);
     // Keyed by normalized name, which is the fallback for an answer that gave no
     // socketable id at all.
     expect(check.socketables.size).toBeGreaterThan(0);

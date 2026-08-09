@@ -32,6 +32,8 @@ interface ItemSpec {
   grants?: string[];
   affixes?: string[];
   stack?: number;
+  /** Where the item may be applied, when the item is itself a socketable. */
+  useOn?: string;
 }
 
 /**
@@ -138,6 +140,7 @@ function item(spec: ItemSpec, position: ItemPosition): UiItem {
       ...(spec.component ? { component: socketable(spec.component) } : {}),
       ...(spec.augment ? { augment: socketable(spec.augment) } : {}),
       ...(spec.requirements ? { requirements: spec.requirements, meetsRequirements: spec.meets ?? true } : {}),
+      ...(spec.useOn ? { useOn: spec.useOn } : {}),
     },
   };
   return ui;
@@ -320,6 +323,9 @@ const MATERIALS: ItemSpec[] = [
     cells: [1, 1],
     stack: 3,
     stats: ['+18% Acid Resistance', '+24 Offensive Ability'],
+    // A loose component states where it can go, exactly as its chip does once
+    // installed — "use on what?" is the whole question about a loose one.
+    useOn: 'any armor, shields',
   },
   {
     name: 'Sanctified Bone',

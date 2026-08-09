@@ -222,7 +222,6 @@ const TEMPLATES: Readonly<Record<string, string>> = {
   defensiveBlockModifier: '{v}% Shield Damage Blocked',
   defensiveBlockAmountModifier: '{v}% Shield Damage Blocked',
   characterDefensiveBlockRecoveryReduction: '-{u}% Shield Recovery Time',
-  damageAbsorptionPercent: '{u}% Damage Absorption',
   // Offence that is not a damage type
   offensiveTotalDamageModifier: '{v}% Total Damage',
   offensiveCritDamageModifier: '{v}% Crit Damage',
@@ -380,6 +379,7 @@ export function formatStats(stats: Record<string, StatValue>, ctx: StatContext):
   damageLines(stats, read, add, claim, value);
   conversionLines(stats, read, add, claim);
   skillLines(stats, read, ctx, add, claim);
+  absorptionLines(stats, read, add, claim);
 
   for (const [field, raw] of Object.entries(stats)) {
     if (used.has(field) || isPlumbing(field)) continue;
@@ -495,7 +495,7 @@ function raceNames(stats: Record<string, StatValue>, db: GameDb): string {
 }
 
 function bucketOf(field: string): Bucket {
-  if (field.startsWith('defensive') || field === 'damageAbsorptionPercent') return Bucket.Defense;
+  if (field.startsWith('defensive')) return Bucket.Defense;
   if (field.startsWith('offensive') || field.startsWith('projectile')) return Bucket.Damage;
   if (field.startsWith('character')) return Bucket.Character;
   if (field.startsWith('skill') || field.startsWith('weaponDamage')) return Bucket.Skills;
@@ -616,6 +616,62 @@ const QUALIFIED_EFFECTS: readonly { min: string; text: string }[] = [
   { min: 'retaliationSlowManaLeachMin', text: '{r} Energy Leech Retaliation' },
   { min: 'retaliationSlowAttackSpeedMin', text: '-{r}% Enemy Attack Speed on retaliation' },
 ];
+
+/**
+ * Damage absorption, and the qualifier flags that scope it to a type.
+ *
+ * A skill's `damageAbsorption` (flat) or `damageAbsorptionPercent` may sit
+ * beside `<type>DamageQualifier` flags — Maiven's Lens grants a flat 525 with
+ * `physicalDamageQualifier: 1`, meaning it absorbs *physical* hits only. The
+ * two spellings are one fact: rendered apart, the amount over-promises and the
+ * flag prints as a raw `physicalDamageQualifier: 1`, which is exactly how the
+ * live app showed it. The DBR dialect applies — `life` is Vitality, `poison`
+ * is Acid — and an unrecognised qualifier stem keeps its raw name rather than
+ * disappearing, because a wrong word is better than a silently absorbed type.
+ */
+function absorptionLines(
+  stats: Record<string, StatValue>,
+  read: (v: StatValue) => number,
+  add: (bucket: Bucket, text: string) => void,
+  claim: (...fields: string[]) => void,
+): void {
+  const types: string[] = [];
+  for (const [field, raw] of Object.entries(stats)) {
+    const match = /^([a-zA-Z]+)DamageQualifier$/.exec(field);
+    if (!match) continue;
+    // Claimed even when zero: a zeroed qualifier is template filler, not a stat.
+    claim(field);
+    if (!read(raw)) continue;
+    const stem = match[1]!.toLowerCase();
+    types.push(QUALIFIER_LABELS[stem] ?? match[1]!);
+  }
+
+  const scope = types.length ? `${types.join(', ')} ` : '';
+  const flat = stats['damageAbsorption'];
+  claim('damageAbsorption', 'damageAbsorptionPercent');
+  if (flat !== undefined && read(flat)) {
+    add(Bucket.Defense, `${num(read(flat))} ${scope}Damage Absorption`);
+  }
+  const percent = stats['damageAbsorptionPercent'];
+  if (percent !== undefined && read(percent)) {
+    add(Bucket.Defense, `${num(read(percent))}% ${scope}Damage Absorption`);
+  }
+}
+
+/** Qualifier stem → the player-facing damage type, in the DBR dialect. */
+const QUALIFIER_LABELS: Readonly<Record<string, string>> = {
+  physical: 'Physical',
+  pierce: 'Pierce',
+  fire: 'Fire',
+  cold: 'Cold',
+  lightning: 'Lightning',
+  elemental: 'Fire, Cold and Lightning',
+  poison: 'Acid',
+  life: 'Vitality',
+  aether: 'Aether',
+  chaos: 'Chaos',
+  bleeding: 'Bleeding',
+};
 
 /** `{v}% {From} Damage converted to {To} Damage`, in the profile's own names. */
 function conversionLines(

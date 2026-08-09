@@ -529,3 +529,49 @@ at 1080 the transcript is off the bottom of the screenshot — as much use as no
 at all.
 
 372 tests, 218 story assertions, 21 app assertions.
+
+### Fourth pass — first weekend of live use
+
+Thirteen items of feedback from running the app against real saves, one theme: the
+tool held up mechanically and lost people at the seams.
+
+**The picker became the door it claimed to be.** With exactly one stored run open,
+`canPickRun`'s "nothing to choose" test hid the select — and with it every way back
+to the empty state short of restarting the app. It now renders whenever any run
+exists, lives **only in the header** (the panel copy was sometimes off screen and
+always a duplicate; the panel shows the open run's date instead), and its first
+entry is **`New run`** — the fresh session as a real option that does what the
+button does, rather than a "N saved answers" placeholder.
+
+**The transcript became reasoning-only.** The first live run streamed the answer
+through the box too: thirty thousand tokens of markdown shoved the reasoning off
+the top mid-run — the user reasonably reported "the thinking process is not
+displayed" — and the repair call then re-streamed a second copy under it. Answer
+deltas now travel with empty text and only move the token count; the repair
+transition drops a `— revising the plan —` seam into the box. (A paid probe of the
+CLI confirmed `thinking_delta` events arrive exactly as parsed — the reasoning was
+always there, buried.)
+
+**The plan was made exhaustive where the reader is, and silent where they chose.**
+Live runs left bag items unmentioned (indistinguishable from "never considered")
+and sold things out of the stash. Now: §7 gained a "Carried but unranked" line
+naming the under-window bag junk by id, `ContextDoc.candidateIds` records what was
+actually offered, and `checkPlan` gained `unaddressed-item` (carried gear with no
+disposition) and `sell-in-stash` (stored items are kept on purpose) — both in the
+prompt too, so the repair loop enforces them. `nextLevels` unlocks are id-checked,
+and clicking one in the panel reveals the item in its container, because the first
+live reader went hunting a stash tab by eye for Venomskin Legwraps.
+
+**The dossier's scope became the user's choice.** A header checkbox (persisted as
+`includeStashInAdvice`, CLI `--no-stash`) lets a run read only what the character
+carries; `adviceScope` filters the resolved walk and rebuilds the document, the
+materials store always ships, the UI snapshot is never filtered, and the envelope
+records `stashIncluded`. On the live save: 54.5k → 46.3k tokens, 196 → 143 ids.
+
+Plus three smaller fixes from the same session: loose components in bags and the
+materials list say **use-on** (previously only the installed chip did); Maiven's
+Lens stopped rendering `damageAbsorption: 525` and `physicalDamageQualifier: 1`
+raw (absorption and its qualifiers are one line now); and the container tabs +
+legend are **sticky** while the grids scroll.
+
+379 tests, 227 story assertions, 24 app assertions.

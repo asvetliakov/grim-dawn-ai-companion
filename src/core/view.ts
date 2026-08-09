@@ -369,6 +369,10 @@ function buildTooltip(
   if (typeLine) tooltip.typeLine = typeLine;
   if (item.component) tooltip.component = socketable(item.component);
   if (item.augment) tooltip.augment = socketable(item.augment);
+  // A loose component or augment states where it can go, exactly as its chip
+  // does once installed. This is the panel a reader opens over a bag or the
+  // materials list, where "use on what?" is the whole question.
+  if (base?.allowedSlots?.length) tooltip.useOn = describeSlots(base.allowedSlots);
 
   const req = item.requirements;
   if (req) {

@@ -104,6 +104,13 @@ export function ContainerPanel({
 
   return (
     <div className="container-panel">
+      {/*
+        The chrome — tabs and legend — stays put while the contents scroll.
+        Whatever tab or row of bags you are deep in, "which container am I in"
+        and "what do the marks mean" are questions about the top of the pane,
+        and having to scroll back up to answer them was the complaint.
+      */}
+      <div className="container-chrome">
       <div className="tab-strip">
         {tabs.map((t) => (
           <button
@@ -160,6 +167,7 @@ export function ContainerPanel({
           ))}
         </div>
       )}
+      </div>
 
       {tab === 'inventory' && (
         <div className="bag-strip">

@@ -10,6 +10,7 @@ import { useState } from 'react';
 
 import type { AdviceRunRef, Bootstrap, Difficulty, UiSnapshot } from '../../../shared/ipc.js';
 import { DIFFICULTY_CHOICES } from '../../../shared/ipc.js';
+import { useTooltip } from '../tooltip.js';
 import { ExplainedButton } from './ExplainedButton.js';
 import { RunPicker } from './RunPicker.js';
 
@@ -27,6 +28,7 @@ export function Header({
   onRunAdvice,
   onSelectAdvice,
   onNewRun,
+  onIncludeStash,
 }: {
   bootstrap?: Bootstrap;
   snapshot?: UiSnapshot;
@@ -43,10 +45,14 @@ export function Header({
   onSelectAdvice?: (id: string) => void;
   /** Put the open run away, so a new one can be started. Deletes nothing. */
   onNewRun?: () => void;
+  /** Persist whether the next run's dossier includes the stashes. */
+  onIncludeStash?: (include: boolean) => void;
 }): React.ReactNode {
   const [showPaths, setShowPaths] = useState(false);
+  const tooltip = useTooltip();
   const characters = bootstrap?.characters ?? [];
   const override = bootstrap?.settings.difficultyOverride ?? '';
+  const includeStash = bootstrap?.settings.includeStashInAdvice ?? true;
 
   return (
     <header className="app-header">
@@ -121,7 +127,41 @@ export function Header({
         comes back with it.
       */}
       <div className="header-advice">
-        {onSelectAdvice && <RunPicker history={history} {...(adviceId ? { adviceId } : {})} onSelect={onSelectAdvice} />}
+        {onSelectAdvice && (
+          <RunPicker
+            history={history}
+            {...(adviceId ? { adviceId } : {})}
+            onSelect={onSelectAdvice}
+            {...(onNewRun ? { onNewRun } : {})}
+          />
+        )}
+        {/*
+          What the next run's dossier covers. A stored preference, not a per-run
+          flag: it sits with Character and Difficulty because it configures the
+          question, not this click. Note before unchecking it: the first live
+          run's three best finds were all in the stash.
+        */}
+        {(!hasAdvice || runningAdvice) && onIncludeStash && (
+          <label
+            className="include-stash"
+            onMouseOver={(e) =>
+              tooltip.showNote(
+                e.currentTarget,
+                'Let the model shop your stashes',
+                'Checked, the run considers everything in your personal and transfer stash as candidates alongside your bags. Unchecked, the next run reads only what the character is carrying — cheaper to read, but the model cannot recommend anything you have stored. Your crafting materials and components are always included.',
+              )
+            }
+            onMouseLeave={tooltip.hide}
+          >
+            <input
+              type="checkbox"
+              checked={includeStash}
+              disabled={runningAdvice}
+              onChange={(e) => onIncludeStash(e.target.checked)}
+            />
+            Stash
+          </label>
+        )}
         {hasAdvice && onNewRun && (
           <ExplainedButton
             className="chrome-button subtle"

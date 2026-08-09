@@ -522,6 +522,7 @@ function world(): {
       ['head01', item({ id: 'head01', display: 'Iron Helm', base: helmet, location: 'Head' })],
       ['ring01', item({ id: 'ring01', display: 'Old Band', base: band, location: 'Ring 1' })],
       ['ring02', item({ id: 'ring02', display: 'Spare Band', base: band, location: 'stash 1', source: 'stash' })],
+      ['bag01', item({ id: 'bag01', display: 'Rusty Band', base: band, location: 'bag 0', source: 'inventory' })],
     ]),
     socketables: new Map([
       [normalizeName('Mark of Illusions'), socketable('Mark of Illusions', ['head', 'chest', 'shoulders'])],
@@ -613,6 +614,50 @@ describe('checkPlan', () => {
       w,
     );
     expect(ghost.map((x) => x.kind)).toEqual(['unknown-id']);
+  });
+
+  /**
+   * Stored items are being kept on purpose — the player moved them there. A
+   * plan may recommend wearing or holding one; disposing of it second-guesses
+   * a decision the dossier already shows was made.
+   */
+  it('rejects SELL on an item that lives in the stash', () => {
+    const warnings = checkPlan({ verdicts: [], hold: [], sell: ['ring02'] }, world());
+    expect(warnings.map((x) => x.kind)).toEqual(['sell-in-stash']);
+    expect(warnings[0]!.message).toContain('Spare Band');
+  });
+
+  /**
+   * Coverage: silence about carried gear the document offered reads as "never
+   * considered", and the reader cannot tell it from an oversight. Scoped to
+   * the bags — the same silence about a stored item is correct behaviour — and
+   * to the offered set, because an item the model was never shown cannot be
+   * demanded a verdict on.
+   */
+  it('demands a disposition for every carried item the document offered', () => {
+    const w = { ...world(), candidateIds: new Set(['ring02', 'bag01']) };
+    const ignored = checkPlan({ verdicts: [], hold: [], sell: [] }, w);
+    expect(ignored.map((x) => x.kind)).toEqual(['unaddressed-item']);
+    expect(ignored[0]!.message).toContain('Rusty Band');
+
+    // Any disposition clears it — here a sell. And without `candidateIds` the
+    // check cannot run at all, which is what an older caller gets.
+    expect(checkPlan({ verdicts: [], hold: [], sell: ['bag01'] }, w)).toEqual([]);
+    expect(checkPlan({ verdicts: [], hold: [], sell: [] }, world())).toEqual([]);
+  });
+
+  it('checks nextLevels unlocks like any other id', () => {
+    const warnings = checkPlan(
+      {
+        verdicts: [],
+        hold: [],
+        sell: [],
+        nextLevels: [{ threshold: 'level 84', unlocks: ['nope99'], recommendation: 'r' }],
+      },
+      world(),
+    );
+    expect(warnings.map((x) => x.kind)).toEqual(['unknown-id']);
+    expect(warnings[0]!.message).toContain('level 84');
   });
 
   it('catches an id that is in no part of the document', () => {

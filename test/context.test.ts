@@ -172,6 +172,27 @@ describe('formatStats', () => {
   it('reads a negative player-facing resistance as enemy resistance reduction', () => {
     expect(formatStats({ defensiveCold: -28 }, { db })).toContain('-28% Enemy Cold Resistance');
   });
+
+  /**
+   * Absorption and its qualifier flags are one fact. Maiven's Lens grants a
+   * flat `damageAbsorption: 525` scoped by `physicalDamageQualifier: 1`, and
+   * the live app rendered both raw — the amount over-promised (it absorbs
+   * physical only) and the flag printed as a stat named `Qualifier`.
+   */
+  it('folds absorption qualifiers into one typed line', () => {
+    const lines = formatStats(
+      { damageAbsorption: 525, physicalDamageQualifier: 1, pierceDamageQualifier: 0 },
+      { db },
+    );
+    expect(lines).toEqual(['525 Physical Damage Absorption']);
+  });
+
+  it('renders unqualified absorption plain, and the DBR dialect in qualifiers', () => {
+    expect(formatStats({ damageAbsorptionPercent: 14 }, { db })).toEqual(['14% Damage Absorption']);
+    expect(formatStats({ damageAbsorption: 100, lifeDamageQualifier: 1 }, { db })).toEqual([
+      '100 Vitality Damage Absorption',
+    ]);
+  });
 });
 
 describe('describeSlots', () => {
@@ -405,6 +426,32 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     // The window, not the budget, is what bounds an ordinary character's
     // document — so nothing should be given up at the default settings.
     expect(doc.trimmed).toEqual([]);
+  });
+
+  /**
+   * What §7 put in front of the model, as a set the coverage check can hold a
+   * plan against: every ranked candidate, plus the carried-but-unranked line.
+   * Never a worn item — §7 is "everything not worn" — and never an id the
+   * document did not define.
+   */
+  it('exposes what §7 offered as candidateIds', async () => {
+    const doc = buildContextDoc(await context('_Suchka'));
+    expect(doc.candidateIds.size).toBeGreaterThan(0);
+    for (const id of doc.candidateIds) {
+      const item = doc.itemsById.get(id);
+      expect(item, id).toBeDefined();
+      expect(item!.source).not.toBe('equipped');
+    }
+    // The unranked line, when present, lists carried gear by id — and those ids
+    // are part of the offered set.
+    if (doc.markdown.includes('### Carried but unranked')) {
+      const tail = doc.markdown.slice(doc.markdown.indexOf('### Carried but unranked'));
+      const block = tail.slice(0, tail.indexOf('\n## '));
+      for (const [, id] of block.matchAll(/`#([^`]+)`/g)) {
+        expect(doc.candidateIds.has(id!), id).toBe(true);
+        expect(doc.itemsById.get(id!)!.source).toBe('inventory');
+      }
+    }
   });
 
   it('still fits the plan’s 30k ceiling when asked to', async () => {

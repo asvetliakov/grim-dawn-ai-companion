@@ -46,6 +46,12 @@ export interface PlanCheckInput {
    * been updated — or an older answer that only carries names — still works.
    */
   socketablesById?: ReadonlyMap<string, DbItem>;
+  /**
+   * The gear ids the document actually offered — §7's ranked candidates plus
+   * its carried-but-unranked line. The coverage check runs only when this is
+   * given: an item the model was never shown cannot be demanded a verdict on.
+   */
+  candidateIds?: ReadonlySet<string>;
 }
 
 /**
@@ -255,7 +261,51 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
       warn('unjustified-hold', `${where} says it replaces itself`);
     }
   }
-  for (const id of plan.sell) known(id, `SELL entry`);
+  for (const id of plan.sell) {
+    if (!known(id, `SELL entry`)) continue;
+    // Stored items are being kept on purpose. The player moved them there, so
+    // "sell it" second-guesses a decision the dossier already shows was made —
+    // a stored item may be recommended for wearing or holding, never disposal.
+    const item = input.itemsById.get(id);
+    if (item && (item.source === 'stash' || item.source === 'transfer')) {
+      warn(
+        'sell-in-stash',
+        `SELL on ${item.display}, which is stored in the ${item.source === 'transfer' ? 'transfer stash' : 'personal stash'} — stored items are kept on purpose; leave it unmentioned, or HOLD it if it is worth wearing one day`,
+      );
+    }
+  }
+  // Unlocks are item references like any other; a hallucinated one would
+  // otherwise sail through because nothing else reads this array.
+  for (const step of plan.nextLevels ?? []) {
+    for (const id of step.unlocks) known(id, `Next levels ("${step.threshold}")`);
+  }
+
+  // Coverage: everything the document offered from the *carried bags* must end
+  // somewhere. A verdict, a hold or a sell all count; so does being spent as an
+  // extraction host or named as an enabler — those are dispositions too. Stash
+  // candidates are exempt for the same reason selling them is an error: stored
+  // items owe the plan nothing.
+  if (input.candidateIds) {
+    const addressed = new Set<string>();
+    for (const v of plan.verdicts) {
+      addressed.add(v.itemId);
+      if (v.target) addressed.add(v.target);
+      if (v.targetId) addressed.add(v.targetId);
+      if (v.componentFrom) addressed.add(v.componentFrom);
+      for (const e of v.enablers ?? []) addressed.add(e);
+    }
+    for (const h of plan.hold) addressed.add(h.itemId);
+    for (const id of plan.sell) addressed.add(id);
+    for (const id of input.candidateIds) {
+      if (addressed.has(id)) continue;
+      const item = input.itemsById.get(id);
+      if (!item || item.source !== 'inventory') continue;
+      warn(
+        'unaddressed-item',
+        `${item.display} (\`#${id}\`) is in the carried bags and was offered in §7, but the plan gives it no verdict, HOLD or SELL`,
+      );
+    }
+  }
 
   // Extraction destroys the host. A destroyed item cannot also be kept, held,
   // sold or re-equipped — the plan has to spend it exactly once.

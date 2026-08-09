@@ -34,12 +34,14 @@ import { shortHash, type ResolvedCharacter, type ResolvedItem } from '../resolve
 import { factionSlot, factionTier } from '../save/factions.js';
 import { EQUIP_SLOT_NAMES, type CharacterSave } from '../save/types.js';
 import {
+  equipGroup,
   estimateTokens,
   EQUIP_GROUPS,
   itemStatBlocks,
   selectCandidates,
   type Candidate,
   type CandidateSelection,
+  type EquipGroup,
 } from './filters.js';
 import { describeSlots, formatStats, num, signed } from './statfmt.js';
 
@@ -100,6 +102,13 @@ export interface ContextDoc {
    * here was not on the table, whatever the game's own database contains.
    */
   socketablesById: Map<string, DbItem>;
+  /**
+   * The gear the document actually put in front of the model: everything §7
+   * ranked, plus the carried-but-unranked line at its foot. The coverage check
+   * measures a plan against this — an item the document never showed cannot be
+   * demanded a verdict on, and one it did show must not simply be ignored.
+   */
+  candidateIds: Set<string>;
 }
 
 /**
@@ -128,7 +137,7 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
   const trimmed: string[] = [];
   let doc = render(input, { perGroup: startCap, note: 'nothing trimmed' });
   for (const step of ladder) {
-    if (estimateTokens(doc) <= maxTokens) break;
+    if (estimateTokens(doc.text) <= maxTokens) break;
     doc = render(input, step);
     trimmed.push(step.note);
   }
@@ -144,12 +153,13 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
   }
 
   return {
-    markdown: doc,
-    tokenEstimate: estimateTokens(doc),
+    markdown: doc.text,
+    tokenEstimate: estimateTokens(doc.text),
     trimmed,
     itemIds: new Map([...itemsById].map(([id, item]) => [id, item.display])),
     itemsById,
     socketablesById,
+    candidateIds: doc.candidateIds,
   };
 }
 
@@ -216,7 +226,7 @@ function assignSocketableIds(items: readonly DbItem[], reserved: ReadonlySet<str
 // The document
 // ---------------------------------------------------------------------------
 
-function render(input: ContextInput, trim: Trim): string {
+function render(input: ContextInput, trim: Trim): { text: string; candidateIds: Set<string> } {
   const { save, resolved } = input;
   const ids = assignIds(resolved.items);
   const out = new Writer();
@@ -241,15 +251,30 @@ function render(input: ContextInput, trim: Trim): string {
   buildProfile(out, ctx);
   equippedSection(out, ctx);
   const selection = candidateSelection(ctx, trim.perGroup);
+  const fodder = bagFodder(ctx, selection);
   setStatus(out, ctx);
-  candidatesSection(out, ctx, selection);
+  candidatesSection(out, ctx, selection, fodder);
   census(out, ctx, selection, trim);
   factionAugments(out, ctx);
   blueprints(out, ctx, selection, trim);
   task(out, ctx);
   unlockLadder(out, ctx, selection);
 
-  return out.toString();
+  // What §7 put in front of the model, ranked and unranked alike — the set the
+  // coverage check holds a plan's dispositions against.
+  const candidateIds = new Set<string>();
+  for (const list of selection.byGroup.values()) {
+    for (const c of list) {
+      const id = ctx.ids.get(c.item);
+      if (id) candidateIds.add(id);
+    }
+  }
+  for (const f of fodder) {
+    const id = ctx.ids.get(f.item);
+    if (id) candidateIds.add(id);
+  }
+
+  return { text: out.toString(), candidateIds };
 }
 
 interface RenderContext extends ContextInput {
@@ -1181,7 +1206,40 @@ function candidateSelection(ctx: RenderContext, perGroup: number): CandidateSele
   });
 }
 
-function candidatesSection(out: Writer, ctx: RenderContext, selection: CandidateSelection): void {
+/**
+ * The carried gear §7 did not rank: outside the level window, or Common
+ * covering nothing. Bags only — the same items in a stash stay unlisted,
+ * because stored items are being kept on purpose and the plan is told to leave
+ * them alone.
+ *
+ * Listed by name and id, without stats, so the plan can give each one the
+ * disposition the coverage rule demands — mostly `sell`. Before this line
+ * existed those items were invisible to the model, so a run's answer was
+ * silent about a third of what the character was actually carrying, and the
+ * reader could not tell "sell it" from "never saw it".
+ */
+function bagFodder(
+  ctx: RenderContext,
+  selection: CandidateSelection,
+): { item: ResolvedItem; group: EquipGroup }[] {
+  const ranked = new Set<ResolvedItem>();
+  for (const list of selection.byGroup.values()) for (const c of list) ranked.add(c.item);
+  const out: { item: ResolvedItem; group: EquipGroup }[] = [];
+  for (const item of ctx.resolved.items) {
+    if (item.source !== 'inventory' || ranked.has(item)) continue;
+    const group = equipGroup(item.base);
+    if (!group) continue;
+    out.push({ item, group });
+  }
+  return out;
+}
+
+function candidatesSection(
+  out: Writer,
+  ctx: RenderContext,
+  selection: CandidateSelection,
+  fodder: readonly { item: ResolvedItem; group: EquipGroup }[],
+): void {
   out.h(2, '7. Candidates — everything not worn, by slot');
   out.line('Ranked by: covers a resistance shortfall > matches the build focus (post-conversion, counting the item\'s own conversion and armor piercing) > rarity > level proximity. A failing requirement is **not** a rejection — decide between an enabler combination, HOLD-until, and discard.');
 
@@ -1198,7 +1256,16 @@ function candidatesSection(out: Writer, ctx: RenderContext, selection: Candidate
   }
   if (selection.outOfWindow) {
     out.line();
-    out.line(`*(${selection.outOfWindow} further item(s) fell outside the level window of −25/+10 around level ${ctx.aggregate.level}, or were Common rarity covering nothing, and are not listed.)*`);
+    out.line(`*(${selection.outOfWindow} further item(s) fell outside the level window of −25/+10 around level ${ctx.aggregate.level}, or were Common rarity covering nothing. The carried ones are named below; stored ones are omitted.)*`);
+  }
+  if (fodder.length) {
+    out.line();
+    out.line(`### Carried but unranked — ${fodder.length} item(s) in the bags`);
+    out.line('Not ranked above (outside the level window, or Common covering nothing), but the character is carrying them, so each needs a disposition: put it in `sell` unless it is genuinely worth keeping, and say why if it is.');
+    for (const { item, group } of fodder) {
+      const level = item.requirements?.level ?? item.base?.levelReq;
+      out.line(`- **${item.display}** \`#${ctx.ids.get(item) ?? item.id}\` (${group}${level ? `, level ${level}` : ''})`);
+    }
   }
 }
 

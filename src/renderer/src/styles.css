@@ -749,17 +749,25 @@ h3 {
 /*
  * A placeholder sits on the arrow's line.
  *
- * The two cards in a row are 34 px tall and a bare `—` is one line of text, so
- * the grid's `align-items: center` put it in the middle of the *row* while the
- * arrow beside it centred on the taller card — close enough to look like a
- * mistake rather than a difference. Given the card's height it lands on the same
- * baseline as everything else in the row.
+ * The card cells are top-aligned (`.slot-side { align-self: start }`) so two
+ * cards compare name-to-name — but a placeholder is not a card, and a `—` in a
+ * top-aligned 34 px box sat *above* the arrow on any row whose worn card grew
+ * past 34 px (a two-line name, component chips). So a cell holding only a
+ * placeholder stretches to the row and centres its text on it — which is the
+ * line the arrow is centred on, whatever the other card's height.
  */
+.slot-side:has(> .face-empty),
+.slot-side:has(> .face-locked) {
+  align-self: stretch;
+  display: flex;
+}
+
 .face-empty,
 .face-locked {
   display: flex;
   align-items: center;
   min-height: 34px;
+  width: 100%;
 }
 
 .face-locked.waiting {
@@ -978,15 +986,25 @@ h3 {
 }
 
 /*
- * Narrower inside the panel than in the header.
- *
- * Same control, tighter row: the panel is ~690 px and the header is the window, and
- * at 340 px the picker pushed `New run` onto a second line — a wrapped row is the
- * right answer to a squeezed one, but not when the fix is 100 px of a label whose
- * full text is in the open list anyway.
+ * The stash toggle rides in the header's advice group, one line with the Run
+ * button and the same 30 px as everything else on the row. It is a labelled
+ * checkbox rather than a button because it holds a state, not an action.
  */
-.advice-panel .advice-runs {
-  max-width: 230px;
+.include-stash {
+  box-sizing: border-box;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--ink-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.include-stash input {
+  accent-color: var(--accent);
+  margin: 0;
 }
 
 /*
@@ -1263,6 +1281,17 @@ h3 {
 
 .level-unlocks {
   color: var(--ink-dim);
+}
+
+/* An unlock the snapshot can point at: clicking jumps the containers to it —
+   the first live reader went hunting a stash tab by eye for one of these. */
+.level-item {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+.level-item:hover {
+  color: var(--ink);
 }
 
 .hold-until {
@@ -1575,6 +1604,33 @@ h3 {
 }
 
 /* --- containers --------------------------------------------------------- */
+
+/*
+ * The chrome — tabs and mark legend — sticks while the grids scroll under it.
+ * The pane is the scroller, so `sticky` pins this to its top edge; the negative
+ * margins bleed it across the panel's own padding so item cells cannot peek out
+ * beside it on the way past, and the panel background makes it opaque. The
+ * border only appears once something is actually underneath (`border-bottom`
+ * reads as a shelf, and a shelf over nothing is noise — accepted trade: it is
+ * always drawn, and at rest it sits where the legend's gap was anyway).
+ */
+.container-chrome {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: var(--bg-panel);
+  margin: -14px -16px 12px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.container-chrome .tab-strip {
+  margin-bottom: 0;
+}
+
+.container-chrome .mark-legend {
+  margin: 10px 0 0;
+}
 
 .tab-strip,
 .page-strip {

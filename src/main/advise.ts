@@ -49,9 +49,9 @@ import {
   type PlanCheckInput,
   type PlanWarning,
 } from '../core/ai/index.js';
-import { documentSocketables } from '../core/context/builder.js';
+import { documentSocketables, type ContextDoc, type ContextInput } from '../core/context/builder.js';
 import { shortHash } from '../core/resolve.js';
-import type { CharacterSnapshot } from '../core/session.js';
+import { adviceScope, type CharacterSnapshot } from '../core/session.js';
 import type { Settings } from '../core/settings-schema.js';
 import type { PushEvent } from '../shared/ipc.js';
 
@@ -132,6 +132,10 @@ export class AdviseRunner {
     // identified by the character it is about.
     const snapshot = await this.host.characterSnapshot();
     const gameVersion = await this.host.gameVersion();
+    // What the dossier covers is a stored preference, read at the moment the
+    // run starts — the header checkbox writes it through `updateSettings`.
+    const includeStash = settings.includeStashInAdvice ?? true;
+    const scope = adviceScope(snapshot, includeStash);
 
     const run: ActiveRun = {
       runId: randomUUID(),
@@ -148,7 +152,7 @@ export class AdviseRunner {
 
     // Deliberately not awaited: `start` answers the IPC call, and the run
     // reports itself from here on.
-    void this.execute(run, provider, snapshot, gameVersion, req.question);
+    void this.execute(run, provider, snapshot, scope, includeStash, gameVersion, req.question);
     return { runId: run.runId };
   }
 
@@ -198,16 +202,22 @@ export class AdviseRunner {
     run: ActiveRun,
     provider: AdvisorProvider,
     snapshot: CharacterSnapshot,
+    // The input/document pair the run actually sends — the snapshot's own when
+    // the stash is included, a filtered rebuild when it is not. Everything below
+    // reads from `scope`, never from `snapshot.doc`: the ids the envelope
+    // carries must be the ids the model was shown.
+    scope: { input: ContextInput; doc: ContextDoc },
+    stashIncluded: boolean,
     gameVersion: string,
     question: string | undefined,
   ): Promise<void> {
     try {
-      const check = planCheckInput(snapshot);
+      const check = planCheckInput(scope);
       this.advance(run, 'asking');
 
       const outcome = await adviseWithRepair(
         provider,
-        { contextDoc: snapshot.doc.markdown, ...(question ? { question } : {}) },
+        { contextDoc: scope.doc.markdown, ...(question ? { question } : {}) },
         check,
         {
           signal: run.controller.signal,
@@ -223,12 +233,13 @@ export class AdviseRunner {
         outcome,
         usage: totalUsage(outcome.results),
         durationMs: Date.now() - run.startedAt,
-        itemNames: Object.fromEntries([...snapshot.doc.itemsById].map(([id, item]) => [id, item.display])),
-        socketableNames: Object.fromEntries([...snapshot.doc.socketablesById].map(([id, item]) => [id, item.name])),
+        itemNames: Object.fromEntries([...scope.doc.itemsById].map(([id, item]) => [id, item.display])),
+        socketableNames: Object.fromEntries([...scope.doc.socketablesById].map(([id, item]) => [id, item.name])),
         // What the run is about, so a stored answer can say whether it still is —
         // sockets included, because an item's id changes when its component does.
         worn: wornSlots(snapshot.resolved.items),
         wornSockets: wornSocketables(snapshot.resolved.items, shortHash),
+        stashIncluded,
       });
 
       // Persisted *before* the push, so a renderer that reloads on the same
@@ -259,13 +270,18 @@ export class AdviseRunner {
   private observe(run: ActiveRun, activity: AdvisorActivity): void {
     if (this.active?.runId !== run.runId) return;
     const kindChanged = run.activity?.kind !== activity.kind;
+    // Only the reasoning travels as text — the answer is about to be rendered
+    // properly from the envelope, and streaming it through the transcript box
+    // buried the reasoning under two copies of it (one per repair call). Its
+    // deltas still flow for the token count and the kind flip.
+    const delta = activity.kind === 'thinking' ? activity.text : '';
     // Two accumulations with different jobs. `pending` is what has not been sent
     // yet, so the renderer can append; `tail` is a bounded snapshot for a window
     // that mounts late and has nothing to append to.
-    run.pending += activity.text;
+    run.pending += delta;
     run.activity = {
       kind: activity.kind,
-      tail: ((kindChanged ? '' : (run.activity?.tail ?? '')) + activity.text).slice(-ACTIVITY_TAIL),
+      tail: ((run.activity?.tail ?? '') + delta).slice(-ACTIVITY_TAIL),
       ...(activity.outputTokens !== undefined ? { outputTokens: activity.outputTokens } : {}),
     };
 
@@ -314,13 +330,16 @@ function configuredProvider(settings: Settings): AdvisorProvider {
 
 /**
  * The same check input the CLI builds, so the window's runs are verified against
- * exactly what the document offered rather than against the whole database.
+ * exactly what the document offered rather than against the whole database —
+ * including which items §7 actually ranked, which is what the coverage check
+ * measures a plan against.
  */
-export function planCheckInput(snapshot: CharacterSnapshot): PlanCheckInput {
+export function planCheckInput(scope: { input: ContextInput; doc: ContextDoc }): PlanCheckInput {
   return {
-    itemsById: snapshot.doc.itemsById,
-    socketables: new Map(documentSocketables(snapshot.input).map((item) => [normalizeName(item.name), item])),
-    socketablesById: snapshot.doc.socketablesById,
+    itemsById: scope.doc.itemsById,
+    socketables: new Map(documentSocketables(scope.input).map((item) => [normalizeName(item.name), item])),
+    socketablesById: scope.doc.socketablesById,
+    candidateIds: scope.doc.candidateIds,
   };
 }
 

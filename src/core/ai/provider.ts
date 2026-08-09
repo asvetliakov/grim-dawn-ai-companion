@@ -121,6 +121,19 @@ export const PLAN_WARNING_KINDS = [
   'ambiguous-stat',
   'name-mismatch',
   'unjustified-hold',
+  /**
+   * A SELL on an item that lives in the personal or transfer stash. Stored
+   * items are being kept on purpose — the player put them there — so the plan
+   * may recommend equipping or holding one, but never disposing of it.
+   */
+  'sell-in-stash',
+  /**
+   * A carried item the document offered (§7, ranked or in the unranked line)
+   * that the plan neither verdicts, holds nor sells. Silence about gear the
+   * character is actually carrying reads as "never considered", and the reader
+   * cannot tell it from an oversight — because it usually is one.
+   */
+  'unaddressed-item',
 ] as const;
 
 export type PlanWarningKind = (typeof PLAN_WARNING_KINDS)[number];

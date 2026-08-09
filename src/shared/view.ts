@@ -55,6 +55,13 @@ export interface UiTooltip {
   /** Whether the character currently meets them; undefined when unknown. */
   meetsRequirements?: boolean;
   grantedSkills: string[];
+  /**
+   * Which slots the item may be applied to, when the item *is* a socketable —
+   * a component or augment sitting in a bag or the materials store. The same
+   * line its chip shows when it is installed in something: where it can go is
+   * the first question about a loose one.
+   */
+  useOn?: string;
   /** Records that did not resolve — a visible gap beats a silent one. */
   unresolved: string[];
 }

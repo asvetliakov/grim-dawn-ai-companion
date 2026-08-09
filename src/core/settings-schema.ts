@@ -35,6 +35,14 @@ export const settingsSchema = z.object({
   advisorTimeoutSeconds: z.number().int().positive().optional(),
   /** Force advice for a difficulty other than the character's current one. */
   difficultyOverride: z.enum(['Normal', 'Elite', 'Ultimate']).optional(),
+  /**
+   * Whether an advice run's dossier includes the personal and transfer stash.
+   * Absent means **true** — the stashes are where live runs found their best
+   * candidates, so leaving them out is the choice that has to be made, not the
+   * default. The materials store is always included either way; it is the
+   * component census, not a container of gear.
+   */
+  includeStashInAdvice: z.boolean().optional(),
 });
 
 export type Settings = z.infer<typeof settingsSchema>;

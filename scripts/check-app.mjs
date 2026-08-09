@@ -148,13 +148,24 @@ check(
   'while the answer stays on disk',
   readdirSync(adviceDir).filter((n) => n.endsWith('.json')).length === 1,
 );
-// And is reachable: the picker is the only door into a stored answer now, so the
-// placeholder plus one run is what has to be there.
-const options = await page.locator('.advice-panel .advice-runs option').allInnerTexts();
-check('and on the list, behind a picker', options.length === 2, options.join(' | '));
-await page.locator('.advice-panel .advice-runs').selectOption({ index: 1 });
+// And is reachable: the header picker is the only door into a stored answer now
+// — its first entry is the fresh session, then every run already paid for.
+const options = await page.locator('.app-header .advice-runs option').allInnerTexts();
+check('and on the list, behind the header picker', options.length === 2, options.join(' | '));
+check('whose first entry is the fresh session', (options[0] ?? '').trim() === 'New run', options[0]);
+await page.locator('.app-header .advice-runs').selectOption({ index: 1 });
 await page.locator('.verdict-table').waitFor({ state: 'visible', timeout: 30_000 });
 check('picking it shows it again', (await page.locator('.verdict-table').count()) === 1);
+// The picker itself offers the way back out. This is the fix for a real trap:
+// with exactly one stored run open, a picker that hid itself when there was
+// "nothing to choose" removed every way back to the empty state short of
+// restarting the app.
+check('and stays on screen while that run is open', (await page.locator('.app-header .advice-runs').count()) === 1);
+await page.locator('.app-header .advice-runs').selectOption({ index: 0 });
+await page.waitForTimeout(300);
+check('picking New run in it puts the answer away too', (await page.locator('.verdict-table').count()) === 0);
+await page.locator('.app-header .advice-runs').selectOption({ index: 1 });
+await page.locator('.verdict-table').waitFor({ state: 'visible', timeout: 30_000 });
 
 // A reload is what happens on every hot module replacement in development and on
 // any renderer crash in production. The run lives in main; the window comes back to
@@ -165,8 +176,8 @@ await page.reload();
 await page.locator('.loadout-grid').waitFor({ state: 'visible', timeout: 120_000 });
 await page.waitForTimeout(500);
 check('a reload comes back to the empty state', (await page.locator('.verdict-table').count()) === 0);
-check('with the stored answer still on the list', (await page.locator('.advice-panel .advice-runs option').count()) === 2);
-await page.locator('.advice-panel .advice-runs').selectOption({ index: 1 });
+check('with the stored answer still on the list', (await page.locator('.app-header .advice-runs option').count()) === 2);
+await page.locator('.app-header .advice-runs').selectOption({ index: 1 });
 await page.locator('.verdict-table').waitFor({ state: 'visible', timeout: 30_000 });
 check('and re-shows it when picked', (await page.locator('.verdict-table').count()) === 1);
 

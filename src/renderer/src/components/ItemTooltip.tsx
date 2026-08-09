@@ -98,6 +98,10 @@ export function ItemTooltip({ item }: { item: UiItem }): React.ReactNode {
         </div>
       )}
 
+      {/* The item is itself a socketable — a loose component or augment. Same
+          line, same spelling, as the chip an installed one gets. */}
+      {t.useOn && <div className="tooltip-note">use-on: {t.useOn}</div>}
+
       {t.requirements && (
         <div className={`tooltip-block tooltip-req ${t.meetsRequirements === false ? 'unmet' : ''}`}>
           {t.requirements.map((line, i) => (
