@@ -203,6 +203,43 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
 
     // Player speed caps, from the engine record — +% speed past these is wasted.
     expect(db.speedCaps()).toEqual({ attack: 200, cast: 200, run: 135 });
+
+    // …and the rates those caps are percentages *of*, from the player creature
+    // record. These match the defaults, so an equality check alone would pass
+    // even if the record were never decompressed — which is exactly what
+    // happened once, because `WANTED_PREFIXES` only listed `playerlevels.dbr`.
+    // Assert the record is actually in the build.
+    const speeds = db.baseSpeeds();
+    expect(speeds.attack).toBe(1.25);
+    expect(speeds.cast).toBe(1.25);
+    expect(speeds.dualWieldFactor).toBe(0.5);
+    // A float32 in the archive, so 0.93 only to seven places.
+    expect(speeds.run).toBeCloseTo(0.93, 6);
+  });
+
+  it('reads the base speeds from the player record, not from the defaults', { timeout: BUILD_TIMEOUT }, () => {
+    // Read the archives directly: the point is that the record survives the
+    // `WANTED_PREFIXES` filter into the build, and only the raw side can say so.
+    const dir = findGameDir()!;
+    const records = new Map<string, { fields: Record<string, unknown> }>();
+    for (const archive of gameArchives(dir)) {
+      const wanted = new Set(['records/creatures/pc/malepc01.dbr', 'records/game/gameengine.dbr']);
+      for (const [key, rec] of readArz(readFileSync(archive.path), { filter: (r) => wanted.has(r) })) {
+        records.set(key, rec);
+      }
+    }
+
+    const pc = records.get('records/creatures/pc/malepc01.dbr');
+    expect(pc, 'player creature record missing from the build — check WANTED_PREFIXES').toBeDefined();
+    expect(pc!.fields['characterAttackSpeed']).toBe(1.25);
+    expect(pc!.fields['characterSpellCastSpeed']).toBe(1.25);
+    // `characterRunSpeed` is a float32 in the archive, so it is 0.93 only to
+    // seven places — the DB rounds nothing, and `baseSpeeds()` above is what
+    // pins the rounded value the document prints.
+    expect(pc!.fields['characterRunSpeed']).toBeCloseTo(0.93, 6);
+
+    const engine = records.get('records/game/gameengine.dbr');
+    expect(engine!.fields['dwWeaponSpeedFactor']).toBe(0.5);
   });
 
   it('types the use-on restriction on components and augments', { timeout: BUILD_TIMEOUT }, async () => {

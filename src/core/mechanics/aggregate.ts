@@ -26,6 +26,7 @@ import {
   addAttributes,
   addDamage,
   addDefense,
+  addSpeed,
   addVector,
   applyConversions,
   armorAbsorption,
@@ -36,6 +37,7 @@ import {
   emptyAttributes,
   emptyDamage,
   emptyDefense,
+  emptySpeed,
   maxResistContributions,
   penaltyVector,
   RESIST_CAP,
@@ -50,6 +52,7 @@ import {
   type DamageContribution,
   type DamageKey,
   type DefenseFields,
+  type SpeedFields,
   type ResistKey,
   type ResistVector,
 } from './stats.js';
@@ -296,6 +299,65 @@ export interface WieldingSummary {
   permanentEnablers: number;
 }
 
+/** The base rate one held weapon contributes, before any `+%`. */
+export interface WeaponSpeed {
+  slot: string;
+  item: string;
+  /** The localized `Speed: Very Fast` descriptor, without the label. */
+  tag: string;
+  /** `characterBaseAttackSpeed` — an additive delta in attacks per second. */
+  delta: number;
+  /** `base + delta`: what this weapon alone swings at, unbuffed. */
+  aps: number;
+}
+
+/**
+ * One speed channel, resolved end to end.
+ *
+ * The percentages are what a character sheet shows: the resulting rate over the
+ * engine baseline. For attack speed that already includes the weapon term,
+ * which is why a Very Slow weapon reads under 100% with no modifiers at all and
+ * needs half again as many `+%` points to reach the same cap.
+ */
+export interface SpeedLine {
+  label: string;
+  /** The engine baseline this channel's percentage is measured against. */
+  base: number;
+  /** The rate before any `+%` — `base` plus the weapon term, where there is one. */
+  weaponBase: number;
+  /** How the weapon term was arrived at, when it is not simply the baseline. */
+  weaponNote?: string;
+  permanentPercent: number;
+  maintainablePercent: number;
+  /** The cap, after any `+% Maximum …` raised it. */
+  cap: number;
+  /** Char-sheet percentage from permanent sources only, after the cap. */
+  percent: number;
+  /** The same including maintainable buffs. */
+  percentWithMaintainable: number;
+  /** Uncapped, so "how much of this is wasted" is answerable. */
+  rawPercent: number;
+  rawPercentWithMaintainable: number;
+  /** `base × percent / 100` — attacks or casts per second, or the movement rate. */
+  rate: number;
+  rateWithMaintainable: number;
+  /**
+   * Modifier points that can still be added before the cap bites, counting the
+   * maintainable band as held. Zero means every further `+%` is wasted.
+   */
+  headroom: number;
+}
+
+export interface SpeedSummary {
+  attack: SpeedLine;
+  cast: SpeedLine;
+  movement: SpeedLine;
+  /** The held weapons' own base rates, which is where the attack term comes from. */
+  weapons: WeaponSpeed[];
+  /** `characterTotalSpeedModifier`, which moved all three lines at once. */
+  totalSpeedPercent: { permanent: number; maintainable: number };
+}
+
 export interface CharacterAggregate {
   name: string;
   level: number;
@@ -306,6 +368,13 @@ export interface CharacterAggregate {
   resistances: ResistanceMatrix;
   damage: DamageProfile;
   defense: DefenseSummary;
+  /**
+   * Attack, casting and movement speed against the engine caps. Attack speed is
+   * a throughput multiplier on everything in `damage`, so ranking damage without
+   * it ranks half the answer — and both Stage 6 live runs said outright that
+   * they could not tell whether the character was already at the cap.
+   */
+  speed: SpeedSummary;
   ranks: EffectiveRank[];
   /** Buffs counted in the maintainable band, so the reader can see the price. */
   maintained: { name: string; rank: number; duration?: number; cooldown?: number }[];
@@ -594,6 +663,10 @@ export function aggregateCharacter(
   const maxResist: ResistVector = {};
   const secondary = new Map<string, number>();
   const defense = emptyDefense();
+  // Speed bands separately: Veil of Shadow's -12% Total Speed is permanent and
+  // Pneumatic Burst's +5% is not, so a single number would be wrong twice.
+  const speedPermanent = emptySpeed();
+  const speedMaintainable = emptySpeed();
   /** Body part → the worn piece's own armour rating. */
   const armorPieces = new Map<string, number>();
   const damage = emptyDamage();
@@ -618,6 +691,7 @@ export function aggregateCharacter(
       rows.push({ slot, label, kind, band, values, ...(note ? { note } : {}) });
       addVector(band === 'permanent' ? permanent : maintainable, values);
     }
+    addSpeed(band === 'permanent' ? speedPermanent : speedMaintainable, stats, resolve);
     if (band === 'permanent') {
       addVector(maxResist, maxResistContributions(stats, resolve));
       if (armorPart) {
@@ -805,6 +879,7 @@ export function aggregateCharacter(
     },
     damage: damageProfile(damage, conversionRows, attackRows, rrRows, ranks, save, db),
     defense: defenseSummary(defense, armorPieces, slots, db.armorAbsorptionBase()),
+    speed: speedSummary(speedPermanent, speedMaintainable, slots, db),
     ranks: [...ranks.values()].sort((a, b) => b.invested - a.invested),
     maintained,
     grantedSkills: grantedSkills(slots),
@@ -1037,6 +1112,143 @@ function defenseSummary(
     absorptionBase,
     hasShield,
     armorClasses: [...armorClasses],
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Speed
+// ---------------------------------------------------------------------------
+
+/** Weapon classes whose `characterBaseAttackSpeed` is a real swing rate. */
+const WEAPON_CLASS = /^Weapon(Melee|Hunting|Magical)_/;
+
+/**
+ * A held weapon's own base rate.
+ *
+ * `characterBaseAttackSpeed` is an *additive delta in attacks per second* — Very
+ * Fast is about −0.02, Very Slow about −0.20 — so the weapon's unbuffed rate is
+ * the engine baseline plus it, and it is never a percentage. Off-hands and
+ * shields carry the descriptor tag as template filler with no number, so they
+ * are skipped: only records matching `WEAPON_CLASS` have one.
+ */
+function weaponSpeeds(slots: EquippedSlot[], base: number, db: GameDb): WeaponSpeed[] {
+  const out: WeaponSpeed[] = [];
+  for (const { slot, item } of slots) {
+    const weapon = item.base;
+    if (!weapon || !WEAPON_CLASS.test(weapon.slot)) continue;
+    const raw = weapon.stats['characterBaseAttackSpeed'];
+    const delta = typeof raw === 'number' ? raw : 0;
+    const tagRaw = weapon.stats['characterBaseAttackSpeedTag'];
+    const tag =
+      typeof tagRaw === 'string'
+        ? db.localize(tagRaw).replace(/^speed:\s*/i, '').replace(/^(tag)?(Character)?AttackSpeed/i, '').trim()
+        : '';
+    out.push({ slot, item: weapon.name, tag, delta, aps: base + delta });
+  }
+  return out;
+}
+
+/**
+ * Resolve one speed channel against its cap.
+ *
+ * The cap applies to the *resulting* percentage, not to the modifier sum, which
+ * is the whole mechanism behind the game's "slower weapons gain less from %
+ * Attack Speed bonuses": a weapon starting at 82% of baseline needs 147 points
+ * of `+%` to reach 200% where one starting at 98% needs 102.
+ */
+function speedLine(
+  label: string,
+  base: number,
+  weaponBase: number,
+  weaponNote: string | undefined,
+  permanentPercent: number,
+  maintainablePercent: number,
+  cap: number,
+): SpeedLine {
+  const ratio = base > 0 ? weaponBase / base : 1;
+  const raw = (pct: number): number => 100 * ratio * (1 + pct / 100);
+  const rawPercent = raw(permanentPercent);
+  const rawWith = raw(permanentPercent + maintainablePercent);
+  const percent = Math.min(rawPercent, cap);
+  const percentWith = Math.min(rawWith, cap);
+  // Headroom is in modifier points, because that is the unit an affix is sold
+  // in: how much more `+% Attack Speed` this character can still use.
+  const headroom = ratio > 0 ? Math.max(0, (cap - rawWith) / ratio) : 0;
+
+  return {
+    label,
+    base,
+    weaponBase,
+    ...(weaponNote ? { weaponNote } : {}),
+    permanentPercent,
+    maintainablePercent,
+    cap,
+    percent,
+    percentWithMaintainable: percentWith,
+    rawPercent,
+    rawPercentWithMaintainable: rawWith,
+    rate: (base * percent) / 100,
+    rateWithMaintainable: (base * percentWith) / 100,
+    headroom,
+  };
+}
+
+function speedSummary(
+  permanent: SpeedFields,
+  maintainable: SpeedFields,
+  slots: EquippedSlot[],
+  db: GameDb,
+): SpeedSummary {
+  const base = db.baseSpeeds();
+  const caps = db.speedCaps();
+  const weapons = weaponSpeeds(slots, base.attack, db);
+
+  // Dual wielding weights each weapon at `dwWeaponSpeedFactor`, so two weapons
+  // give their mean. One weapon (or none) is simply its own rate.
+  let attackBase = base.attack;
+  let note: string | undefined;
+  if (weapons.length === 1) {
+    attackBase = weapons[0]!.aps;
+    note = `${weapons[0]!.item}${weapons[0]!.tag ? ` (${weapons[0]!.tag.toLowerCase()})` : ''}`;
+  } else if (weapons.length > 1) {
+    attackBase = weapons.reduce((n, w) => n + w.aps * base.dualWieldFactor, 0);
+    note =
+      `mean of ${weapons.map((w) => `${w.item}${w.tag ? ` ${w.tag.toLowerCase()}` : ''}`).join(' + ')}` +
+      ` (dwWeaponSpeedFactor ${base.dualWieldFactor})`;
+  } else {
+    note = 'unarmed';
+  }
+
+  return {
+    attack: speedLine(
+      'Attack',
+      base.attack,
+      attackBase,
+      note,
+      permanent.attackPercent + permanent.totalPercent,
+      maintainable.attackPercent + maintainable.totalPercent,
+      caps.attack + permanent.attackCapPercent + maintainable.attackCapPercent,
+    ),
+    cast: speedLine(
+      'Casting',
+      base.cast,
+      base.cast,
+      undefined,
+      permanent.castPercent + permanent.totalPercent,
+      maintainable.castPercent + maintainable.totalPercent,
+      caps.cast,
+    ),
+    movement: speedLine(
+      'Movement',
+      base.run,
+      base.run,
+      undefined,
+      permanent.runPercent + permanent.totalPercent,
+      maintainable.runPercent + maintainable.totalPercent,
+      caps.run + permanent.runCapPercent + maintainable.runCapPercent,
+    ),
+    weapons,
+    totalSpeedPercent: { permanent: permanent.totalPercent, maintainable: maintainable.totalPercent },
   };
 }
 

@@ -30,7 +30,7 @@ import {
   type ResistKey,
   type ResistVector,
 } from '../mechanics/stats.js';
-import type { ResolvedCharacter, ResolvedItem } from '../resolve.js';
+import { shortHash, type ResolvedCharacter, type ResolvedItem } from '../resolve.js';
 import { factionSlot, factionTier } from '../save/factions.js';
 import { EQUIP_SLOT_NAMES, type CharacterSave } from '../save/types.js';
 import {
@@ -94,6 +94,12 @@ export interface ContextDoc {
    * highlights on the grid.
    */
   itemsById: Map<string, ResolvedItem>;
+  /**
+   * Every component and augment the document offered, by the id it printed.
+   * Stage 6's checks resolve a socket target through this — an id that is not
+   * here was not on the table, whatever the game's own database contains.
+   */
+  socketablesById: Map<string, DbItem>;
 }
 
 /**
@@ -128,12 +134,22 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
   }
 
   const itemsById = idIndex(input.resolved.items);
+  const socketables = documentSocketables(input);
+  const socketableIds = assignSocketableIds(socketables, new Set(itemsById.keys()));
+  const byRecord = new Map(socketables.map((item) => [item.record, item]));
+  const socketablesById = new Map<string, DbItem>();
+  for (const [record, id] of socketableIds) {
+    const item = byRecord.get(record);
+    if (item) socketablesById.set(id, item);
+  }
+
   return {
     markdown: doc,
     tokenEstimate: estimateTokens(doc),
     trimmed,
     itemIds: new Map([...itemsById].map(([id, item]) => [id, item.display])),
     itemsById,
+    socketablesById,
   };
 }
 
@@ -171,6 +187,31 @@ function idIndex(items: readonly ResolvedItem[]): Map<string, ResolvedItem> {
   return new Map([...ids].map(([item, id]) => [id, item]));
 }
 
+/**
+ * Ids for components and augments, from the same alphabet as item ids.
+ *
+ * Until now these were referenced by *name* while everything else was referenced
+ * by id, which is why `verify.ts` carries two normalizers and a
+ * strip-the-parenthetical fallback to decide whether "Dread Skull (loose)" is a
+ * component the document offered. A socketable has no save instance, so its
+ * identity is its record path — hash that, and the fuzzy match goes away.
+ *
+ * `reserved` holds the item ids already handed out, because the two id spaces
+ * share one namespace: the model is told "identify everything by its id", and it
+ * would be a poor joke if two different things could answer to one.
+ */
+function assignSocketableIds(items: readonly DbItem[], reserved: ReadonlySet<string>): Map<string, string> {
+  const out = new Map<string, string>();
+  const used = new Set(reserved);
+  for (const item of [...items].sort((a, b) => a.record.localeCompare(b.record))) {
+    let id = shortHash(item.record);
+    for (let n = 1; used.has(id); n++) id = shortHash(`${item.record}#${n}`);
+    used.add(id);
+    out.set(item.record, id);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // The document
 // ---------------------------------------------------------------------------
@@ -183,7 +224,16 @@ function render(input: ContextInput, trim: Trim): string {
   const equipped = resolved.items.filter((i) => i.source === 'equipped');
   const invested = new Set(save.skills.filter((s) => s.level > 0).map((s) => s.record));
   const recipes = recipeView(input);
-  const ctx: RenderContext = { ...input, ids, equipped, invested, recipes, iron: ironOutlook(input, recipes) };
+  const socketableIds = assignSocketableIds(documentSocketables(input, recipes), new Set(ids.values()));
+  const ctx: RenderContext = {
+    ...input,
+    ids,
+    socketableIds,
+    equipped,
+    invested,
+    recipes,
+    iron: ironOutlook(input, recipes),
+  };
 
   header(out, ctx);
   gameRules(out, ctx);
@@ -204,6 +254,8 @@ function render(input: ContextInput, trim: Trim): string {
 
 interface RenderContext extends ContextInput {
   ids: Map<ResolvedItem, string>;
+  /** Component/augment record path → its dossier id. */
+  socketableIds: Map<string, string>;
   equipped: ResolvedItem[];
   /** Skill records with at least one invested point. */
   invested: Set<string>;
@@ -345,7 +397,14 @@ function gameRules(out: Writer, ctx: RenderContext): void {
   out.line('**Armour is localized, not pooled.** Every physical hit rolls one body part — Head 12%, Shoulders 12%, Chest 24%, Hands 16%, Legs 20%, Feet 16% — and is met by *that piece alone*. Summing six ratings describes a character who does not exist. Flat `+Armor` from rings, components and skills is added to **every** part. Absorption is multiplicative on a 70% base: `+20% Armor Absorption` gives 84%, not 90%, and it caps at 100%.');
 
   out.line();
-  out.line(`**Speed caps** (engine values): attack ${caps.attack}%, cast ${caps.cast}%, movement ${caps.run}%. \`+% speed\` past a cap is worth nothing — never trade a real stat for it on a build already at cap.`);
+  out.line(
+    `**Speed caps** (engine values): attack ${caps.attack}%, cast ${caps.cast}%, movement ${caps.run}%. \`+% speed\` past a cap is worth nothing — never trade a real stat for it on a build already at cap. ` +
+      '**Attack speed is a multiplier on all damage throughput**, so it is not a minor stat below the cap and not a stat at all above it. ' +
+      'It works like this: the character has a base rate in attacks per second, a weapon shifts that base by its own **additive delta in attacks/second** (never a percentage — a "Very Fast" weapon is about −0.02, "Very Slow" about −0.20), ' +
+      'and the character-sheet percentage is the resulting rate over the unarmed baseline, with the cap applied to *that*. ' +
+      'Two consequences the numbers in §3 already work out: a slower weapon starts further below 100% and so needs materially more `+% Attack Speed` to reach the same cap, ' +
+      'and a character already at the cap loses nothing by giving up speed down to it. **§3 states this character\'s three speeds, the cap and the remaining headroom — read them there rather than estimating.**',
+  );
 
   out.line();
   out.line('**Granted skills.** Wherever an item, component or augment reads `Grants: <skill>`, the skill\'s own stats follow it and the parenthetical says **how you get them**: `passive — always on` (simply true), `toggle` (true while held, at the energy reservation shown in its stats), `activated` (you have to cast it), `auto-cast <trigger>` (a proc — a chance per trigger, not a constant), or `weapon-pool proc` (a share of basic attacks). None of these is summed into §3; they are named and shown so you can weigh them yourself, and §3 lists them as an exclusion.');
@@ -467,8 +526,35 @@ function attributesAndDefenses(out: Writer, ctx: RenderContext): void {
     ]);
   }
 
+  attributeScaling(out, ctx);
   defenseBlock(out, ctx);
+  speedBlock(out, ctx);
   resistanceMatrix(out, ctx);
+}
+
+/**
+ * What the three attributes buy beyond wearing gear.
+ *
+ * Stated because §4's damage profile does *not* include it, and an advisor with
+ * no note here has two bad options: ignore a real term, or invent a coefficient.
+ * The types come from the game's own attribute descriptions
+ * (`tagCharAttributeDescription01`/`02`/`03`); the *rate* is engine-side and
+ * appears in no record, exactly like the armour hit weights — so the size is
+ * declared underivable rather than guessed.
+ */
+function attributeScaling(out: Writer, ctx: RenderContext): void {
+  const a = ctx.aggregate.attributes;
+  out.line();
+  out.line('**What the attributes themselves scale** (the game\'s own attribute descriptions; *not* included in §4\'s damage profile):');
+  out.bullets([
+    '**Cunning** — Physical, Pierce, Bleeding and Internal Trauma **Damage**, plus Offensive Ability, critical hits and health.',
+    '**Spirit** — the magical damage types (Fire, Cold, Lightning, Aether, Chaos, Vitality **Damage** and their damage-over-time twins), plus energy and energy regeneration.',
+    '**Physique** — health, health regeneration, dodge and crit avoidance. **No damage scaling at all.**',
+    'The **rate** is engine-side and is in no game record, so this document gives no number for it and §4\'s `+% damage` figures exclude it. ' +
+      'Weigh it as a direction, not a quantity: against this character\'s ' +
+      `${Math.round(a.cunning.total)} Cunning and ${Math.round(a.spirit.total)} Spirit, a swap moving either by a few tens of points is **not** a damage argument and must not be used to block a move. ` +
+      'It becomes one only when the shift is large against the total, or when it crosses a requirement — and requirements are checked exactly, above.',
+  ]);
 }
 
 function defenseBlock(out: Writer, ctx: RenderContext): void {
@@ -497,6 +583,73 @@ function defenseBlock(out: Writer, ctx: RenderContext): void {
     ...(d.lifeLeechPercent ? [`sustain: ${d.lifeLeechPercent.toFixed(1)}% of attack damage converted to health`] : []),
     `health from gear and skills ${signed(d.health)}${d.healthPercent ? `, ${signed(d.healthPercent)}%` : ''}`,
   ]);
+}
+
+/**
+ * Attack, casting and movement speed against the engine caps.
+ *
+ * Attack speed multiplies the entire §4 damage profile, so a dossier that ranks
+ * damage and omits it ranks half the answer — and both Stage 6 live runs said in
+ * as many words that they could not tell whether the character was already at
+ * the cap. The model is spelled out rather than just the number, because
+ * `characterBaseAttackSpeed` is the kind of field that reads as a percentage and
+ * is not one, and because the weapon term is what makes the headroom figure mean
+ * anything.
+ */
+function speedBlock(out: Writer, ctx: RenderContext): void {
+  const s = ctx.aggregate.speed;
+  out.line();
+  out.line(
+    `**Speed.** Base rates are ${s.attack.base.toFixed(2)} attacks/second, ${s.cast.base.toFixed(2)} casts/second and ${s.movement.base.toFixed(2)} movement, from the player record. ` +
+      'A weapon shifts the attack rate by its own additive delta in attacks/second (Very Fast ≈ −0.02, Very Slow ≈ −0.20 — it is *not* a percentage), ' +
+      'and the percentage below is the resulting rate over that baseline, which is why a slow weapon starts under 100% and needs more `+% Attack Speed` to reach the same cap. ' +
+      '`+% Total Speed` moves all three lines at once.',
+  );
+  out.line();
+  out.table(
+    ['speed', 'base rate', '+% permanent', '+% maintainable', 'now', 'with buffs', 'cap', 'headroom'],
+    [s.attack, s.cast, s.movement].map((line) => {
+      const over = line.rawPercentWithMaintainable - line.cap;
+      // Attacks and casts are per second; movement is a rate in the engine's own
+      // units, so quoting it "/s" would invent a unit the game never states.
+      const unit = line === s.movement ? '' : '/s';
+      return [
+        line.label,
+        `${line.weaponBase.toFixed(2)}${unit}`,
+        signed(Math.round(line.permanentPercent)) + '%',
+        line.maintainablePercent ? `${signed(Math.round(line.maintainablePercent))}%` : '·',
+        `${Math.round(line.percent)}% (${line.rate.toFixed(2)}${unit})`,
+        `${Math.round(line.percentWithMaintainable)}% (${line.rateWithMaintainable.toFixed(2)}${unit})`,
+        `${Math.round(line.cap)}%`,
+        over > 0
+          ? `**at cap** — ${Math.round(over)} points already wasted`
+          : `${Math.round(line.headroom)} more points of \`+%\``,
+      ];
+    }),
+  );
+  out.line();
+  const notes: string[] = [];
+  if (s.weapons.length) {
+    notes.push(
+      `attack base from ${s.weapons.map((w) => `**${w.item}** (${w.tag.toLowerCase() || 'no descriptor'}, ${w.aps.toFixed(2)}/s)`).join(' + ')}` +
+        (s.attack.weaponNote?.includes('dwWeaponSpeedFactor')
+          ? ' — dual-wielding weights each weapon at 0.5, so the pair contributes their mean'
+          : ''),
+    );
+  }
+  for (const line of [s.attack, s.cast, s.movement]) {
+    if (line.rawPercentWithMaintainable > line.cap) {
+      notes.push(
+        `**${line.label} speed is capped**: the character carries ${Math.round(line.rawPercentWithMaintainable)}% against a ${Math.round(line.cap)}% ceiling, so every further \`+% ${line.label} Speed\` is worth nothing. ` +
+          `Losing up to ${Math.round(line.rawPercentWithMaintainable - line.cap)} points of it costs nothing either.`,
+      );
+    }
+  }
+  notes.push(
+    'The composition above (baseline × weapon delta × modifiers, capped on the result) is derived from the game data, not quoted from it — ' +
+      'the caps and both bases are records, the way they combine is not. Treat the percentages as good to a point or two, and the *direction* — at cap or not — as reliable.',
+  );
+  out.bullets(notes);
 }
 
 const CELL_ZERO = '·';
@@ -849,12 +1002,12 @@ function itemBlock(
   if (item.completion) emit(out, `relic completion bonus${jitter(item.completion.jitter)}`, statLines(item.completion.stats));
 
   if (item.component) {
-    emit(out, `component: **${item.component.name}** (use-on: ${describeSlots(item.component.allowedSlots)})`, statLines(item.component.stats));
+    emit(out, `component: **${item.component.name}** \`#${socketableId(ctx, item.component)}\` (use-on: ${describeSlots(item.component.allowedSlots)})`, statLines(item.component.stats));
   } else if (acceptsComponent(item)) {
     out.line('- **component socket: EMPTY** — a free upgrade, no salvage needed');
   }
   if (item.augment) {
-    emit(out, `augment: **${item.augment.name}**${augmentSource(item.augment, db)}`, statLines(item.augment.stats));
+    emit(out, `augment: **${item.augment.name}** \`#${socketableId(ctx, item.augment)}\`${augmentSource(item.augment, db)}`, statLines(item.augment.stats));
     out.line('  - this item is **soulbound** while the augment is applied');
   } else if (acceptsAugment(item)) {
     out.line('- **augment: NONE** — buyable with iron, costs nothing to change later');
@@ -1215,7 +1368,7 @@ function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, 
       const scarce = onlyInstalled(e)
         ? ` — **single instance — extraction destroys ${e.hosts.map((h) => `\`#${h.id}\``).join(' / ')}**`
         : '';
-      out.line(`- **${e.item.name}** — ${parts.join('; ')}${scarce}`);
+      out.line(`- **${e.item.name}** \`#${socketableId(ctx, e.item)}\` — ${parts.join('; ')}${scarce}`);
       // The stats are the whole point of the comparison: without them the
       // advisor can only say "any component beats an empty socket".
       const lines = formatStats(e.item.stats, { db: ctx.db, invested: ctx.invested });
@@ -1227,7 +1380,7 @@ function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, 
       out.line('**Loose augments on hand** (installed ones are shown with their item in §5/§7 and can never be recovered):');
       for (const e of [...augments.values()].sort((a, b) => a.item.name.localeCompare(b.item.name))) {
         const loose = [...e.loose].map(([source, n]) => `${n}× ${SOURCE_TAG[source] ?? source}`).join(', ');
-        out.line(`- **${e.item.name}** — ${loose}; use-on: ${describeSlots(e.item.allowedSlots)}`);
+        out.line(`- **${e.item.name}** \`#${socketableId(ctx, e.item)}\` — ${loose}; use-on: ${describeSlots(e.item.allowedSlots)}`);
         const lines = formatStats(e.item.stats, { db: ctx.db, invested: ctx.invested });
         if (lines.length) out.line(`  - ${lines.join('; ')}`);
       }
@@ -1240,6 +1393,16 @@ function census(out: Writer, ctx: RenderContext, selection: CandidateSelection, 
       ? `**Crafting materials on hand:** ${[...materials.values()].sort((a, b) => b.count - a.count).map((m) => `${m.name} ×${m.count}`).join(' · ')}`
       : '**Crafting materials on hand:** none.',
   );
+}
+
+/**
+ * A socketable's dossier id. Falls back to hashing the record on the spot: a
+ * component that reached a render path the id map missed should still print an
+ * id rather than a gap, and the hash is deterministic, so it is the same id the
+ * map would have given.
+ */
+function socketableId(ctx: RenderContext, item: DbItem): string {
+  return ctx.socketableIds.get(item.record) ?? shortHash(item.record);
 }
 
 function onlyInstalled(entry: CensusEntry): boolean {
@@ -1315,7 +1478,7 @@ function vendorStock(save: CharacterSave, db: GameDb, level: number): VendorStoc
  * component §8 marks craftable *was* offered, so it belongs here: leaving it out
  * would report a legal CRAFT as invented.
  */
-export function documentSocketables(input: ContextInput): DbItem[] {
+export function documentSocketables(input: ContextInput, recipes?: RecipeView): DbItem[] {
   const { save, db, aggregate, resolved } = input;
   const out = new Map<string, DbItem>();
   const add = (item: DbItem | undefined): void => {
@@ -1332,7 +1495,7 @@ export function documentSocketables(input: ContextInput): DbItem[] {
     for (const augment of stock.augments) add(augment);
   }
 
-  for (const recipe of recipeView(input).relevant) {
+  for (const recipe of (recipes ?? recipeView(input)).relevant) {
     const result = recipe.resultRecord ? db.getItem(recipe.resultRecord) : undefined;
     if (result?.slot === COMPONENT_CLASS) add(result);
   }
@@ -1354,7 +1517,7 @@ function factionAugments(out: Writer, ctx: RenderContext): void {
       const cost = augment.stats['itemCost'];
       const lines = formatStats(augment.stats, { db, invested: ctx.invested });
       out.line(
-        `- **${augment.name}** (lvl ${augment.levelReq}, ${at}, ${typeof cost === 'number' ? cost.toLocaleString('en-US') : '?'} iron) — use-on: ${describeSlots(augment.allowedSlots)} — ${lines.join('; ')}`,
+        `- **${augment.name}** \`#${socketableId(ctx, augment)}\` (lvl ${augment.levelReq}, ${at}, ${typeof cost === 'number' ? cost.toLocaleString('en-US') : '?'} iron) — use-on: ${describeSlots(augment.allowedSlots)} — ${lines.join('; ')}`,
       );
     }
   }
@@ -1696,7 +1859,8 @@ function task(out: Writer, ctx: RenderContext): void {
     '**Physique / Cunning / Spirit** totals, and a confirmation that every item in the projected loadout still meets its requirements *after* the outgoing items\' `+Attribute` and `-% Requirement` bonuses are gone',
     'the **damage profile**: the top two post-conversion types and roughly what happens to their `+%` totals and flat pools, plus any change to the weapon-attack composition',
     '**skill ranks that move** — a swap that changes `+N to <skill>` shifts every stat read at that rank, including resistances already counted above',
-    'anything that crosses a **speed cap** from §2, and any resistance pushed past its cap (both are wasted stats, not gains)',
+    '**attack, casting and movement speed** restated against their caps, using §3\'s figures and headroom — attack speed multiplies all damage throughput, so a swap that moves it has a damage consequence that the §4 profile does not show',
+    'anything pushed **past a cap** — speed past the §3 ceilings, or a resistance past its cap (both are wasted stats, not gains)',
   ]);
   out.line();
   out.line('Give the projection as concrete numbers where §3–§5 gave numbers, and say plainly when a figure cannot be derived from this document instead of estimating it silently.');

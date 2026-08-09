@@ -47,6 +47,7 @@ function stubDb(skills: Record<string, string> = {}, items: Record<string, DbIte
     difficultyPenalty: () => ({}),
     armorAbsorptionBase: () => 70,
     speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
+    baseSpeeds: () => ({ attack: 1.25, cast: 1.25, run: 0.93, dualWieldFactor: 0.5 }),
     levelProgression: () => ({
       attributePointsPerLevel: 1,
       attributePerPoint: { physique: 8, cunning: 8, spirit: 8 },
@@ -702,6 +703,65 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     expect(two).toContain('**Iron is a constraint for this character**');
     expect(two).toContain('keep a running total');
     expect(two).not.toContain('do not write a budget section');
+  });
+
+  it('states the three speeds against their caps, with the weapon term spelled out', async () => {
+    const input = await context('_Suchka');
+    const doc = buildContextDoc(input);
+    const three = section(doc.markdown, 3);
+    const speed = input.aggregate.speed;
+
+    expect(three).toContain('**Speed.**');
+    // The model, not just the number: `characterBaseAttackSpeed` reads as a
+    // percentage and is not one, and the headroom figure is meaningless without
+    // knowing the weapon is in the baseline.
+    expect(three).toContain('additive delta in attacks/second');
+
+    const row = doc.markdown.split('\n').find((l) => l.startsWith('| Attack |'));
+    expect(row, three.slice(0, 400)).toBeDefined();
+    const cells = row!.split('|').map((c) => c.trim());
+    expect(cells[2]).toBe(`${speed.attack.weaponBase.toFixed(2)}/s`);
+    expect(cells[6]).toContain(`${speed.attack.rateWithMaintainable.toFixed(2)}/s`);
+
+    // The dual-wield mean is the weapons' own rates, not the unarmed baseline.
+    expect(speed.weapons).toHaveLength(2);
+    expect(speed.attack.weaponBase).toBeCloseTo(
+      speed.weapons.reduce((n, w) => n + w.aps * input.db.baseSpeeds().dualWieldFactor, 0),
+      6,
+    );
+    // A weapon's delta is negative (slower than unarmed) and small.
+    for (const w of speed.weapons) {
+      expect(w.delta).toBeGreaterThan(-0.5);
+      expect(w.delta).toBeLessThanOrEqual(0.5);
+      expect(w.aps).toBeCloseTo(input.db.baseSpeeds().attack + w.delta, 6);
+    }
+  });
+
+  it('names what the attributes scale without inventing a rate', async () => {
+    const three = section(buildContextDoc(await context('_Suchka')).markdown, 3);
+    expect(three).toContain('Internal Trauma **Damage**');
+    expect(three).toContain('**No damage scaling at all.**');
+    // The rate is engine-side. Saying so is the point: the alternative is an
+    // advisor that either ignores the term or makes a coefficient up.
+    expect(three).toContain('is in no game record');
+    expect(three).toContain('must not be used to block a move');
+  });
+
+  it('gives every component and augment an id that no item id collides with', async () => {
+    const input = await context('_Suchka');
+    const doc = buildContextDoc(input);
+
+    expect(doc.socketablesById.size).toBeGreaterThan(50);
+    for (const id of doc.socketablesById.keys()) {
+      expect(doc.itemsById.has(id), `socketable id ${id} collides with an item id`).toBe(false);
+    }
+
+    // Every id the index holds is an id the document actually printed, or the
+    // model is being told to reference something it cannot see.
+    for (const [id, item] of doc.socketablesById) {
+      if (!doc.markdown.includes(item.name)) continue;
+      expect(doc.markdown, `${item.name} #${id}`).toContain(`\`#${id}\``);
+    }
   });
 
   it('groups the unlock ladder by shared threshold and costs it in points', async () => {

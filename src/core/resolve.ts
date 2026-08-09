@@ -239,17 +239,30 @@ function requirements(base: DbItem, prefix?: DbAffix, suffix?: DbAffix): ItemReq
  * do happen, because two genuinely identical stacked items hash the same.
  */
 export function itemId(inst: ItemInstance): string {
-  const key = [
-    inst.baseName,
-    inst.seed,
-    inst.prefixName,
-    inst.suffixName,
-    inst.modifierName,
-    inst.relicName,
-    inst.relicSeed,
-    inst.augmentName,
-    inst.augmentSeed,
-  ].join('|');
+  return shortHash(
+    [
+      inst.baseName,
+      inst.seed,
+      inst.prefixName,
+      inst.suffixName,
+      inst.modifierName,
+      inst.relicName,
+      inst.relicSeed,
+      inst.augmentName,
+      inst.augmentSeed,
+    ].join('|'),
+  );
+}
+
+/**
+ * FNV-1a to four base-36 characters — the id scheme the whole document uses.
+ *
+ * Shared so that components and augments, which are identified by record path
+ * rather than by instance, get ids from the same alphabet and the same width as
+ * items. A reader (or a model) should not be able to tell from the shape of an
+ * id what kind of thing it points at.
+ */
+export function shortHash(key: string): string {
   let hash = 0x811c9dc5;
   for (let i = 0; i < key.length; i++) {
     hash ^= key.charCodeAt(i);

@@ -79,14 +79,26 @@ export function isReplacement(verdict: Verdict): boolean {
   return verdict === 'EQUIP';
 }
 
-/** The `Slot | Current | New | Action | Why` row for one verdict. */
+/** The `Slot | Current | New | Action | Gains / Costs | Why` row for one verdict. */
 export interface VerdictRow {
   slot: string;
   current: string;
+  /** Display name of `current`, without the id — for a UI that renders ids separately. */
+  currentName: string;
+  currentId: string;
   /** `— (keep)` unless the item itself is replaced. */
   next: string;
+  nextName: string;
+  nextId: string;
   /** The socketable move, or `KEEP`. Empty on a plain replacement. */
   action: string;
+  /**
+   * What the move adds and what it costs, already qualified. The first live
+   * table showed neither, so "+12% Fire Resistance and +12% Lightning
+   * Resistance" existed in the prose and nowhere a UI could reach it.
+   */
+  gains: string[];
+  costs: string[];
   why: string;
   replaces: boolean;
 }
@@ -115,13 +127,20 @@ export function verdictRows(plan: AdvisorPlan, nameFor: (id: string) => string |
 
   return plan.verdicts.map((v) => {
     const replaces = isReplacement(v.verdict);
+    const nextId = replaces ? (v.target ?? '') : '';
     return {
       slot: v.slot,
       current: label(v.itemId) || '—',
+      currentName: (v.itemId ? nameFor(v.itemId) : undefined) ?? v.itemName ?? '',
+      currentId: v.itemId,
       next: replaces ? label(v.target) || `EQUIP ${v.target ?? '?'}` : KEEP_CELL,
+      nextName: (nextId ? nameFor(nextId) : undefined) ?? (replaces ? v.targetName ?? '' : ''),
+      nextId,
       // A socketable change belongs in Action, never in New: a re-augment is
       // not a new item.
       action: replaces ? '' : v.verdict === 'KEEP' ? 'KEEP' : `${v.verdict}${v.target ? ` ${v.target}` : ''}`,
+      gains: [...(v.gains ?? [])],
+      costs: [...(v.costs ?? [])],
       why: v.reason,
       replaces,
     };
@@ -132,9 +151,22 @@ const verdictSchema = z.object({
   slot: z.string(),
   /** Dossier id of what is in the slot; empty string when the slot is empty. */
   itemId: z.string().default(''),
+  /**
+   * The display name that goes with `itemId`.
+   *
+   * Redundant on purpose. The id is the key and a UI resolves it, but carrying
+   * the name the model *meant* is what lets `checkPlan` catch the failure an
+   * id-only plan hides: a right name paired with the wrong id reads as a valid
+   * plan for a different item. Optional, so an older answer still validates.
+   */
+  itemName: z.string().optional(),
   verdict: z.enum(VERDICTS),
   /** EQUIP: the candidate's item id. BUY/CRAFT/RE-AUGMENT/…: an exact dossier name. */
   target: z.string().optional(),
+  /** The dossier id of `target`. Socketables carry ids too, so this always exists. */
+  targetId: z.string().optional(),
+  /** The display name that goes with `targetId`, on the same reasoning as `itemName`. */
+  targetName: z.string().optional(),
   /** Item ids whose joint equip is what satisfies this move's requirements. */
   enablers: z.array(z.string()).optional(),
   /** Extraction source: the host item id, which the extraction DESTROYS. */
@@ -151,8 +183,32 @@ const verdictSchema = z.object({
   reason: z.string().default(''),
 });
 
+/**
+ * A multi-slot combination — the reasoning that makes the tool worth running,
+ * and until now the one part of the answer that existed only as prose.
+ *
+ * Stage 7 renders these as the headline: "these four moves go together, here is
+ * what they buy". A UI that can only show a per-slot table shows the *result* of
+ * the reasoning with the reasoning removed.
+ */
+const keyMoveSchema = z.object({
+  title: z.string(),
+  /** Slots this move touches, matching `verdicts[].slot`. */
+  slots: z.array(z.string()).default([]),
+  /** Item ids the move involves, so the UI can highlight the whole combination. */
+  itemIds: z.array(z.string()).default([]),
+  /** The argument, with the dossier's numbers in it. */
+  detail: z.string().default(''),
+});
+
 export const advisorPlanSchema = z.object({
+  /**
+   * Two or three sentences: what this build is and what the loadout's problem
+   * is. The prose opens with it; without it here a UI has a table and no thesis.
+   */
+  summary: z.string().optional(),
   verdicts: z.array(verdictSchema).default([]),
+  keyMoves: z.array(keyMoveSchema).optional(),
   hold: z
     .array(
       z.object({
@@ -187,6 +243,21 @@ export const advisorPlanSchema = z.object({
    * would otherwise live on in the machine-readable half.
    */
   projectedResistances: z.record(z.string(), z.number()).optional(),
+  /**
+   * The rest of the projected "after" state the task asks for in prose. Speed
+   * belongs here because attack speed multiplies the whole damage profile, so a
+   * swap that moves it has a consequence §4's figures do not show.
+   */
+  projected: z
+    .object({
+      attackSpeedPercent: z.number().optional(),
+      castSpeedPercent: z.number().optional(),
+      movementSpeedPercent: z.number().optional(),
+      /** Anything the projection could not be derived for, said rather than estimated. */
+      notDerivable: z.array(z.string()).default([]),
+      notes: z.array(z.string()).default([]),
+    })
+    .optional(),
   /**
    * The "Next levels" ladder: one entry per threshold worth committing to,
    * cheapest first. `unlocks` holds dossier item ids.
@@ -252,11 +323,15 @@ function normalizePlan(plan: AdvisorPlan): AdvisorPlan {
       ...v,
       itemId: normalizeId(v.itemId),
       ...(v.target !== undefined ? { target: v.verdict === 'EQUIP' ? normalizeId(v.target) : v.target.trim() } : {}),
+      ...(v.targetId !== undefined ? { targetId: normalizeId(v.targetId) } : {}),
       ...(v.enablers ? { enablers: v.enablers.map(normalizeId) } : {}),
       ...(v.componentFrom !== undefined ? { componentFrom: normalizeId(v.componentFrom) } : {}),
     })),
     hold: plan.hold.map((h) => ({ ...h, itemId: normalizeId(h.itemId) })),
     sell: plan.sell.map(normalizeId),
+    ...(plan.keyMoves
+      ? { keyMoves: plan.keyMoves.map((m) => ({ ...m, itemIds: m.itemIds.map(normalizeId) })) }
+      : {}),
     ...(plan.nextLevels
       ? { nextLevels: plan.nextLevels.map((n) => ({ ...n, unlocks: n.unlocks.map(normalizeId) })) }
       : {}),

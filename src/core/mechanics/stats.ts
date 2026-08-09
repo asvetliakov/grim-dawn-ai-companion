@@ -273,6 +273,63 @@ export function addDefense(
   return into;
 }
 
+// ---------------------------------------------------------------------------
+// Speed
+// ---------------------------------------------------------------------------
+
+/**
+ * The character's `+% speed` modifiers, which are the *only* speed terms that
+ * come from gear and skills — the base rates live on the player creature record
+ * and the weapon term is the weapon's own `characterBaseAttackSpeed`.
+ *
+ * `characterTotalSpeedModifier` is one field that moves all three at once, so it
+ * is kept apart rather than folded in: an advisor weighing a `+5% Total Speed`
+ * component against a `+8% Attack Speed` one needs to see that the first also
+ * bought casting and movement.
+ */
+export interface SpeedFields {
+  attackPercent: number;
+  castPercent: number;
+  runPercent: number;
+  /** Applies to all three of the above. */
+  totalPercent: number;
+  /** `+% Maximum …` — raises the engine cap rather than the speed. */
+  attackCapPercent: number;
+  runCapPercent: number;
+}
+
+const SPEED_FIELDS: Readonly<Record<string, keyof SpeedFields>> = {
+  characterAttackSpeedModifier: 'attackPercent',
+  characterSpellCastSpeedModifier: 'castPercent',
+  characterRunSpeedModifier: 'runPercent',
+  characterTotalSpeedModifier: 'totalPercent',
+  characterAttackSpeedMaxModifier: 'attackCapPercent',
+  characterRunSpeedMaxModifier: 'runCapPercent',
+};
+
+export function emptySpeed(): SpeedFields {
+  return {
+    attackPercent: 0,
+    castPercent: 0,
+    runPercent: 0,
+    totalPercent: 0,
+    attackCapPercent: 0,
+    runCapPercent: 0,
+  };
+}
+
+export function addSpeed(
+  into: SpeedFields,
+  stats: Record<string, StatValue>,
+  resolve: (value: StatValue) => number,
+): SpeedFields {
+  for (const [field, value] of Object.entries(stats)) {
+    const key = SPEED_FIELDS[field];
+    if (key) into[key] += resolve(value);
+  }
+  return into;
+}
+
 /**
  * Resulting armour absorption. Multiplicative on the base, capped at 100% —
  * beyond which a hit inside the armour's rating is absorbed entirely.

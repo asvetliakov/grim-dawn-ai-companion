@@ -34,6 +34,7 @@ import {
   type RepTier,
   type LevelProgression,
   type SpeedCaps,
+  type BaseSpeeds,
 } from './types.js';
 
 export interface LoadDbOptions {
@@ -144,6 +145,10 @@ export class NormalizedGameDb implements GameDb {
 
   speedCaps(): SpeedCaps {
     return this.db.speedCaps;
+  }
+
+  baseSpeeds(): BaseSpeeds {
+    return this.db.baseSpeeds;
   }
 
   levelProgression(): LevelProgression {

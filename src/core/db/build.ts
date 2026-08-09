@@ -24,11 +24,12 @@ import {
   type RepTier,
   type LevelProgression,
   type SpeedCaps,
+  type BaseSpeeds,
   type StatValue,
 } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 10;
+export const DB_SCHEMA_VERSION = 11;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -61,6 +62,8 @@ export interface NormalizedDb {
   armorAbsorptionBase: number;
   /** Player speed caps from the engine record — `+% speed` past these is wasted. */
   speedCaps: SpeedCaps;
+  /** The rates those caps are percentages *of*, from the player creature record. */
+  baseSpeeds: BaseSpeeds;
   /** Attribute/skill points per level, from the player-levels record. */
   levelProgression: LevelProgression;
   factions: DbFaction[];
@@ -86,6 +89,10 @@ const WANTED_PREFIXES = [
   'records/game/balancingadjustment_mp+difficulty_players01.dbr',
   'records/game/gameengine.dbr',
   'records/creatures/pc/playerlevels.dbr',
+  // The player creature record: base attack/cast/run rates the speed caps are
+  // percentages of. Prefix-matched, so `malepc01` comes in and the animation
+  // and default-gear records under the same folder stay out.
+  'records/creatures/pc/malepc01.dbr',
   // The 13 itemcost records whose equations produce attribute requirements.
   'records/game/itemcostformulas',
 ];
@@ -106,6 +113,26 @@ const DEFAULT_ARMOR_ABSORPTION = 70;
  * values in case the record ever goes missing.
  */
 const DEFAULT_SPEED_CAPS = { attack: 200, cast: 200, run: 135 };
+
+/**
+ * The player creature record, which is where the rates those caps are
+ * percentages *of* live: 1.25 attacks/second, 1.25 casts/second, 0.93 movement.
+ * `malepc01` and `femalepc01` carry identical numbers, so either answers.
+ */
+const PLAYER_CREATURE_RECORD = 'records/creatures/pc/malepc01.dbr';
+const DEFAULT_BASE_SPEEDS: BaseSpeeds = { attack: 1.25, cast: 1.25, run: 0.93, dualWieldFactor: 0.5 };
+
+function buildBaseSpeeds(records: Map<string, ArzRecord>): BaseSpeeds {
+  const pc = records.get(PLAYER_CREATURE_RECORD);
+  const engine = records.get(GAME_ENGINE_RECORD);
+  const d = DEFAULT_BASE_SPEEDS;
+  return {
+    attack: num(pc, 'characterAttackSpeed') || d.attack,
+    cast: num(pc, 'characterSpellCastSpeed') || d.cast,
+    run: num(pc, 'characterRunSpeed') || d.run,
+    dualWieldFactor: num(engine, 'dwWeaponSpeedFactor') || d.dualWieldFactor,
+  };
+}
 
 /**
  * Levelling rates. The game states all of them, which is the point: "one point
@@ -644,6 +671,7 @@ export function buildDb(input: BuildInput): NormalizedDb {
     cast: num(engine, 'playerSpellCastSpeedCapMax') ?? DEFAULT_SPEED_CAPS.cast,
     run: num(engine, 'playerRunSpeedCapMax') ?? DEFAULT_SPEED_CAPS.run,
   };
+  const baseSpeeds = buildBaseSpeeds(records);
   const levelProgression = buildLevelProgression(records);
   const { factions, vendor } = buildFactions(records, items, localize);
   const recipes = buildRecipes(records, items);
@@ -664,6 +692,7 @@ export function buildDb(input: BuildInput): NormalizedDb {
     difficultyPenalty,
     armorAbsorptionBase,
     speedCaps,
+    baseSpeeds,
     levelProgression,
     factions,
     vendor,

@@ -43,7 +43,7 @@ Work in this order. Each step constrains the ones after it.
    - *Sourcing, cheapest first:* (a) a loose copy on hand → free; (b) craftable now per §8, which marks every component that can be made and resolves its reagent chain → CRAFT; (c) the only copy is installed in another item → Inventor extraction, which **destroys the host item and its augment**. Say so explicitly, count the loss, and give the destroyed host **no other verdict** — it cannot also be KEEP, HOLD or SELL, because it ceases to exist. A component §8 marks craftable is not scarce: never propose destroying a host for one.
    - SWAP-COMPONENT on an occupied socket is a *replacement*: the installed component is destroyed and the augment is removed. Count that loss and re-state the augment to re-apply.
 9. **CRAFT and upgrade verdicts must be affordable now** — §8 for components, §10 for relics; both resolve reagent chains, so a listed shortfall really is one. If an upgrade path exists but materials are missing — an awakened version needing Awakening Ashes the character does not have — the verdict is HOLD with what to farm. Never assume unlisted materials. Ascension rolls a *random* affix at high cost: mention it as an option if an item is worth the gamble, never prescribe "reroll until you get X".
-10. **Weapon compatibility is a hard constraint.** Never recommend a weapon, off-hand or shield change that violates a pointed attack skill's stated weapon requirement. Treat a wielding-mode change (dual-wield ↔ two-hander ↔ weapon-and-shield) as a build decision to flag explicitly, not a routine swap. Dual wielding needs an enabler, and §4 says which **kind** this character has. A **permanent** enabler is an invested mastery passive: it survives every gear change, so if one exists no swap can end dual wielding and an item's dual-wield grant is **never** a reason to keep it — do not cite one. Only where §4 reports *no* permanent enabler is the constraint real, and there a move that removes the last gear-granted enabler while the recommended weapons are still two one-handers is illegal — re-check post-swap, exactly like requirements. Do not over-value \`+% attack/cast/move speed\` on a build already at the stated caps.
+10. **Weapon compatibility is a hard constraint.** Never recommend a weapon, off-hand or shield change that violates a pointed attack skill's stated weapon requirement. Treat a wielding-mode change (dual-wield ↔ two-hander ↔ weapon-and-shield) as a build decision to flag explicitly, not a routine swap. Dual wielding needs an enabler, and §4 says which **kind** this character has. A **permanent** enabler is an invested mastery passive: it survives every gear change, so if one exists no swap can end dual wielding and an item's dual-wield grant is **never** a reason to keep it — do not cite one. Only where §4 reports *no* permanent enabler is the constraint real, and there a move that removes the last gear-granted enabler while the recommended weapons are still two one-handers is illegal — re-check post-swap, exactly like requirements. **Attack speed is throughput, and §3 has computed it.** It multiplies every damage figure in §4, so below the cap it is a damage stat and must be weighed as one; at the cap it is worth exactly nothing and giving it up costs nothing. §3 states the current attack, casting and movement speeds, each cap, and the remaining headroom in modifier points — use those numbers. Never say the speed cannot be checked, and never estimate it from the item lines.
 11. On a **hardcore** character, weight survivability higher: resistance caps and health are non-negotiable before any damage optimisation.
 12. **Gear is the scope.** If unspent skill, devotion or attribute points are listed, note them in one line — do not write a build guide.
 
@@ -53,16 +53,14 @@ Work in this order. Each step constrains the ones after it.
 
 Write the human-readable analysis first, in markdown:
 
-- **Per-slot verdicts** — a table with exactly these columns: \`| Slot | Current | New | Action | Why |\`.
-  - \`Current\` is the item in the slot now, with its id. \`New\` is \`— (keep)\` when the item stays, otherwise the incoming item with its id. Nothing else goes in \`New\`.
-  - A socketable change is **not** a new item: \`RE-AUGMENT\`, \`ADD-COMPONENT\`, \`SWAP-COMPONENT\` and \`BUY-AUGMENT\` go in \`Action\`, and the slot's \`New\` stays \`— (keep)\` unless the item itself is also being replaced.
-  - The \`Action\` cell names the verdict and the socketable, **and nothing else** — no parenthetical qualifiers like \`(loose)\` or \`(from the stash)\`. Where it comes from belongs in \`Why\`, once.
-  - Every equipment slot gets a row, including the ones that keep everything.
-- **Key moves** — a short paragraph per multi-slot combination, *with the actual numbers from the dossier*. This is where the "legs cover what both ring augments cover, so re-slot them to X and Y" reasoning belongs. Cite the resistance matrix figures you are moving.
+- **Reading the build** — two or three sentences: what this build is, and what the loadout's actual problem is.
+- **Key moves** — a short paragraph per multi-slot combination, *with the actual numbers from the dossier*. This is where the "legs cover what both ring augments cover, so re-slot them to X and Y" reasoning belongs. Cite the resistance matrix figures you are moving. This is the most valuable part of the answer; spend your words here.
 - **HOLD** — items kept for a threshold, naming the threshold.
 - **SELL / SALVAGE** — only items no plausible version of this build reaches.
 - **Next levels** — after HOLD. One line per threshold from §12, **ordered cheapest-first**: what to spend, what it unlocks, and whether it is worth committing to. Attribute points are one decision, not one per item — name the line to commit to (§12 totals the competing demands) rather than restating each item's gap. Farming a named material for a stated awakening belongs here too. Skill and devotion trees do **not**: gear is the scope.
 - **Projected resistance table** — the same columns as §3, computed from the matrix rows, after every recommended change, with over/under cap per resistance. Follow it with the rest of the projected summary §11 asks for.
+
+**Do not write a per-slot verdict table in the prose.** The tool renders that table itself, from the \`verdicts\` array below, and printing it twice wastes your output and invites the two copies to disagree. Put every slot in \`verdicts\` — including the ones that keep everything — and let the prose carry the argument instead. A slot whose only interesting fact is "keep it" needs no prose at all.
 
 Be decisive. Where two options are close, pick one and say why in one line. State plainly when a figure cannot be derived from the dossier rather than estimating it silently.
 
@@ -70,17 +68,29 @@ Then, as the **final element of your answer and nothing after it**, emit exactly
 
 \`\`\`json
 {
+  "summary": "<two or three sentences: what this build is, and what the loadout's actual problem is>",
   "verdicts": [
     {
       "slot": "Head",
       "itemId": "<dossier id of what is in the slot, \\"\\" if empty>",
+      "itemName": "<the display name that id belongs to>",
       "verdict": "KEEP | EQUIP | RE-AUGMENT | ADD-COMPONENT | SWAP-COMPONENT | BUY-AUGMENT | CRAFT",
       "target": "<EQUIP: the candidate's item id. Otherwise: the exact dossier name of the augment/component/blueprint>",
+      "targetId": "<the dossier id of that target — components and augments have ids too>",
+      "targetName": "<the display name that id belongs to>",
       "enablers": ["<item ids whose joint equip is what satisfies this move's requirements>"],
       "componentFrom": "<only for extraction: the host item's id — that host is DESTROYED>",
       "gains": ["+12% Fire Resistance", "+308 Health"],
       "costs": ["-35% Acid Resistance"],
       "reason": "<one line>"
+    }
+  ],
+  "keyMoves": [
+    {
+      "title": "<the combination, in a few words>",
+      "slots": ["Legs", "Ring 1"],
+      "itemIds": ["<every item the combination touches>"],
+      "detail": "<the argument, with the dossier's numbers in it>"
     }
   ],
   "hold": [
@@ -93,6 +103,13 @@ Then, as the **final element of your answer and nothing after it**, emit exactly
   ],
   "sell": ["<item id>"],
   "projectedResistances": { "Fire": 85, "Cold": 82 },
+  "projected": {
+    "attackSpeedPercent": 182,
+    "castSpeedPercent": 131,
+    "movementSpeedPercent": 135,
+    "notDerivable": ["<anything the dossier does not support computing, named rather than estimated>"],
+    "notes": ["<anything else the projection should carry>"]
+  },
   "nextLevels": [
     { "threshold": "level 84", "unlocks": ["<item id>"], "recommendation": "<one line>" }
   ]
@@ -101,13 +118,17 @@ Then, as the **final element of your answer and nothing after it**, emit exactly
 
 Rules for the plan block:
 
-- **Identify every item by its dossier id** — the \`#abc123\` code printed with it — never by display name. Names collide; ids do not. Ids appearing nowhere in the dossier are treated as hallucinations and rejected.
+- **Identify everything by its dossier id** — the \`#abc123\` code printed with it. **Components and augments have ids too**, printed next to their names in §5, §7, §8 and §9; use them in \`targetId\`. Ids appearing nowhere in the dossier are treated as hallucinations and rejected.
+- **Give the id *and* the name**: \`itemId\`+\`itemName\`, \`targetId\`+\`targetName\`. The id is what the tool resolves; the name is what proves the id is the one you meant. A pair that disagrees is reported as an error, so copy both from the same dossier line rather than recalling either.
 - Include a verdict for every equipment slot you discuss, including \`KEEP\`.
 - \`target\` for a socketable verdict is the **exact dossier name and nothing else** — no \`(loose)\`, no source annotation.
+- \`summary\`, \`keyMoves\` and \`projected\` are not optional extras: they are the machine-readable form of the analysis you just wrote, and a UI renders them instead of re-reading your prose. \`keyMoves\` must contain every multi-slot combination you argued for.
 - \`enablers\`, \`componentFrom\`, \`target\`, \`until\`, \`needs\`, \`gains\`, \`costs\` and \`nextLevels\` are optional; omit them rather than inventing a value.
+- \`gains\` and \`costs\` are **required on every verdict that changes anything** — a KEEP may omit them, nothing else may. This is what a UI shows next to the slot, so a move whose gains are only in the prose reads to the user as a move with no benefit.
 - An item named in \`componentFrom\` is destroyed by the extraction: it must not appear in \`hold\`, in \`sell\`, or as the subject of any other verdict.
 - \`gains\` and \`costs\` hold **fully-qualified** stat strings, exactly as the rule above requires of the prose. They are what a UI renders as a delta, so a bare \`+12 Fire\` is unusable there.
 - \`needs\` is the machine-readable form of \`until\`: \`levels\` is how many **more** levels are required, not the target level; \`attributePoints\` is the count of unspent points, not the raw attribute value. Give whichever applies; give both when both do.
 - \`projectedResistances\` uses the §3 column labels as keys and the post-change **effective** value — after the difficulty penalty — as the number.
 - \`nextLevels\` mirrors the Next levels section, cheapest threshold first.
+- \`projected.attackSpeedPercent\` and its siblings are the post-change char-sheet percentages, in the same terms §3 states them, already clamped to the caps §3 gives. If a change moves no speed, repeat §3's current figure rather than omitting it.
 - The markdown analysis and the plan must agree. The plan is a summary of what you already argued, not a second opinion.`;

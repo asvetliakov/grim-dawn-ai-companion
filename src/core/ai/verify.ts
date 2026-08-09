@@ -22,7 +22,8 @@ export type PlanWarningKind =
   | 'missing-target'
   | 'destroyed-host'
   | 'illegal-socket'
-  | 'ambiguous-stat';
+  | 'ambiguous-stat'
+  | 'name-mismatch';
 
 export interface PlanWarning {
   kind: PlanWarningKind;
@@ -38,6 +39,15 @@ export interface PlanCheckInput {
    * stock in §9. A socketable outside this map was not offered to the model.
    */
   socketables: ReadonlyMap<string, DbItem>;
+  /**
+   * The same set keyed by the dossier id the document printed.
+   *
+   * Preferred over the name map wherever the answer supplies an id: a name has
+   * to be normalized, stripped of a trailing "(loose)" and hoped to be unique,
+   * while an id either matches or does not. Optional so a caller that has not
+   * been updated — or an older answer that only carries names — still works.
+   */
+  socketablesById?: ReadonlyMap<string, DbItem>;
 }
 
 /**
@@ -74,6 +84,27 @@ export function normalizeName(name: string): string {
  */
 export function nameWithoutQualifier(name: string): string {
   return normalizeName(name.replace(/\s*\([^()]*\)\s*$/, ''));
+}
+
+/**
+ * Whether a name the answer gave and the name its id resolves to are the same
+ * thing.
+ *
+ * Deliberately *not* string equality. A display name carries its affixes —
+ * "Stealth Jacket of the Blind Assassin" — and a model quoting "Stealth Jacket"
+ * is being terse, not wrong. Demanding an exact match would raise a warning on
+ * a correct plan, which is worse than no check at all; the first run under the
+ * `ambiguous-stat` rule proved that six times over.
+ *
+ * Containment either way is the test. It still catches the failure this exists
+ * for — an id pointing at a different item than the prose argues for — because
+ * two different items do not contain each other's names.
+ */
+export function namesAgree(given: string, actual: string): boolean {
+  const a = nameWithoutQualifier(given);
+  const b = normalizeName(actual);
+  if (!a || !b) return true;
+  return a === b || a.includes(b) || b.includes(a);
 }
 
 /**
@@ -159,12 +190,27 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     return false;
   };
 
+  /** An id/name pair that disagrees points at a different item than it argues for. */
+  const nameAgrees = (id: string, name: string | undefined, where: string): void => {
+    const item = input.itemsById.get(id);
+    if (!item || !name) return;
+    if (!namesAgree(name, item.display)) {
+      warn('name-mismatch', `${where} names "${name}" but \`#${id}\` is ${item.display}`);
+    }
+  };
+
   for (const v of plan.verdicts) {
     const where = `${v.verdict} on ${v.slot}`;
-    if (v.itemId) known(v.itemId, where);
+    if (v.itemId) {
+      known(v.itemId, where);
+      nameAgrees(v.itemId, v.itemName, where);
+    }
     if (v.verdict === 'EQUIP') {
       if (!v.target) warn('missing-target', `${where} names no candidate to equip`);
-      else known(v.target, `${where} target`);
+      else {
+        known(v.target, `${where} target`);
+        nameAgrees(v.target, v.targetName, `${where} target`);
+      }
     }
     for (const enabler of v.enablers ?? []) known(enabler, `${where} enabler`);
     if (v.componentFrom) known(v.componentFrom, `${where} extraction host`);
@@ -236,6 +282,9 @@ function checkStatClarity(
   }
   for (const h of plan.hold) if (h.reason) scan(h.reason, 'HOLD reason');
   for (const n of plan.nextLevels ?? []) if (n.recommendation) scan(n.recommendation, 'Next levels recommendation');
+  for (const m of plan.keyMoves ?? []) if (m.detail) scan(m.detail, `key move "${m.title}"`);
+  if (plan.summary) scan(plan.summary, 'the summary');
+  for (const note of plan.projected?.notes ?? []) scan(note, 'a projection note');
   if (answer) scan(answer, 'the answer');
 }
 
@@ -248,14 +297,35 @@ function checkSocket(
     warn('missing-target', `${v.verdict} on ${v.slot} names no component or augment`);
     return;
   }
+  // Id first: it is exact. The name lookup stays as the fallback for an answer
+  // that gave only a name, and for the socketables a caller has not indexed.
+  const byId = v.targetId ? input.socketablesById?.get(v.targetId) : undefined;
+  if (v.targetId && !byId) {
+    warn(
+      'unknown-socketable',
+      `${v.verdict} on ${v.slot} gives targetId \`#${v.targetId}\`, which is not a component or augment id in the document`,
+    );
+  }
   const socketable =
-    input.socketables.get(normalizeName(v.target)) ?? input.socketables.get(nameWithoutQualifier(v.target));
+    byId ??
+    input.socketables.get(normalizeName(v.target)) ??
+    input.socketables.get(nameWithoutQualifier(v.target));
   if (!socketable) {
     warn(
       'unknown-socketable',
       `${v.verdict} on ${v.slot} names "${v.target}", which is not a component or augment the document offered`,
     );
     return;
+  }
+
+  // An id and a name that disagree is the failure an id-only plan hides: the
+  // prose argues for one component and the machine-readable half points at
+  // another, and both halves look internally consistent.
+  if (byId && !namesAgree(v.target, byId.name)) {
+    warn(
+      'name-mismatch',
+      `${v.verdict} on ${v.slot} names "${v.target}" but its targetId \`#${v.targetId}\` is ${byId.name}`,
+    );
   }
 
   // Without an item in the slot there is nothing to socket into — and without a

@@ -228,6 +228,37 @@ export interface SpeedCaps {
 }
 
 /**
+ * The rates a `SpeedCaps` percentage is a percentage *of*, read from the player
+ * creature record (`records/creatures/pc/malepc01.dbr`; the female record is
+ * identical).
+ *
+ * These are absolute rates, not multipliers: **1.25 attacks per second** is the
+ * unarmed baseline, and a weapon shifts it by its own `characterBaseAttackSpeed`
+ * — an *additive delta in attacks per second*, never a percentage. Very Fast is
+ * about −0.02, Very Slow about −0.20. That is the whole reason the game's own
+ * tooltip says "slower weapons gain less from % Attack Speed bonuses": the
+ * character sheet shows the resulting rate relative to 1.25 and caps *that*, so
+ * a slow weapon starts further from the cap and every +% buys the same
+ * proportion of a smaller number.
+ *
+ * Cast and movement have no weapon term at all — verified: no item of any class
+ * carries a non-zero `characterSpellCastSpeed` or `characterRunSpeed`.
+ */
+export interface BaseSpeeds {
+  /** `characterAttackSpeed` — attacks per second, unarmed. */
+  attack: number;
+  /** `characterSpellCastSpeed` — casts per second. */
+  cast: number;
+  /** `characterRunSpeed` — the movement rate the 135% cap applies to. */
+  run: number;
+  /**
+   * `dwWeaponSpeedFactor` from the engine record (0.5). Dual wielding weights
+   * each weapon's base at this factor, so two weapons give their mean.
+   */
+  dualWieldFactor: number;
+}
+
+/**
  * Levelling rates, read from `records/creatures/pc/playerlevels.dbr` rather than
  * assumed.
  *
@@ -294,6 +325,8 @@ export interface GameDb {
   armorAbsorptionBase(): number;
   /** The engine's player speed caps (attack/cast 200, run 135). */
   speedCaps(): SpeedCaps;
+  /** The unmodified rates those caps are percentages of, plus the dual-wield factor. */
+  baseSpeeds(): BaseSpeeds;
   /**
    * Attribute points per level and attribute per point, from the player-levels
    * record. The unlock ladder converts a requirement deficit into "spend N

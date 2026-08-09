@@ -29,6 +29,7 @@ import {
   verdictRows,
   KEEP_CELL,
   nameWithoutQualifier,
+  namesAgree,
   normalizeName,
   normalizeId,
   parseAdvice,
@@ -121,6 +122,48 @@ function finish(child: FakeChild, stdout: string, code = 0, stderr = ''): void {
 // ---------------------------------------------------------------------------
 
 describe('parseAdvice', () => {
+  it('reads the whole answer, not only the per-slot table', () => {
+    // Everything Stage 7 needs has to survive the round trip, or the UI ends up
+    // re-parsing prose for the parts the schema forgot.
+    const plan = parseAdvice(
+      '```json\n' +
+        JSON.stringify({
+          summary: 'A Pierce Damage build under cap on Aether Resistance.',
+          verdicts: [
+            {
+              slot: 'Ring 1',
+              itemId: '#ring01',
+              itemName: 'Old Band',
+              verdict: 'EQUIP',
+              target: '#ring02',
+              targetId: '#ring02',
+              targetName: 'Spare Band',
+              gains: ['+12% Fire Resistance'],
+              costs: ['-5% Attack Speed'],
+              reason: 'r',
+            },
+          ],
+          keyMoves: [{ title: 'Free both ring augments', slots: ['Ring 1'], itemIds: ['#ring01'], detail: 'd' }],
+          hold: [],
+          sell: [],
+          projected: { attackSpeedPercent: 182, notDerivable: ['crit damage'], notes: [] },
+        }) +
+        '\n```',
+    );
+
+    expect(plan!.summary).toContain('Pierce Damage');
+    expect(plan!.verdicts[0]).toMatchObject({
+      itemId: 'ring01',
+      itemName: 'Old Band',
+      targetId: 'ring02',
+      targetName: 'Spare Band',
+      gains: ['+12% Fire Resistance'],
+    });
+    // Ids are normalized wherever they appear, including inside a key move.
+    expect(plan!.keyMoves![0]!.itemIds).toEqual(['ring01']);
+    expect(plan!.projected).toMatchObject({ attackSpeedPercent: 182, notDerivable: ['crit damage'] });
+  });
+
   it('reads the plan out of the canned answer', () => {
     const plan = parseAdvice(CANNED_ANSWER);
     expect(plan).toBeDefined();
@@ -393,6 +436,7 @@ function socketable(name: string, allowedSlots: string[]): DbItem {
 function world(): {
   itemsById: Map<string, ResolvedItem>;
   socketables: Map<string, DbItem>;
+  socketablesById: Map<string, DbItem>;
 } {
   const helmet = { record: 'records/items/head.dbr', name: 'Helm', levelReq: 1, rarity: 'Epic', slot: 'ArmorProtective_Head', iconPath: '', stats: {} };
   const band = { record: 'records/items/ring.dbr', name: 'Band', levelReq: 1, rarity: 'Epic', slot: 'ArmorJewelry_Ring', iconPath: '', stats: {} };
@@ -405,6 +449,10 @@ function world(): {
     socketables: new Map([
       [normalizeName('Mark of Illusions'), socketable('Mark of Illusions', ['head', 'chest', 'shoulders'])],
       [normalizeName('Sanctified Bone'), socketable('Sanctified Bone', ['amulet', 'ring', 'medal'])],
+    ]),
+    socketablesById: new Map([
+      ['mark1', socketable('Mark of Illusions', ['head', 'chest', 'shoulders'])],
+      ['bone1', socketable('Sanctified Bone', ['amulet', 'ring', 'medal'])],
     ]),
   };
 }
@@ -596,6 +644,99 @@ describe('isReplacement', () => {
   });
 });
 
+describe('checkPlan — ids and names', () => {
+  const plan = (verdict: Record<string, unknown>) =>
+    checkPlan({ verdicts: [verdict], hold: [], sell: [] } as never, world());
+
+  it('resolves a socketable by id, so the name needs no normalizing', () => {
+    // The name here carries the sourcing annotation the model adds about half
+    // the time; with an id present it never has to be parsed off.
+    const warnings = plan({
+      slot: 'Ring 1',
+      itemId: 'ring01',
+      verdict: 'ADD-COMPONENT',
+      target: 'Sanctified Bone (loose)',
+      targetId: 'bone1',
+      reason: 'r',
+    });
+    expect(warnings).toEqual([]);
+  });
+
+  it('reports a targetId the document never printed', () => {
+    const warnings = plan({
+      slot: 'Ring 1',
+      itemId: 'ring01',
+      verdict: 'ADD-COMPONENT',
+      target: 'Sanctified Bone',
+      targetId: 'ghost9',
+      reason: 'r',
+    });
+    expect(warnings.map((w) => w.kind)).toContain('unknown-socketable');
+  });
+
+  it('catches an id and a name that point at different socketables', () => {
+    // The failure an id-only plan hides: the prose argues for one component and
+    // the machine-readable half installs another, and both look consistent.
+    const warnings = plan({
+      slot: 'Ring 1',
+      itemId: 'ring01',
+      verdict: 'ADD-COMPONENT',
+      target: 'Sanctified Bone',
+      targetId: 'mark1',
+      reason: 'r',
+    });
+    const mismatch = warnings.find((w) => w.kind === 'name-mismatch');
+    expect(mismatch?.message).toContain('Mark of Illusions');
+    // …and the legality check still runs against the item the id names.
+    expect(warnings.map((w) => w.kind)).toContain('illegal-socket');
+  });
+
+  it('tolerates a name quoted without its affixes', () => {
+    // Display names carry their affixes; a model writing the base name is being
+    // terse, not wrong, and warning on that would be a false alarm on a correct
+    // plan — which is worse than no check at all.
+    expect(
+      plan({ slot: 'Ring 1', itemId: 'ring02', itemName: 'Band', verdict: 'KEEP', reason: 'r' }),
+    ).toEqual([]);
+    expect(namesAgree('Stealth Jacket', 'Stealth Jacket of the Blind Assassin')).toBe(true);
+    expect(namesAgree('**Dread Skull** (loose)', 'Dread Skull')).toBe(true);
+    expect(namesAgree('Iron Helm', 'Spare Band')).toBe(false);
+  });
+
+  it('catches an item id and name that disagree', () => {
+    const warnings = plan({
+      slot: 'Head',
+      itemId: 'head01',
+      itemName: 'Spare Band',
+      verdict: 'KEEP',
+      reason: 'r',
+    });
+    expect(warnings.map((w) => w.kind)).toEqual(['name-mismatch']);
+    expect(warnings[0]!.message).toContain('Iron Helm');
+  });
+
+  it('accepts a matching pair, and a plan that gives no name at all', () => {
+    expect(plan({ slot: 'Head', itemId: 'head01', itemName: 'Iron Helm', verdict: 'KEEP', reason: 'r' })).toEqual([]);
+    expect(plan({ slot: 'Head', itemId: 'head01', verdict: 'KEEP', reason: 'r' })).toEqual([]);
+  });
+
+  it('scans the summary and the key moves for bare stat references', () => {
+    const warnings = checkPlan(
+      {
+        verdicts: [],
+        hold: [],
+        sell: [],
+        summary: 'A pierce build sitting 12 Aether under cap.',
+        keyMoves: [{ title: 'Re-slot the rings', slots: [], itemIds: [], detail: 'buys back 22 Chaos' }],
+      } as never,
+      world(),
+    );
+    const where = warnings.filter((w) => w.kind === 'ambiguous-stat').map((w) => w.message);
+    expect(where.some((m) => m.startsWith('the summary'))).toBe(true);
+    expect(where.some((m) => m.includes('key move "Re-slot the rings"'))).toBe(true);
+  });
+});
+
 describe('verdictRows', () => {
   const names = new Map([
     ['head01', 'Iron Helm'],
@@ -641,6 +782,40 @@ describe('verdictRows', () => {
   it('renders an empty slot as a dash', () => {
     const [row] = rows([{ slot: 'Medal', itemId: '', verdict: 'KEEP', reason: 'nothing owned' }]);
     expect(row!.current).toBe('—');
+  });
+
+  it('carries the gains and costs through to the row', () => {
+    // The live table showed neither, so "+12% Fire Resistance and +12%
+    // Lightning Resistance" lived in the prose and nowhere a UI could reach.
+    const [row] = rows([
+      {
+        slot: 'Ring 1',
+        itemId: 'ring01',
+        verdict: 'RE-AUGMENT',
+        target: 'Coven Wendigo Spirit',
+        gains: ['+12% Fire Resistance', '+12% Lightning Resistance'],
+        costs: ['-5% Attack Speed'],
+        reason: 'r',
+      },
+    ]);
+    expect(row!.gains).toEqual(['+12% Fire Resistance', '+12% Lightning Resistance']);
+    expect(row!.costs).toEqual(['-5% Attack Speed']);
+  });
+
+  it('splits the id out of the label so a UI does not have to parse it back', () => {
+    const [keep, equip] = rows([
+      { slot: 'Head', itemId: 'head01', verdict: 'KEEP', reason: 'r' },
+      { slot: 'Ring 1', itemId: 'ring01', verdict: 'EQUIP', target: 'ring02', reason: 'r' },
+    ]);
+    expect(keep).toMatchObject({ currentId: 'head01', currentName: 'Iron Helm', nextId: '', nextName: '' });
+    expect(equip).toMatchObject({ currentId: 'ring01', nextId: 'ring02', nextName: 'Spare Band' });
+  });
+
+  it('defaults a name the dossier does not know to the one the model gave', () => {
+    const [row] = rows([
+      { slot: 'Head', itemId: 'nope99', itemName: 'Ghost Hat', verdict: 'KEEP', reason: 'r' },
+    ]);
+    expect(row!.currentName).toBe('Ghost Hat');
   });
 });
 

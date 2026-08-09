@@ -714,6 +714,29 @@ function printAggregate(agg: CharacterAggregate, caps: SpeedCaps): void {
   }
   console.log(`  speed caps (game): attack ${caps.attack}% · cast ${caps.cast}% · run ${caps.run}%`);
 
+  console.log('\nSpeed');
+  for (const w of agg.speed.weapons) {
+    console.log(
+      `  ${w.slot.padEnd(10)} ${w.item} — ${w.tag || 'no descriptor'}, ` +
+        `base ${w.aps.toFixed(2)}/s (delta ${w.delta >= 0 ? '+' : ''}${w.delta.toFixed(2)})`,
+    );
+  }
+  for (const line of [agg.speed.attack, agg.speed.cast, agg.speed.movement] as const) {
+    const buffed =
+      line.maintainablePercent !== 0
+        ? ` → ${line.percentWithMaintainable.toFixed(0)}% (${line.rateWithMaintainable.toFixed(2)}) buffed`
+        : '';
+    const wasted = line.rawPercentWithMaintainable > line.cap
+      ? `  ⚠ ${(line.rawPercentWithMaintainable - line.cap).toFixed(0)}pp past the ${line.cap}% cap`
+      : `  ${line.headroom.toFixed(0)}pp of +% headroom`;
+    console.log(
+      `  ${line.label.padEnd(10)} ${line.percent.toFixed(0)}% (${line.rate.toFixed(2)})${buffed}` +
+        `  [base ${line.weaponBase.toFixed(2)}, +${line.permanentPercent.toFixed(0)}%` +
+        `${line.maintainablePercent ? ` +${line.maintainablePercent.toFixed(0)}% maintainable` : ''}]${wasted}`,
+    );
+    if (line.weaponNote) console.log(`             from ${line.weaponNote}`);
+  }
+
   console.log(`\nResistances by source${' '.repeat(24)}${resistHeader()}`);
   let band: string | undefined;
   for (const row of r.rows) {
@@ -1052,36 +1075,49 @@ function printPlan(plan: AdvisorPlan): void {
  * Stage 7 contract: the UI will paint the same grid from the same fields, with
  * `isReplacement` — not a local guess — deciding which rows are swaps.
  */
-function printVerdictTable(plan: AdvisorPlan, itemsById: ReadonlyMap<string, ResolvedItem>): void {
-  if (plan.verdicts.length === 0) return;
+function verdictTableLines(plan: AdvisorPlan, itemsById: ReadonlyMap<string, ResolvedItem>): string[] {
+  if (plan.verdicts.length === 0) return [];
+  // Gains and costs share one column: they are two halves of the same delta,
+  // and splitting them doubles the width of a table that is already wide.
+  // A cost usually already reads as negative ("-35% Acid Resistance"); when it
+  // does not ("breaks the two-piece set bonus") it needs saying, so the label
+  // goes on only where the sign is missing.
+  const delta = (r: { gains: string[]; costs: string[] }): string =>
+    [...r.gains, ...r.costs.map((c) => (/^[+\-−]/.test(c) ? c : `costs ${c}`))].join(', ') || '—';
+
   const rows = verdictRows(plan, (id) => itemsById.get(id)?.display).map((r) => [
     r.slot,
     r.current,
     r.next,
     r.action,
+    delta(r),
     r.why,
   ]);
 
-  const headers = ['Slot', 'Current', 'New', 'Action', 'Why'];
+  const headers = ['Slot', 'Current', 'New', 'Action', 'Gains / costs', 'Why'];
   const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
   const line = (cells: readonly string[]): string =>
     `| ${cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join(' | ')} |`;
 
-  console.log('\nPer-slot verdicts (rendered from the structured plan):');
-  console.log(line(headers));
-  console.log(`|${widths.map((w) => '-'.repeat(w + 2)).join('|')}|`);
-  for (const row of rows) console.log(line(row));
+  const out = [
+    '',
+    'Per-slot verdicts (rendered from the structured plan):',
+    line(headers),
+    `|${widths.map((w) => '-'.repeat(w + 2)).join('|')}|`,
+    ...rows.map(line),
+  ];
 
   if (plan.nextLevels?.length) {
-    console.log('\nNext levels:');
+    out.push('', 'Next levels:');
     for (const step of plan.nextLevels) {
       const unlocks = step.unlocks.map((id) => itemsById.get(id)?.display ?? `#${id}`);
-      console.log(
+      out.push(
         `  ${step.threshold} → ${unlocks.length ? `${unlocks.length} item(s): ${unlocks.join(', ')}` : 'nothing listed'}` +
           (step.recommendation ? `\n    ${step.recommendation}` : ''),
       );
     }
   }
+  return out;
 }
 
 program
@@ -1096,6 +1132,7 @@ program
   .option('--max-tokens <n>', 'token budget for the context document', String(ADVISE_MAX_TOKENS))
   .option('--timeout <seconds>', 'kill the request after this long')
   .option('-o, --out <file>', 'also write the answer here')
+  .option('--json <file>', 'write the answer, the structured plan and the run metadata here as one JSON object')
   .option('--save-context <file>', 'write the exact document that was sent')
   .option('--dry-run', 'build and report the document without calling the provider')
   .option('--no-repair', 'do not spend a second call correcting a plan that fails the checks')
@@ -1111,6 +1148,7 @@ program
       maxTokens: string;
       timeout?: string;
       out?: string;
+      json?: string;
       saveContext?: string;
       dryRun?: boolean;
       repair?: boolean;
@@ -1168,7 +1206,7 @@ program
         const socketables = new Map(
           documentSocketables(input).map((item) => [normalizeName(item.name), item]),
         );
-        const check = { itemsById: doc.itemsById, socketables };
+        const check = { itemsById: doc.itemsById, socketables, socketablesById: doc.socketablesById };
 
         console.error(`asking ${providerId} (${model}, effort ${effort})…`);
         const started = Date.now();
@@ -1192,16 +1230,21 @@ program
         }
 
         const result = outcome.result;
+        // The prose no longer carries a per-slot table — the tool owns that
+        // rendering — so the saved answer has to carry the rendered one, or a
+        // file read on its own is missing the verdicts it argues about.
+        const table = result.structured ? verdictTableLines(result.structured, doc.itemsById) : [];
+
         console.log(result.text);
         if (opts.out) {
-          writeFileSync(opts.out, result.text);
+          writeFileSync(opts.out, table.length ? `${result.text}\n${table.join('\n')}\n` : result.text);
           console.error(`\nanswer written to ${opts.out}`);
         }
 
         console.log('');
         if (result.structured) {
           printPlan(result.structured);
-          printVerdictTable(result.structured, doc.itemsById);
+          for (const line of table) console.log(line);
           if (outcome.revised) {
             console.log(
               `\nplan had ${outcome.firstWarnings.length} warning(s); asked for one revision → ` +
@@ -1226,6 +1269,49 @@ program
         // Usage covers *every* call the repair loop made, not just the one whose
         // answer is shown — the second call is spent whether or not it wins.
         const usage = totalUsage(outcome.results);
+
+        // One envelope, so Stage 7 consumes a file rather than re-parsing prose.
+        // The markdown stays the model's own: it is where the reasoning happens
+        // and it is the human product, so the JSON sits beside it, not over it.
+        if (opts.json) {
+          const rows = result.structured
+            ? verdictRows(result.structured, (id) => doc.itemsById.get(id)?.display)
+            : [];
+          writeFileSync(
+            opts.json,
+            `${JSON.stringify(
+              {
+                character: name,
+                generatedAt: new Date().toISOString(),
+                gameVersion: db.gameVersion,
+                provider: result.provider,
+                model: result.model ?? null,
+                effort: result.effort ?? null,
+                calls: outcome.results.length,
+                usage,
+                durationMs: Date.now() - started,
+                warnings: outcome.warnings,
+                // What the *first* call got wrong, which the terminal only ever
+                // showed as a count. Keeping it is what makes two runs on one
+                // dossier comparable — the surviving warnings say nothing about
+                // how much repair it took to get there.
+                firstWarnings: outcome.firstWarnings,
+                revised: outcome.revised,
+                revisionRejected: outcome.revisionRejected,
+                answer: result.text,
+                plan: result.structured ?? null,
+                // Derived here rather than in the UI so the CLI table and the
+                // Stage 7 grid cannot disagree about which rows are swaps.
+                verdictRows: rows,
+                itemNames: Object.fromEntries([...doc.itemsById].map(([id, item]) => [id, item.display])),
+                socketableNames: Object.fromEntries([...doc.socketablesById].map(([id, item]) => [id, item.name])),
+              },
+              null,
+              2,
+            )}\n`,
+          );
+          console.error(`structured output written to ${opts.json}`);
+        }
         const bits = [
           `${result.provider} / ${result.model ?? '?'}${result.effort ? ` (effort ${result.effort})` : ''}`,
           outcome.results.length > 1 ? `${outcome.results.length} calls` : '',
