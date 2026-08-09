@@ -117,3 +117,70 @@ npm test && npm run typecheck
 npm run cli -- advise --char _Suchka
 npm run cli -- advise --char _Suchka --question "focus only on resistances"
 ```
+
+## Outcome
+
+Done, and every acceptance criterion passes. Two live runs against `_Suchka` (level 82 Reaver, Ultimate),
+both clean on all four mechanical checks.
+
+### Deviations from the plan
+
+- **No `execa`.** The plan named it as a dependency; `CLAUDE.md`'s "zero runtime dependencies beyond
+  `commander` + `zod`" wins. `node:child_process.spawn` does the whole job in ~90 lines, and the
+  `spawn` function is injectable (`ClaudeCliOptions.spawn`), which is what makes every failure path —
+  missing binary, non-zero exit, timeout, garbage stdout, abort — testable without a subprocess.
+- **The timeout was wrong by 3×, and it was measured rather than argued.** The plan said 180s and the
+  acceptance criterion said "< ~3 min". The real figure for a full dossier at `opus` / `high` is
+  **496s** (the second run, 487s). 180s and the 300s that first replaced it both killed a healthy run —
+  the first live attempt died at the 300s ceiling with nothing to show. `DEFAULT_TIMEOUT_MS` is now
+  **900s**: a runaway ceiling, not an expectation. `--timeout` and `advisorTimeoutSeconds` override it.
+  Nothing about this is pathological — ~36k tokens in and ~40k tokens out is simply an eight-minute
+  request, and the answer is worth the wait ($1.07 and $1.68 for the two runs).
+- **`SWAP-COMPONENT` joined the verdict enum.** §11 of the context document already tells the model to
+  use it, and the plan's own step 8 describes the mechanic ("ADD-COMPONENT on an occupied socket is a
+  *replacement*"). Leaving it out of the enum would have failed zod on a verdict the document asked for.
+- **`--effort` is a settings field and a flag**, alongside `model`, exactly as the plan required for
+  the model; `advisorTimeoutSeconds` was added for the same reason.
+- **Extra CLI affordances**: `--save-context` (write the exact document that was sent), `--dry-run`
+  (build and report without spending a call), `--timeout`. The first two paid for themselves during
+  verification.
+- **`ContextDoc` gained `itemsById`** (id → `ResolvedItem`, alongside the existing id → name
+  `itemIds`). The hallucination and slot-legality checks need the item, not just its name; Stage 7
+  will want the same index for grid highlighting. `documentSocketables()` was added to `builder.ts`
+  for the same reason: the legality check must run against **what the document offered** (166 for
+  `_Suchka`), not against the whole database — a component the dossier never showed is a
+  hallucination even though the game has one.
+- **`xhigh` was not measured against `high`.** The plan flagged it as worth measuring; at ~8 minutes
+  and ~$1.50 a run that experiment costs more than it informs right now, and `high` produced answers
+  with no visible reasoning gap. Left as a backlog note rather than silently claimed.
+
+### What the live runs showed
+
+`advise --char _Suchka` — 496s, 18 verdicts (10 BUY-AUGMENT, 3 ADD-COMPONENT, 2 RE-AUGMENT, 2 KEEP,
+1 EQUIP), 12 HOLD, 36 SELL, ~40k output tokens. All four mechanical checks clean: every item id in
+the plan exists in the document's 139-id set, all 15 socket verdicts legal against `allowedSlots`,
+no extraction host reused (it proposed no extraction at all — "no Inventor extraction, no item
+destroyed"), every EQUIP target annotated **meets**.
+
+The reasoning gate (criterion 3) is the interesting one, and it passed on substance rather than
+shape. The answer opened by reading the build (`Pierce + Bleeding`, both weapons at 100% armor
+piercing → "on-type by that fact", and Quillthrower's 50% Pierce→Acid called out as *anti*-build,
+not merely off-type — exactly the 5A.5 conversion path doing its job). The Key moves section is
+built out of matrix numbers: 3× Wight Skin Powder feeding Aether at **154 effective, +74 over cap**
+while Bleeding sat at 38 (−42), seven empty armour augment sockets, and Fire/Cold/Lightning reaching
+74 *only* through Elemental Awakening — leaning on the maintainable band by 30 points, which it
+flagged fragile against the plan's 15-point rule without being asked twice. The one gear swap
+(Bloodmoon → Maiven's Lens) was priced explicitly in damage ("roughly a 3% loss" against +45 points
+in the two deficit resistances) and its post-swap requirement re-check was spelled out including
+that a *devotion* reduction stays when the item leaves. It also said plainly what it could not
+derive — Bleeding lands 2 short and no augment in §9 fixes it; §3 reports no attack-speed total, so
+the 200% cap could not be checked — which is the behaviour §11 asks for and the harder one to get.
+
+`advise --question "focus only on resistances"` — 487s, visibly steered: retitled "Resistance-First
+Gear Plan", opens by acknowledging the instruction, and reaches a different loadout (2 EQUIP instead
+of 1, 18 SELL instead of 36). It independently noticed something §8 exists to surface: the helm's
+Runestone is a single instance, so extracting it would destroy the helm.
+
+The usage line under-reported input by four orders of magnitude on the first run ("2 in") — the
+envelope puts a cached dossier in `cache_creation_input_tokens` / `cache_read_input_tokens`, not in
+`input_tokens`. Summed now, and unit-tested.

@@ -83,6 +83,12 @@ export interface ContextDoc {
   trimmed: string[];
   /** Item id → display name, for callers that need to resolve the advisor's output. */
   itemIds: Map<string, string>;
+  /**
+   * The same index, but to the item itself — what Stage 6 checks the advisor's
+   * plan against (an id that is not here was hallucinated) and what Stage 7
+   * highlights on the grid.
+   */
+  itemsById: Map<string, ResolvedItem>;
 }
 
 /**
@@ -116,11 +122,13 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
     trimmed.push(step.note);
   }
 
+  const itemsById = idIndex(input.resolved.items);
   return {
     markdown: doc,
     tokenEstimate: estimateTokens(doc),
     trimmed,
-    itemIds: idIndex(input.resolved.items),
+    itemIds: new Map([...itemsById].map(([id, item]) => [id, item.display])),
+    itemsById,
   };
 }
 
@@ -153,9 +161,9 @@ function assignIds(items: readonly ResolvedItem[]): Map<ResolvedItem, string> {
   return out;
 }
 
-function idIndex(items: readonly ResolvedItem[]): Map<string, string> {
+function idIndex(items: readonly ResolvedItem[]): Map<string, ResolvedItem> {
   const ids = assignIds(items);
-  return new Map([...ids].map(([item, id]) => [id, item.display]));
+  return new Map([...ids].map(([item, id]) => [id, item]));
 }
 
 // ---------------------------------------------------------------------------
@@ -1033,6 +1041,43 @@ function onlyInstalled(entry: CensusEntry): boolean {
 function tiersUpTo(tier: string): RepTier[] {
   const index = REP_TIERS.indexOf(tier as RepTier);
   return index < 0 ? [] : REP_TIERS.slice(0, index + 1);
+}
+
+/**
+ * Every component and augment the document actually offers: the ones installed
+ * in gear (§5/§7), the loose ones in the census (§8), and the faction stock the
+ * character can buy today (§9).
+ *
+ * Stage 6 checks socket proposals against exactly this set, which is why it is
+ * derived here rather than from the whole database — a component the document
+ * never showed is a hallucination even though the game has one.
+ */
+export function documentSocketables(input: ContextInput): DbItem[] {
+  const { save, db, aggregate, resolved } = input;
+  const out = new Map<string, DbItem>();
+  const add = (item: DbItem | undefined): void => {
+    if (item) out.set(item.record, item);
+  };
+
+  for (const item of resolved.items) {
+    if (item.base && (item.base.slot === COMPONENT_CLASS || item.base.slot === AUGMENT_CLASS)) add(item.base);
+    add(item.component);
+    add(item.augment);
+  }
+
+  for (const rep of save.factions) {
+    if (!rep.unlocked) continue;
+    const slot = factionSlot(rep.id);
+    if (!slot) continue;
+    const reached = tiersUpTo(factionTier(rep.value));
+    if (reached.length === 0) continue;
+    if (!db.factions().find((f) => f.id === slot.id)?.hasVendor) continue;
+    for (const item of db.vendorItems(slot.id, reached.at(-1)!)) {
+      if (item.slot === AUGMENT_CLASS && item.levelReq <= aggregate.level) add(item);
+    }
+  }
+
+  return [...out.values()];
 }
 
 function factionAugments(out: Writer, ctx: RenderContext): void {

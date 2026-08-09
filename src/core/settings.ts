@@ -34,7 +34,16 @@ export const settingsSchema = z.object({
   locale: z.string().min(2).default('en'),
   /** Advisor backend — see `src/core/ai/provider.ts` (Stage 6). */
   provider: z.string().min(1).default('claude-cli'),
+  /**
+   * Model and reasoning effort for the advisor. Both are pinned rather than
+   * inherited: without them the `claude` subprocess would pick up whatever the
+   * user's interactive session specifies, and two runs on the same save would
+   * be silently incomparable.
+   */
   model: z.string().min(1).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  /** Seconds before an advice request is killed. */
+  advisorTimeoutSeconds: z.number().int().positive().optional(),
   /** Force advice for a difficulty other than the character's current one. */
   difficultyOverride: z.enum(['Normal', 'Elite', 'Ultimate']).optional(),
 });

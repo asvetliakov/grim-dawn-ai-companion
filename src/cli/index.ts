@@ -9,7 +9,24 @@
 import { copyFileSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { Command } from 'commander';
 
-import { buildContextDoc, DEFAULT_MAX_TOKENS, DEFAULT_PER_GROUP } from '../core/context/builder.js';
+import {
+  buildContextDoc,
+  documentSocketables,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_PER_GROUP,
+  type ContextDoc,
+  type ContextInput,
+} from '../core/context/builder.js';
+import {
+  checkPlan,
+  createProvider,
+  normalizeName,
+  providerIds,
+  DEFAULT_EFFORT,
+  DEFAULT_MODEL,
+  DEFAULT_TIMEOUT_MS,
+  type AdvisorPlan,
+} from '../core/ai/index.js';
 import { loadGameDb } from '../core/db/index.js';
 import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
 import { createIconService } from '../core/icons/index.js';
@@ -882,6 +899,49 @@ function requireDifficulty(input: string): Difficulty {
   process.exit(1);
 }
 
+interface DocRequest {
+  char?: string | undefined;
+  difficulty?: string | undefined;
+  maxTokens: number;
+  perGroup?: number | undefined;
+}
+
+/**
+ * Everything both `context` and `advise` need: pick the character, parse the
+ * saves, aggregate, and render the document. One function so the two commands
+ * cannot drift into sending different documents.
+ */
+function contextFor(db: GameDb, opts: DocRequest): { name: string; input: ContextInput; doc: ContextDoc } {
+  const settings = resolveSettings();
+  const name = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
+  if (!name) {
+    console.error(`error: no characters found under ${settings.saveDir}/main`);
+    process.exit(1);
+  }
+
+  const path = characterSavePath(name, settings.saveDir);
+  const save = parseGdc(readSave(path), { path });
+  const difficulty = opts.difficulty
+    ? requireDifficulty(opts.difficulty)
+    : (settings.difficultyOverride ?? save.difficulty);
+
+  const stashBuf = readOptionalSave(transferStashPath(settings.saveDir));
+  const formulasBuf = readOptionalSave(formulasPath(settings.saveDir));
+  const resolved = resolveCharacter(
+    save,
+    stashBuf ? parseTransferStash(stashBuf) : undefined,
+    formulasBuf ? parseFormulasFile(formulasBuf) : undefined,
+    db,
+  );
+
+  const input: ContextInput = { save, aggregate: aggregateCharacter(save, db, difficulty), resolved, db };
+  const doc = buildContextDoc(input, {
+    maxTokens: opts.maxTokens,
+    ...(opts.perGroup !== undefined ? { perGroup: opts.perGroup } : {}),
+  });
+  return { name, input, doc };
+}
+
 program
   .command('context')
   .description('compile the character + database + aggregates into the markdown context document')
@@ -901,30 +961,12 @@ program
       refresh?: boolean;
     }) => {
       await withDb({ refresh: opts.refresh, quiet: opts.out === undefined }, (db) => {
-        const settings = resolveSettings();
-        const name = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
-        if (!name) {
-          console.error(`error: no characters found under ${settings.saveDir}/main`);
-          process.exit(1);
-        }
-
-        const path = characterSavePath(name, settings.saveDir);
-        const save = parseGdc(readSave(path), { path });
-        const difficulty = opts.difficulty ? requireDifficulty(opts.difficulty) : save.difficulty;
-
-        const stashBuf = readOptionalSave(transferStashPath(settings.saveDir));
-        const formulasBuf = readOptionalSave(formulasPath(settings.saveDir));
-        const resolved = resolveCharacter(
-          save,
-          stashBuf ? parseTransferStash(stashBuf) : undefined,
-          formulasBuf ? parseFormulasFile(formulasBuf) : undefined,
-          db,
-        );
-
-        const doc = buildContextDoc(
-          { save, aggregate: aggregateCharacter(save, db, difficulty), resolved, db },
-          { maxTokens: Number(opts.maxTokens), perGroup: Number(opts.candidates) },
-        );
+        const { doc } = contextFor(db, {
+          char: opts.char,
+          difficulty: opts.difficulty,
+          maxTokens: Number(opts.maxTokens),
+          perGroup: Number(opts.candidates),
+        });
 
         if (opts.out) {
           writeFileSync(opts.out, doc.markdown);
@@ -938,6 +980,159 @@ program
         if (doc.trimmed.length) {
           console.error('  raise --max-tokens to keep them — the untrimmed document is bounded by the candidate level window, not by this budget');
         }
+      });
+    },
+  );
+
+// ---------------------------------------------------------------------------
+// Stage 6 — the advisor
+// ---------------------------------------------------------------------------
+
+/**
+ * The token budget for advice.
+ *
+ * Passed explicitly rather than inherited so the prompt size is a property of
+ * this command's contract: a change to the document's default budget must not
+ * silently change what gets sent to the model.
+ */
+const ADVISE_MAX_TOKENS = 100_000;
+
+function printPlan(plan: AdvisorPlan): void {
+  const byVerdict = new Map<string, number>();
+  for (const v of plan.verdicts) byVerdict.set(v.verdict, (byVerdict.get(v.verdict) ?? 0) + 1);
+  const breakdown = [...byVerdict].map(([verdict, n]) => `${n} ${verdict}`).join(', ');
+  console.log(
+    `plan: ${plan.verdicts.length} verdict(s)` +
+      (breakdown ? ` (${breakdown})` : '') +
+      `, ${plan.hold.length} hold, ${plan.sell.length} sell`,
+  );
+}
+
+program
+  .command('advise')
+  .description('compile the context document and ask an AI for equip/replace/hold recommendations')
+  .option('-c, --char <name>', 'character directory name under <saveDir>/main')
+  .option('--provider <id>', `advisor backend (${providerIds().join(' | ')})`)
+  .option('--model <model>', 'model to pin for this run')
+  .option('--effort <level>', 'reasoning effort: low | medium | high | xhigh | max')
+  .option('--question <text>', 'an extra instruction to steer the answer')
+  .option('--difficulty <d>', 'Normal | Elite | Ultimate (or 0/1/2); default: the character’s current one')
+  .option('--max-tokens <n>', 'token budget for the context document', String(ADVISE_MAX_TOKENS))
+  .option('--timeout <seconds>', 'kill the request after this long')
+  .option('-o, --out <file>', 'also write the answer here')
+  .option('--save-context <file>', 'write the exact document that was sent')
+  .option('--dry-run', 'build and report the document without calling the provider')
+  .option('--refresh', 'rebuild the database first')
+  .action(
+    async (opts: {
+      char?: string;
+      provider?: string;
+      model?: string;
+      effort?: string;
+      question?: string;
+      difficulty?: string;
+      maxTokens: string;
+      timeout?: string;
+      out?: string;
+      saveContext?: string;
+      dryRun?: boolean;
+      refresh?: boolean;
+    }) => {
+      await withDb({ refresh: opts.refresh, quiet: true }, async (db) => {
+        const settings = resolveSettings();
+        const providerId = opts.provider ?? settings.provider;
+        const model = opts.model ?? settings.model ?? DEFAULT_MODEL;
+        const effort = opts.effort ?? settings.effort ?? DEFAULT_EFFORT;
+        const timeoutMs = opts.timeout
+          ? Number(opts.timeout) * 1000
+          : (settings.advisorTimeoutSeconds ?? 0) * 1000 || DEFAULT_TIMEOUT_MS;
+
+        let provider;
+        try {
+          provider = createProvider(providerId, { model, effort, timeoutMs });
+        } catch (err) {
+          console.error(`error: ${(err as Error).message}`);
+          process.exit(1);
+        }
+
+        // A backend that cannot run should say so *before* a document is
+        // compiled for it. `advise` on an unimplemented provider is a
+        // configuration mistake, and it should read as one.
+        const usable = opts.dryRun === true || (await provider.available());
+        if (!usable) {
+          try {
+            await provider.advise({ contextDoc: '' });
+            console.error(`error: provider ${JSON.stringify(providerId)} is not available`);
+          } catch (err) {
+            console.error(`error: ${(err as Error).message}`);
+          }
+          process.exit(1);
+        }
+
+        const { name, input, doc } = contextFor(db, {
+          char: opts.char,
+          difficulty: opts.difficulty,
+          maxTokens: Number(opts.maxTokens),
+        });
+
+        console.error(
+          `${name} — context document ${doc.markdown.length.toLocaleString('en-US')} chars, ` +
+            `~${doc.tokenEstimate.toLocaleString('en-US')} tokens, ${doc.itemsById.size} item ids`,
+        );
+        for (const note of doc.trimmed) console.error(`  trimmed: ${note}`);
+        if (opts.saveContext) writeFileSync(opts.saveContext, doc.markdown);
+
+        if (opts.dryRun) {
+          console.error(`dry run — would ask ${providerId} (${model}, effort ${effort})`);
+          return;
+        }
+
+        console.error(`asking ${providerId} (${model}, effort ${effort})…`);
+        const started = Date.now();
+        let result;
+        try {
+          result = await provider.advise({
+            contextDoc: doc.markdown,
+            ...(opts.question ? { question: opts.question } : {}),
+          });
+        } catch (err) {
+          console.error(`error: ${(err as Error).message}`);
+          process.exit(1);
+        }
+
+        console.log(result.text);
+        if (opts.out) {
+          writeFileSync(opts.out, result.text);
+          console.error(`\nanswer written to ${opts.out}`);
+        }
+
+        console.log('');
+        if (result.structured) {
+          printPlan(result.structured);
+          const socketables = new Map(
+            documentSocketables(input).map((item) => [normalizeName(item.name), item]),
+          );
+          const warnings = checkPlan(result.structured, { itemsById: doc.itemsById, socketables });
+          if (warnings.length) {
+            console.log(`\n${warnings.length} plan check warning(s):`);
+            for (const w of warnings) console.log(`  ! [${w.kind}] ${w.message}`);
+            process.exitCode = 1;
+          } else {
+            console.log('plan checks: every item id exists, no illegal socket, no destroyed host reused');
+          }
+        } else {
+          console.log('plan: not parseable — text only');
+        }
+
+        const usage = result.usage;
+        const bits = [
+          `${result.provider} / ${result.model ?? '?'}${result.effort ? ` (effort ${result.effort})` : ''}`,
+          usage?.inputTokens !== undefined ? `${usage.inputTokens.toLocaleString('en-US')} in` : '',
+          usage?.outputTokens !== undefined ? `${usage.outputTokens.toLocaleString('en-US')} out` : '',
+          usage?.costUsd !== undefined ? `$${usage.costUsd.toFixed(4)}` : '',
+          `${((Date.now() - started) / 1000).toFixed(1)}s`,
+        ].filter(Boolean);
+        console.log(`\n${bits.join(' · ')}`);
       });
     },
   );
