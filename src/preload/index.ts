@@ -10,7 +10,15 @@
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
 
-import type { AdviseEnvelope, AdviseStatus, GdApi, PushEvent, Settings, UiSnapshot } from '../shared/ipc.js';
+import type {
+  AdviceRunRef,
+  AdviseEnvelope,
+  AdviseStatus,
+  GdApi,
+  PushEvent,
+  Settings,
+  UiSnapshot,
+} from '../shared/ipc.js';
 import { PUSH_CHANNEL } from '../shared/ipc.js';
 
 const invoke = <T>(method: keyof GdApi, ...args: unknown[]): Promise<T> =>
@@ -25,7 +33,8 @@ const api: GdApi = {
   startAdvise: (req: { question?: string }) => invoke<{ runId: string }>('startAdvise', req),
   cancelAdvise: (runId: string) => invoke<void>('cancelAdvise', runId),
   getAdviseStatus: () => invoke<AdviseStatus>('getAdviseStatus'),
-  getLastAdvice: (character: string) => invoke<AdviseEnvelope | null>('getLastAdvice', character),
+  getAdviceHistory: (character: string) => invoke<AdviceRunRef[]>('getAdviceHistory', character),
+  getAdvice: (character: string, id: string) => invoke<AdviseEnvelope | null>('getAdvice', character, id),
   onPush: (cb: (e: PushEvent) => void) => {
     const listener = (_event: IpcRendererEvent, payload: PushEvent): void => cb(payload);
     ipcRenderer.on(PUSH_CHANNEL, listener);

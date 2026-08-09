@@ -79,6 +79,48 @@ export const adviseEnvelopeSchema = z.object({
   /** Document id → display name, for both items and socketables. */
   itemNames: z.record(z.string(), z.string()),
   socketableNames: z.record(z.string(), z.string()),
+  /**
+   * What the character was wearing when the run started: the document's own slot
+   * label → the item's document id, empty slots omitted.
+   *
+   * This is the answer to "is this advice still about the save in front of me".
+   * A stored run is shown again on the next launch, and by then the player may
+   * have equipped something, sold something, or played for a week — and an
+   * envelope with no record of the loadout it was written for cannot tell any of
+   * those apart from a plan that is still current.
+   *
+   * The **slot map rather than a hash** is deliberate, and it is the difference
+   * between a warning and a useful one. A hash answers "did anything change";
+   * this answers "which slot, from what, to what" — which is what makes
+   * `EQUIP`-already-carried-out distinguishable from the loadout drifting out
+   * from under the advice. The first is the plan *working* and must never be
+   * reported as staleness, because carrying out the advice is precisely what
+   * changes the loadout: a tool that discarded its own answer the moment you
+   * acted on it would be unusable.
+   *
+   * Optional, so a run stored before this field existed still validates and
+   * simply cannot be checked.
+   */
+  worn: z.record(z.string(), z.string()).optional(),
+  /**
+   * What each worn item was *carrying* — socketable ids by slot.
+   *
+   * Needed because **an item's id includes its attachments**: `itemId` hashes
+   * `relicName`/`relicSeed` (the save's word for a component) and
+   * `augmentName`/`augmentSeed` along with the base and its affixes. So carrying
+   * out an `ADD-COMPONENT` changes the worn item's id without changing the item,
+   * and `worn` alone cannot tell that apart from the item being replaced — it
+   * would report "Feet now holds Bloodhound Greaves (was Bloodhound Greaves)",
+   * which is both useless and the *opposite* of the truth, since what actually
+   * happened is that the reader did what the plan said.
+   *
+   * A separate field rather than a richer `worn`, so a stored run written before
+   * this existed still validates: changing `worn`'s value type would fail the
+   * whole envelope and silently discard a four-dollar answer.
+   */
+  wornSockets: z
+    .record(z.string(), z.object({ component: z.string().optional(), augment: z.string().optional() }))
+    .optional(),
 });
 
 export type AdviseEnvelope = z.infer<typeof adviseEnvelopeSchema>;
@@ -120,6 +162,13 @@ export interface BuildEnvelopeArgs {
   /** Every id the dossier defined, to the name it printed. */
   itemNames: Record<string, string>;
   socketableNames: Record<string, string>;
+  /**
+   * Slot label → worn item id, at the moment the run started. Optional so an
+   * older caller still compiles; a run without it just cannot be staleness-checked.
+   */
+  worn?: Record<string, string>;
+  /** Slot label → the socketable ids that item was carrying. See the schema. */
+  wornSockets?: Record<string, { component?: string; augment?: string }>;
 }
 
 /**
@@ -159,7 +208,80 @@ export function buildEnvelope(args: BuildEnvelopeArgs): AdviseEnvelope {
     verdictRows: plan ? verdictRows(plan, (id) => args.itemNames[id]) : [],
     itemNames: args.itemNames,
     socketableNames: args.socketableNames,
+    ...(args.worn ? { worn: args.worn } : {}),
+    ...(args.wornSockets ? { wornSockets: args.wornSockets } : {}),
   };
+}
+
+/**
+ * The worn-slot map for `worn`, from the resolved items.
+ *
+ * Keyed on the resolver's own `location` string, which is the same label §5 of
+ * the dossier prints as a heading and therefore the same one the model writes
+ * back in `verdicts[].slot` — that identity is what lets a stored run be lined up
+ * against a live save without a second mapping table to keep honest.
+ *
+ * Argument typed structurally so this stays in the renderer's type graph: a
+ * `ResolvedItem[]` is assignable to it, and importing the resolver here would
+ * drag the database types across the boundary.
+ */
+export function wornSlots(
+  items: readonly { source: string; location: string; id: string }[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const item of items) {
+    if (item.source === 'equipped') out[item.location] = item.id;
+  }
+  return out;
+}
+
+/**
+ * The socketables each worn item is carrying, for `wornSockets`.
+ *
+ * By **record path hashed the same way the dossier hashes a socketable** —
+ * `shortHash(record)` — because that is the id a plan's `targetId` carries, and
+ * lining the two up is the whole purpose. Passed in as `idFor` rather than
+ * imported: `shortHash` lives in the resolver, and this module is in the
+ * renderer's type graph.
+ */
+export function wornSocketables(
+  items: readonly { source: string; location: string; component?: { record: string }; augment?: { record: string } }[],
+  idFor: (record: string) => string,
+): Record<string, { component?: string; augment?: string }> {
+  const out: Record<string, { component?: string; augment?: string }> = {};
+  for (const item of items) {
+    if (item.source !== 'equipped') continue;
+    const entry = {
+      ...(item.component ? { component: idFor(item.component.record) } : {}),
+      ...(item.augment ? { augment: idFor(item.augment.record) } : {}),
+    };
+    if (entry.component || entry.augment) out[item.location] = entry;
+  }
+  return out;
+}
+
+/**
+ * One stored run, as the picker sees it.
+ *
+ * A summary rather than the envelope: the list is built by reading every file in
+ * the character's advice directory, and shipping ~70 kB per entry to populate a
+ * `<select>` would be paying for fourteen answers to show one. The chosen run is
+ * fetched whole.
+ *
+ * The fields are the ones that distinguish two runs on the same save at a glance:
+ * when, at what cost, with how many verdicts and how many surviving warnings —
+ * and the question, which is usually *why* there is a second run at all.
+ */
+export interface AdviceRunRef {
+  /** The store's filename stem; opaque to the renderer, which passes it back. */
+  id: string;
+  generatedAt: string;
+  model: string | null;
+  calls: number;
+  costUsd: number;
+  verdicts: number;
+  warnings: number;
+  question?: string;
 }
 
 /** What the main process reports about the run in flight, if any. */
@@ -172,4 +294,31 @@ export interface AdviseStatus {
   /** Wall clock since the run started — a real call is ~500 s, so it matters. */
   elapsedMs?: number;
   message?: string;
+  /**
+   * The tail of what the model is currently writing, when the backend streams.
+   *
+   * Carried on `status()` and not only on the push, because a renderer that
+   * mounts nine minutes into a run would otherwise re-attach to a phase label and
+   * a clock and nothing else — the very state the streaming exists to improve on.
+   */
+  activity?: AdviseActivityState;
+}
+
+/** The live tail of a streaming run: what kind of writing, and how much so far. */
+export interface AdviseActivityState {
+  kind: 'thinking' | 'answer';
+  /**
+   * The last few hundred characters, not the transcript — and **only for a window
+   * that arrives late**.
+   *
+   * The panel does show the whole transcript, but it builds it from the deltas on
+   * `advise-activity`: sending the accumulation on every push would re-marshal a
+   * hundred kilobytes across the process boundary several times a second to append
+   * a few words to it. So this is not what the panel renders in the normal case. It
+   * is what a renderer that mounted nine minutes in has instead of a transcript,
+   * which is why the panel labels it as a fragment rather than presenting it as the
+   * whole.
+   */
+  tail: string;
+  outputTokens?: number;
 }

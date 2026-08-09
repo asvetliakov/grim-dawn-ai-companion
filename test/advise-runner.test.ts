@@ -96,9 +96,13 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     expect(envelope.question).toBe('focus on resistances');
     expect(envelope.calls).toBe(1);
 
-    // Persisted, and reachable by the channel the renderer actually calls.
+    // Persisted, and reachable by the two channels the renderer actually calls:
+    // the window opens on the empty state and gets to an answer by picking it out
+    // of the history, so `history` → `advice` is the whole path in.
     expect(loadLastAdvice('_Suchka')?.answer).toBe(answer);
-    expect(runs.lastAdvice('_Suchka')?.answer).toBe(answer);
+    const stored = runs.history('_Suchka');
+    expect(stored).toHaveLength(1);
+    expect(runs.advice('_Suchka', stored[0]!.id)?.answer).toBe(answer);
     // And the run is over: a second one is allowed, and the status is idle again.
     expect(runs.status().phase).toBe('idle');
     expect(runId).toMatch(/[0-9a-f-]{36}/);

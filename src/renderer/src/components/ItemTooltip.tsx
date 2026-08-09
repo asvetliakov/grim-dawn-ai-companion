@@ -19,12 +19,34 @@ import { rarityClass } from '../rarity.js';
 
 export type TooltipSubject =
   | { kind: 'item'; item: UiItem }
-  | { kind: 'socketable'; label: string; part: UiSocketable; note?: string };
+  | { kind: 'socketable'; label: string; part: UiSocketable; note?: string }
+  /**
+   * A control explaining itself.
+   *
+   * The window's expensive and destructive buttons — Run advice, Clear, Refresh —
+   * need more than a label: a run is eight minutes and a few dollars, Clear
+   * deletes one, and "does Refresh interrupt a run?" is a question every user
+   * asks once. Native `title` was carrying that and carrying it badly: it takes
+   * about a second to appear, renders in the OS's own style, and disappears while
+   * being read. This borrows the panel the rest of the window already uses —
+   * instant, legible, and it stays put while the pointer is on it.
+   */
+  | { kind: 'note'; title: string; body: string };
 
 export function Tooltip({ subject }: { subject: TooltipSubject }): React.ReactNode {
-  return subject.kind === 'item' ? (
-    <ItemTooltip item={subject.item} />
-  ) : (
+  if (subject.kind === 'item') return <ItemTooltip item={subject.item} />;
+  if (subject.kind === 'note') {
+    return (
+      // The `tooltip` class is what makes it a panel: the dark ground, the border,
+      // the shadow, and the pointer-events that let it be read at leisure. Without
+      // it this was styled text floating on whatever it happened to cover.
+      <div className="tooltip control-note">
+        <div className="control-note-title">{subject.title}</div>
+        <div className="control-note-body">{subject.body}</div>
+      </div>
+    );
+  }
+  return (
     <SocketableTooltip label={subject.label} part={subject.part} {...(subject.note ? { note: subject.note } : {})} />
   );
 }
@@ -165,6 +187,14 @@ export function ActionTooltip({ marks }: { marks: readonly AdviceMark[] }): Reac
             {/* A hold's threshold is the reason it is a hold rather than an
                 equip, so it is not buried in the prose. */}
             {mark.until && <div className="action-until">until {mark.until}</div>}
+            {/* What to put in it once you have it. Part of the instruction, not a
+                footnote: the stats the swap was argued on are partly the
+                component's, so an EQUIP carried out bare is not the move. */}
+            {mark.fits?.map((fit) => (
+              <div className="action-fit" key={`${fit.kind}:${fit.id}`}>
+                fit {fit.kind}: {fit.name ?? `#${fit.id}`}
+              </div>
+            ))}
             {(mark.gains.length > 0 || mark.costs.length > 0) && (
               <div className="action-delta">
                 {mark.gains.map((g) => (

@@ -32,11 +32,37 @@ export interface AdvisorResult {
   usage?: { inputTokens?: number; outputTokens?: number; costUsd?: number; durationMs?: number };
 }
 
+/**
+ * Something the model did while the call was in flight.
+ *
+ * The run takes eight to twelve minutes behind one opaque subprocess, and the
+ * honest progress that could be shown without this was three phase labels and a
+ * clock. That is truthful and it is not enough: the phase says "asking the model"
+ * for ten minutes, so the only way to tell a working run from a wedged one was to
+ * wait for the timeout. The backend does have something to say — `claude
+ * --output-format stream-json --include-partial-messages` emits the reasoning and
+ * the answer as they are written — so the seam carries it.
+ *
+ * Deltas, not snapshots: the text is whatever arrived since the last call, and
+ * the consumer accumulates. A backend with nothing to stream simply never calls
+ * it, which is why this is optional at every level rather than a required channel.
+ */
+export interface AdvisorActivity {
+  /** `thinking` is the model reasoning; `answer` is the prose it is writing. */
+  kind: 'thinking' | 'answer';
+  /** The newest text, to be appended to what came before. */
+  text: string;
+  /** Output tokens so far, where the backend counts them for us. */
+  outputTokens?: number;
+}
+
+export type ActivityListener = (activity: AdvisorActivity) => void;
+
 export interface AdvisorProvider {
   readonly id: string;
   /** Cheap liveness check — a backend that cannot run should say so, not throw later. */
   available(): Promise<boolean>;
-  advise(req: AdvisorRequest, signal?: AbortSignal): Promise<AdvisorResult>;
+  advise(req: AdvisorRequest, signal?: AbortSignal, onActivity?: ActivityListener): Promise<AdvisorResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,8 +198,10 @@ export function verdictRows(plan: AdvisorPlan, nameFor: (id: string) => string |
       nextName: (nextId ? nameFor(nextId) : undefined) ?? (replaces ? v.targetName ?? '' : ''),
       nextId,
       // A socketable change belongs in Action, never in New: a re-augment is
-      // not a new item.
-      action: replaces ? '' : v.verdict === 'KEEP' ? 'KEEP' : `${v.verdict}${v.target ? ` ${v.target}` : ''}`,
+      // not a new item. `fits` joins it there too — for an `EQUIP` it is the
+      // whole cell, and for a socket move it is the second socket, which is the
+      // one the verdict's own name cannot mention.
+      action: actionCell(v),
       gains: [...(v.gains ?? [])],
       costs: [...(v.costs ?? [])],
       why: v.reason,
@@ -181,6 +209,56 @@ export function verdictRows(plan: AdvisorPlan, nameFor: (id: string) => string |
     };
   });
 }
+
+/**
+ * The Action cell: the verdict's own socketable, then anything else the slot is
+ * told to fit.
+ *
+ * A replacement's cell used to be empty, on the reasoning that the New column
+ * already says everything — true until an `EQUIP` could also say what to put in
+ * the new item's sockets, which is a second instruction and belongs in the column
+ * about instructions.
+ */
+function actionCell(v: AdvisorPlan['verdicts'][number]): string {
+  const extra = (v.fits ?? []).map((f) => `${f.name ?? `#${f.id}`} (${f.kind})`);
+  const primary = isReplacement(v.verdict)
+    ? extra.length > 0
+      ? 'FIT'
+      : ''
+    : v.verdict === 'KEEP' && extra.length === 0
+      ? 'KEEP'
+      : `${v.verdict}${v.target ? ` ${v.target}` : ''}`;
+  return [primary, extra.join(' + ')].filter(Boolean).join(' ');
+}
+
+/**
+ * A socketable the slot should end up carrying, *beyond* the one its verdict is
+ * named for.
+ *
+ * One verdict per slot is the right shape for the question "what goes in this
+ * slot", and it was the wrong shape for the answer. An item holds a component
+ * **and** an augment in independent sockets, so a slot can legitimately need two
+ * socketable changes at once — and the verdict enum has one name for the move,
+ * so the second one had nowhere to go. The first live run hit it twice and said
+ * so out loud: the Neck `EQUIP` argued in prose for fitting the new amulet with
+ * a loose Dread Skull *and* a Sagethorn Powder, and the plan carried neither,
+ * while `projected.notes` contained the sentence "two free component fills are
+ * part of this plan and are not separate verdict rows". A recommendation the
+ * window cannot render is a recommendation the user does not get.
+ *
+ * The division of labour: `target`/`targetId` stay the socketable the verdict is
+ * *about* — it is what makes a `RE-AUGMENT` a re-augment — and `fits` carries the
+ * rest. An `EQUIP` has no primary socketable, so for one of those every socket
+ * to fill is here.
+ */
+const socketFitSchema = z.object({
+  kind: z.enum(['component', 'augment']),
+  id: z.string(),
+  /** The name that id belongs to, on the same "the pair proves the id" reasoning as `itemName`. */
+  name: z.string().optional(),
+});
+
+export type SocketFit = z.infer<typeof socketFitSchema>;
 
 const verdictSchema = z.object({
   slot: z.string(),
@@ -206,6 +284,11 @@ const verdictSchema = z.object({
   enablers: z.array(z.string()).optional(),
   /** Extraction source: the host item id, which the extraction DESTROYS. */
   componentFrom: z.string().optional(),
+  /**
+   * Socketables to install in whatever item this slot ends up holding — the
+   * candidate for an `EQUIP`, the worn item otherwise. See `socketFitSchema`.
+   */
+  fits: z.array(socketFitSchema).optional(),
   /**
    * What this move adds and what it costs, as **fully-qualified** stat strings
    * (`+12% Fire Resistance`, not `+12 Fire`). Deliberately strings rather than a
@@ -378,6 +461,7 @@ function normalizePlan(plan: AdvisorPlan): AdvisorPlan {
       ...(v.targetId !== undefined ? { targetId: normalizeId(v.targetId) } : {}),
       ...(v.enablers ? { enablers: v.enablers.map(normalizeId) } : {}),
       ...(v.componentFrom !== undefined ? { componentFrom: normalizeId(v.componentFrom) } : {}),
+      ...(v.fits ? { fits: v.fits.map((f) => ({ ...f, id: normalizeId(f.id) })) } : {}),
     })),
     hold: plan.hold.map((h) => ({
       ...h,

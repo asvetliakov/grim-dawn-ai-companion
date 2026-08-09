@@ -30,6 +30,8 @@ import { useAdviceMarks, useHoldHighlight } from './highlight.js';
 interface TooltipApi {
   show: (element: Element, item: UiItem) => void;
   showSocketable: (element: Element, label: string, part: UiSocketable, note?: string) => void;
+  /** A control explaining what it does. See the `note` subject in `ItemTooltip`. */
+  showNote: (element: Element, title: string, body: string) => void;
   hide: () => void;
 }
 
@@ -216,12 +218,23 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
   const hold = useHoldHighlight();
   const { refs, floatingStyles } = useFloating({
     open: subject !== null,
-    // Below the card, left-aligned with it — not beside it. A loadout row is a
-    // comparison two cards wide, and a panel opening to the side of either card
-    // lands on the other one: exactly the item the reader is comparing against.
-    // Below, it covers the rows underneath, which are not part of the
-    // comparison. `flip` puts it above when there is no room below.
-    placement: 'bottom-start',
+    // Below the subject and **centred on it** — not beside it, and no longer
+    // left-aligned with it.
+    //
+    // Below rather than beside, because a loadout row is a comparison two cards
+    // wide and a panel opening to the side of either card lands on the other one:
+    // exactly the item the reader is comparing against. Below, it covers the rows
+    // underneath, which are not part of the comparison. `flip` puts it above when
+    // there is no room below.
+    //
+    // Centred rather than left-aligned, because the layer holds *two* panels for a
+    // marked item. Left-aligned, the pair extended right from the card until it hit
+    // the viewport, at which point `shift` slid the whole thing left — so the
+    // item's own panel sat somewhere different depending on whether the plan had
+    // anything to say about that item, and jumped as the pointer crossed from a
+    // marked cell to an unmarked one. Centred, the pair grows symmetrically and
+    // `shift` has far less to correct.
+    placement: 'bottom',
     middleware: [offset(8), flip(), shift({ padding: 10 })],
     whileElementsMounted: autoUpdate,
   });
@@ -336,6 +349,16 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
     },
     [present],
   );
+  const showNote = useCallback(
+    (element: Element, title: string, body: string) => {
+      present(
+        element,
+        { kind: 'note', title, body },
+        (prev) => prev?.kind === 'note' && prev.title === title && prev.body === body,
+      );
+    },
+    [present],
+  );
   const hide = useCallback(() => {
     // A pointer that leaves before the delay elapses never wanted the panel.
     cancelOpen();
@@ -347,7 +370,10 @@ export function TooltipProvider({ children }: { children: ReactNode }): ReactNod
       hold(null);
     }, HIDE_DELAY_MS);
   }, [keep, cancelOpen, hold]);
-  const api = useMemo(() => ({ show, showSocketable, hide }), [show, showSocketable, hide]);
+  const api = useMemo(
+    () => ({ show, showSocketable, showNote, hide }),
+    [show, showSocketable, showNote, hide],
+  );
 
   /**
    * The wheel, over the panel.

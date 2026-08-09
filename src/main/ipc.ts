@@ -13,7 +13,7 @@
 
 import { ipcMain } from 'electron';
 
-import type { AdviseEnvelope, AdviseStatus } from '../core/ai/envelope.js';
+import type { AdviceRunRef, AdviseEnvelope, AdviseStatus } from '../core/ai/envelope.js';
 import type { Settings } from '../core/settings-schema.js';
 import type { UiSnapshot } from '../shared/view.js';
 import { IPC_CHANNELS, type GdApi } from '../shared/ipc.js';
@@ -33,16 +33,18 @@ export function createApi(impl: {
   startAdvise: (req: { question?: string }) => Promise<{ runId: string }>;
   cancelAdvise: (runId: string) => void;
   getAdviseStatus: () => AdviseStatus;
-  getLastAdvice: (character: string) => AdviseEnvelope | null;
+  getAdviceHistory: (character: string) => AdviceRunRef[];
+  getAdvice: (character: string, id: string) => AdviseEnvelope | null;
 }): Omit<GdApi, 'onPush'> {
   return {
     ...impl,
-    // The three synchronous ones are wrapped rather than declared async in the
+    // The synchronous ones are wrapped here rather than declared async in the
     // runner: reading a file and reading a field are not asynchronous, and
     // pretending otherwise there would hide that from the run manager's tests.
     cancelAdvise: async (runId: string) => impl.cancelAdvise(runId),
     getAdviseStatus: async () => impl.getAdviseStatus(),
-    getLastAdvice: async (character: string) => impl.getLastAdvice(character),
+    getAdviceHistory: async (character: string) => impl.getAdviceHistory(character),
+    getAdvice: async (character: string, id: string) => impl.getAdvice(character, id),
   };
 }
 

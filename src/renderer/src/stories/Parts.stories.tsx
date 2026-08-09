@@ -10,7 +10,7 @@ import { ContainerPanel } from '../components/ContainerPanel.js';
 import { ItemTooltip, SocketableTooltip } from '../components/ItemTooltip.js';
 import { LoadoutPanel } from '../components/LoadoutPanel.js';
 import { StatsPanel } from '../components/StatsPanel.js';
-import { HOSTILE_ANSWER, fixtureAdvice, fixtureSnapshot } from '../fixtures.js';
+import { FIXTURE_THINKING, HOSTILE_ANSWER, fixtureAdvice, fixtureSnapshot } from '../fixtures.js';
 import { HighlightProvider } from '../highlight.js';
 import { IconUrlProvider } from '../icons.js';
 import { TooltipProvider } from '../tooltip.js';
@@ -112,6 +112,65 @@ export const AdviceRunning: StoryObj = {
           run={{ runId: 'story', phase: 'repair', startedAt: Date.now() - 512_000, elapsedMs: 512_000 }}
           onRun={() => {}}
           onCancel={() => {}}
+        />
+      </Frame>
+    );
+  },
+};
+
+/**
+ * The same run, with the model's reasoning arriving — the panel on its own, so the
+ * transcript is the subject rather than a box below the fold.
+ *
+ * The workspace story shows this too, but the advice panel sits under a fourteen-row
+ * loadout: at 1080 the transcript is off the bottom of the screenshot, which is
+ * exactly as good as not having a story for it. Here it is the whole frame.
+ *
+ * What it has to show: that the box is **capped and scrolling** rather than sized to
+ * its contents (a box that grew would reflow the panel — and the loadout above it —
+ * continuously for twelve minutes), that it is pinned to the newest line, and that
+ * the count is **written tokens and never a percentage**, since there is no way to
+ * know how far through an opaque eight-minute call is.
+ */
+export const AdviceThinking: StoryObj = {
+  name: 'Advice — watching the model reason',
+  render: () => {
+    const snapshot = fixtureSnapshot();
+    return (
+      <Frame>
+        <AdvicePanel
+          snapshot={snapshot}
+          advice={null}
+          run={{ runId: 'story', phase: 'asking', startedAt: Date.now() - 247_000, elapsedMs: 247_000 }}
+          activity={{ kind: 'thinking', text: FIXTURE_THINKING, outputTokens: 21_480 }}
+          onRun={() => {}}
+          onCancel={() => {}}
+        />
+      </Frame>
+    );
+  },
+};
+
+/**
+ * The reasoning after the run, collapsed to one line.
+ *
+ * *"Why did it decide that"* is a question the finished answer routinely raises and
+ * does not answer, so the transcript outlives the run — but it is the working-out,
+ * not the product, so it gets a line above the answer rather than a column beside
+ * it. Not persisted with the envelope: it lives until the next run.
+ */
+export const AdviceThinkingDone: StoryObj = {
+  name: 'Advice — the reasoning, after the answer',
+  render: () => {
+    const snapshot = fixtureSnapshot();
+    return (
+      <Frame>
+        <AdvicePanel
+          snapshot={snapshot}
+          advice={fixtureAdvice(snapshot)}
+          activity={{ kind: 'answer', text: FIXTURE_THINKING, outputTokens: 39_512 }}
+          onRun={() => {}}
+          onNewRun={() => {}}
         />
       </Frame>
     );

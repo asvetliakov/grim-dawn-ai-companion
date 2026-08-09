@@ -16,7 +16,7 @@
  * the repair loop making things worse.
  */
 
-import type { AdvisorProvider, AdvisorRequest, AdvisorResult } from './provider.js';
+import type { ActivityListener, AdvisorProvider, AdvisorRequest, AdvisorResult } from './provider.js';
 import { checkPlan, type PlanCheckInput, type PlanWarning } from './verify.js';
 
 export interface RepairOutcome {
@@ -58,6 +58,12 @@ export interface AdviseAndRepairOptions {
   signal?: AbortSignal;
   /** Called before the second request, so a CLI can say what it is doing. */
   onRepair?: (warnings: readonly PlanWarning[]) => void;
+  /**
+   * Passed straight to both calls. Forwarded rather than wrapped: the consumer
+   * already knows which phase it is in from `onRepair`, so re-labelling the
+   * activity here would only give it a second, less reliable way to find out.
+   */
+  onActivity?: ActivityListener;
 }
 
 /**
@@ -70,7 +76,7 @@ export async function adviseWithRepair(
   check: PlanCheckInput,
   opts: AdviseAndRepairOptions = {},
 ): Promise<RepairOutcome> {
-  const first = await provider.advise(req, opts.signal);
+  const first = await provider.advise(req, opts.signal, opts.onActivity);
   const firstWarnings = warningsFor(first, check);
 
   const base: RepairOutcome = {
@@ -84,7 +90,7 @@ export async function adviseWithRepair(
   if (firstWarnings.length === 0 || opts.repair === false) return base;
 
   opts.onRepair?.(firstWarnings);
-  const second = await provider.advise(repairRequest(req, first.text, firstWarnings), opts.signal);
+  const second = await provider.advise(repairRequest(req, first.text, firstWarnings), opts.signal, opts.onActivity);
   const secondWarnings = warningsFor(second, check);
   const improved = secondWarnings.length < firstWarnings.length;
 

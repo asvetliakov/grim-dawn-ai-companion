@@ -48,6 +48,19 @@ interface HighlightApi {
    * verdict row naming two items, a key move naming four) really is transient.
    */
   holdHighlight: (docIds: string | readonly string[] | null) => void;
+  /**
+   * The kind of action the container legend is pointing at, if any.
+   *
+   * Exposed as a *kind* rather than folded into the id sets on purpose: this
+   * highlight belongs to the containers alone. The legend counts what is in the
+   * containers ("sell or salvage 13"), so lighting the loadout's proposed card
+   * for one of those items would answer a question the reader did not ask — and
+   * an id-based highlight cannot tell the two places apart, because a candidate
+   * in a stash and the proposal that names it are the same item. Only `ItemCell`
+   * and the material list read this, which is what scopes it.
+   */
+  litKind: ActionKind | null;
+  highlightKind: (kind: ActionKind | null) => void;
   /** What the current plan asks you to do with this item, if anything. */
   actionFor: (docId: string) => ActionKind | undefined;
   /** Everything the plan says about this item — the badge and the action tooltip. */
@@ -73,6 +86,7 @@ export function HighlightProvider({ children }: { children: ReactNode }): ReactN
   const [held, setHeld] = useState<readonly string[]>(EMPTY);
   const [actions, setActionsState] = useState<Readonly<Record<string, ActionKind>>>(NO_ACTIONS);
   const [advice, setAdviceState] = useState<ReadonlyMap<string, AdviceMark[]>>(NO_ADVICE);
+  const [litKind, setLitKind] = useState<ActionKind | null>(null);
   const [reveal, setReveal] = useState<RevealRequest | null>(null);
 
   const highlight = useCallback((docIds: string | readonly string[] | null) => {
@@ -95,6 +109,9 @@ export function HighlightProvider({ children }: { children: ReactNode }): ReactN
   const setAdvice = useCallback((next: ReadonlyMap<string, AdviceMark[]>) => {
     setAdviceState((prev) => (prev === next ? prev : next));
   }, []);
+  const highlightKind = useCallback((kind: ActionKind | null) => {
+    setLitKind((prev) => (prev === kind ? prev : kind));
+  }, []);
   const requestReveal = useCallback((docId: string, position: ItemPosition) => {
     setReveal((prev) => ({ docId, position, nonce: (prev?.nonce ?? 0) + 1 }));
   }, []);
@@ -105,6 +122,8 @@ export function HighlightProvider({ children }: { children: ReactNode }): ReactN
       any: highlighted.length > 0 || held.length > 0,
       highlight,
       holdHighlight,
+      litKind,
+      highlightKind,
       actionFor: (docId: string) => actions[docId],
       adviceFor: (docId: string) => advice.get(docId) ?? NO_MARKS,
       setActions,
@@ -112,7 +131,20 @@ export function HighlightProvider({ children }: { children: ReactNode }): ReactN
       reveal,
       requestReveal,
     }),
-    [highlighted, held, highlight, holdHighlight, actions, setActions, advice, setAdvice, reveal, requestReveal],
+    [
+      highlighted,
+      held,
+      highlight,
+      holdHighlight,
+      litKind,
+      highlightKind,
+      actions,
+      setActions,
+      advice,
+      setAdvice,
+      reveal,
+      requestReveal,
+    ],
   );
   return <HighlightContext.Provider value={api}>{children}</HighlightContext.Provider>;
 }

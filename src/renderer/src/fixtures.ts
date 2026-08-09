@@ -13,6 +13,7 @@
 
 import type { AdviseEnvelope, UiGrid, UiItem, UiSnapshot, UiSocketable, UiStats } from '../../shared/ipc.js';
 import type { ItemPosition } from '../../shared/ipc.js';
+import { currentWorn } from './components/LoadoutPanel.js';
 
 let nextId = 0;
 const id = (): string => `f${(nextId++).toString(36).padStart(3, '0')}`;
@@ -512,6 +513,27 @@ export function fixtureSnapshot(): UiSnapshot {
  * so the loadout's join, the container highlight and the reveal all exercise
  * the same code path they will with a real envelope.
  */
+/**
+ * The `worn` / `wornSockets` pair an envelope carries, from a live snapshot.
+ *
+ * The two halves are separate fields because an item's document id includes its
+ * attachments, so "the component changed" and "the item changed" are otherwise
+ * indistinguishable — see the schema note on `wornSockets`.
+ */
+function storedLoadout(snapshot: UiSnapshot): Pick<AdviseEnvelope, 'worn' | 'wornSockets'> {
+  const worn: Record<string, string> = {};
+  const wornSockets: Record<string, { component?: string; augment?: string }> = {};
+  for (const [slot, item] of Object.entries(currentWorn(snapshot))) {
+    worn[slot] = item.itemId;
+    const sockets = {
+      ...(item.componentId ? { component: item.componentId } : {}),
+      ...(item.augmentId ? { augment: item.augmentId } : {}),
+    };
+    if (sockets.component ?? sockets.augment) wornSockets[slot] = sockets;
+  }
+  return { worn, wornSockets };
+}
+
 export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
   const bag = snapshot.bags[0]?.items ?? [];
   const head = snapshot.equipment[0]!;
@@ -569,6 +591,15 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
           target: gauntlets.docId,
           targetId: gauntlets.docId,
           targetName: gauntlets.display,
+          // An EQUIP that also says what to put *in* the new item. One verdict per
+          // slot has one name, and an item holds a component and an augment in
+          // independent sockets — so the second instruction lives in `fits`, and
+          // without it a plan that argued for the component in prose could not
+          // show it. The first live run hit exactly this on the Neck slot.
+          fits: [
+            { kind: 'component', id: 's-mark-of-mogdrogen', name: 'Mark of Mogdrogen' },
+            { kind: 'augment', id: 's-kymon-s-vigil', name: 'Kymon’s Vigil' },
+          ],
           gains: ['+10% Pierce Resistance', '+18% Chaos Resistance', '+214 Armor'],
           costs: ['−10% Vitality Resistance', '−15% Bleeding Resistance'],
           reason: 'Chaos goes over cap; the component you lose is replaceable from the store.',
@@ -675,7 +706,28 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
         notDerivable: ['Offensive Ability, because the engine’s level floor is not modelled'],
         notes: [],
       },
+      // The ladder. Two of the four entries on the first live run were "skip
+      // this", which is the recommendation the section exists to carry: §12 of
+      // the dossier costs every threshold, and a costing with no verdict on it
+      // is not advice.
+      nextLevels: [
+        {
+          threshold: 'level 84',
+          unlocks: [mythicalVisor.docId],
+          recommendation:
+            'Worth it — the Mythical visor is a flat upgrade and the two attribute points those levels grant are not needed by anything else. Put both into Cunning.',
+        },
+        {
+          threshold: '4 attribute points into Spirit (299 → 331)',
+          unlocks: [],
+          recommendation: 'Skip — nothing this character can reach at 331 Spirit beats what is already worn.',
+        },
+      ],
     },
+    // The loadout the run was written against, sockets and all. Equal to the live
+    // one here, which is the ordinary case — a stored run and the save it
+    // describes. The drifted and already-applied cases get their own stories.
+    ...storedLoadout(snapshot),
     verdictRows: [
       {
         slot: 'Head',
@@ -699,7 +751,9 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
         next: `${gauntlets.display} #${gauntlets.docId}`,
         nextName: gauntlets.display,
         nextId: gauntlets.docId,
-        action: '',
+        // Not empty for a replacement any more: an EQUIP that also fits sockets
+        // has a second instruction, and this is the column about instructions.
+        action: 'FIT Mark of Mogdrogen (component) + Kymon’s Vigil (augment)',
         gains: ['+10% Pierce Resistance', '+18% Chaos Resistance', '+214 Armor'],
         costs: ['−10% Vitality Resistance', '−15% Bleeding Resistance'],
         why: 'Chaos goes over cap; the component you lose is replaceable from the store.',
@@ -856,3 +910,26 @@ which has nothing in it a line may break at.
 records/items/gearaccessories/amulets/d101_amulet.dbr  itemLevel=84  offensivePhysicalMin=146
 \`\`\`
 `;
+
+/**
+ * A plausible slice of the model's reasoning, mid-run.
+ *
+ * Invented like everything else here, but shaped like the real thing: the live run
+ * spent its first minutes exactly this way, working out that an over-cap resistance
+ * is a resource rather than a strength. Long enough to overflow the box, with
+ * paragraph breaks, because a transcript that fits proves nothing about one that
+ * does not.
+ */
+export const FIXTURE_THINKING = `Let me start with the resistance matrix, because that is where the actual problem is going to be.
+
+Aether Resistance is 179 permanent, 154 effective after the Ultimate penalty, against an 80 cap. That is +74 over cap — and over-cap resistance does nothing at all. So the three Wight Skin Powders are not defence, they are 45 points of nothing. That is the single largest free resource in this loadout and the reader is currently spending it on a stat they cannot use.
+
+Meanwhile Bleeding Resistance is 63 permanent, 38 effective, against the same 80 cap. That is 42 points short, and this is a Bleeding build fighting things that bleed it back.
+
+Now, what can actually reach Bleeding Resistance? The jewelry augments can: Sagethorn Powder is +15% Chaos Resistance and, unlike Wight Skin Powder, it adds +36% Pierce Damage and +36% Bleeding Damage instead of dead Aether Resistance. Glacier Dust is +15% Bleeding Resistance and +15% Pierce Resistance. So the three jewelry slots alone move Bleeding Resistance and Chaos Resistance without costing a single point of anything this character is using.
+
+Let me check the amulet before I commit to that. Bloodmoon is +33% Pierce Damage, +60% Bleeding Damage, +8 Bleeding Damage over 3 Seconds, +5% Attack Speed, +40 Defensive Ability, +33 Cunning. Maiven's Lens is +25% Bleeding Resistance, +20% Chaos Resistance, +308 Health. That is a real trade and I should not pretend otherwise — but the Bleeding Damage comes back if a Dread Skull goes into the Lens, and there are two loose ones.
+
+Wait. I should check whether any of Bloodmoon's +2 to skill lines are actually invested. Feral Hunger, Circle of Slaughter, Voracity — none of those appear in the invested list, so no skill rank moves and no resistance row moves with them. Good, that removes the objection.
+
+So the shape of the answer is: seven empty armour augment slots end the elemental fragility, the three jewelry augments buy the Bleeding and Chaos deficit, and the amulet swap is what makes the arithmetic close instead of merely improve. Let me now cost the armour augments properly, because only four distinct ones exist for this character and all four are resistance…`;

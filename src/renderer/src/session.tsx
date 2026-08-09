@@ -16,7 +16,15 @@ import {
   type ReactNode,
 } from 'react';
 
-import type { AdviseEnvelope, AdvisePhase, Bootstrap, Settings, UiSnapshot } from '../../shared/ipc.js';
+import type {
+  AdviceRunRef,
+  AdviseActivityState,
+  AdviseEnvelope,
+  AdvisePhase,
+  Bootstrap,
+  Settings,
+  UiSnapshot,
+} from '../../shared/ipc.js';
 
 /**
  * The run in flight, as the window needs to describe it.
@@ -35,13 +43,42 @@ export interface AdviseRun {
   elapsedMs: number;
 }
 
+/**
+ * Everything the model has written this run, when the backend streams it.
+ *
+ * Held **beside** the run rather than on it, and deliberately outliving it: the
+ * reasoning is worth reading after the answer arrives, and a field on `run` would
+ * vanish the moment the run ended. Cleared when the next run starts, because two
+ * runs' reasoning concatenated is nobody's transcript.
+ *
+ * Accumulated here from the deltas main pushes, not fetched: see the note on
+ * `advise-activity`. Consequence worth stating — a window that mounts *during* a
+ * run gets the bounded tail from `status()` and not the transcript, because
+ * nothing was keeping the whole of it on this side. That is honest and cheap;
+ * keeping every run's full reasoning in main against the chance of a reload is
+ * neither.
+ */
+export interface RunActivity {
+  kind: 'thinking' | 'answer';
+  text: string;
+  outputTokens?: number;
+  /** True when this began as a late re-attach, so the start of it is missing. */
+  partial?: boolean;
+}
+
 export interface SessionValue {
   bootstrap?: Bootstrap;
   snapshot?: UiSnapshot;
-  /** The last advice run for the character on screen, if there is one. */
+  /** The advice run on screen — the newest stored one, or one picked from history. */
   advice?: AdviseEnvelope;
+  /** Every stored run for this character, newest first. */
+  adviceHistory: AdviceRunRef[];
+  /** Which of them is on screen, so the picker can show its own selection. */
+  adviceId?: string;
   /** Non-null while a run is in flight — including one this renderer did not start. */
   run: AdviseRun | null;
+  /** What the model has written, live and then afterwards. See `RunActivity`. */
+  activity?: RunActivity;
   /** What the last run failed with, cleared when another starts. */
   adviceError?: string;
   loading: boolean;
@@ -53,6 +90,19 @@ export interface SessionValue {
   updateSettings: (patch: Partial<Settings>) => void;
   startAdvice: (question?: string) => void;
   cancelAdvice: () => void;
+  /** Show a stored run. */
+  selectAdvice: (id: string) => void;
+  /**
+   * Put the run on screen away and go back to the empty state, where a new one
+   * can be started.
+   *
+   * **Selects nothing; deletes nothing.** This replaced a `Clear` that deleted the
+   * run it was next to, and the two are worth telling apart: the destructive
+   * reading made the one control a user reaches for after acting on a plan — "I
+   * have done these, ask me again" — the one control that could throw a
+   * four-dollar answer away. The run stays in `adviceHistory` and can be reopened.
+   */
+  newRun: () => void;
 }
 
 const SessionContext = createContext<SessionValue | undefined>(undefined);
@@ -76,13 +126,24 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
   const [bootstrap, setBootstrap] = useState<Bootstrap>();
   const [snapshot, setSnapshot] = useState<UiSnapshot>();
   const [advice, setAdvice] = useState<AdviseEnvelope>();
+  const [history, setHistory] = useState<AdviceRunRef[]>([]);
+  const [adviceId, setAdviceId] = useState<string>();
   const [run, setRun] = useState<AdviseRun | null>(null);
+  const [activity, setActivity] = useState<RunActivity>();
   const [adviceError, setAdviceError] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState<string>();
   const [error, setError] = useState<string>();
   /** Guards against a focus event landing on top of a load already in flight. */
   const inFlight = useRef(false);
+  /**
+   * Whose save was read last, so a re-read can tell a refresh from a switch.
+   *
+   * A ref rather than the `snapshot` state because `load` is a stable callback and
+   * must stay one — it is wired to the focus event and to Stage 7C's watcher, and a
+   * `load` that changed identity on every snapshot would re-subscribe both.
+   */
+  const readCharacter = useRef<string | undefined>(undefined);
 
   const load = useCallback(async (character?: string) => {
     if (inFlight.current) return;
@@ -92,10 +153,30 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
       const next = await window.gd.getSnapshot(character);
       setSnapshot(next);
       setError(undefined);
-      // Advice belongs to a character, so it is fetched with them rather than
-      // carried across a character switch, where it would describe the wrong
-      // loadout entirely.
-      setAdvice((await window.gd.getLastAdvice(next.character)) ?? undefined);
+      // Advice belongs to a character, so the history is fetched with them rather
+      // than carried across a switch, where it would list runs about another
+      // character's loadout entirely.
+      const runs = await window.gd.getAdviceHistory(next.character);
+      setHistory(runs);
+      /*
+       * Which run is on screen is the reader's choice, and a re-read is not one.
+       *
+       * So this opens nothing — the window starts empty and a run is opened from
+       * the picker — and equally closes nothing: `load` runs on every window focus
+       * (and will run on Stage 7C's watcher), and a refresh that dropped the open
+       * plan would take the marks off the gear every time the user came back from
+       * the game, which is the exact moment they are comparing the two.
+       *
+       * A *different character* is the one case where it must go: the ids would
+       * join onto another loadout, and the verdicts would be about slots that are
+       * not on screen.
+       */
+      if (readCharacter.current !== next.character) {
+        readCharacter.current = next.character;
+        setAdvice(undefined);
+        setAdviceId(undefined);
+        setActivity(undefined);
+      }
     } catch (err) {
       // The message is the main process's own — a missing install, a save the
       // game is mid-write on. Showing it beats a spinner that never stops.
@@ -139,9 +220,24 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
           elapsedMs: event.elapsedMs,
         });
         setAdviceError(undefined);
+      } else if (event.type === 'advise-activity') {
+        // Appended, because the push is a delta. The kind is whatever it most
+        // recently was: the reasoning gives way to the answer once and never back.
+        setActivity((prev) => ({
+          kind: event.kind,
+          text: (prev?.text ?? '') + event.text,
+          ...(event.outputTokens !== undefined ? { outputTokens: event.outputTokens } : {}),
+          ...(prev?.partial ? { partial: true } : {}),
+        }));
       } else if (event.type === 'advise-done') {
         setRun(null);
         setAdvice(event.envelope);
+        // A finished run joins the history and becomes the selection.
+        void (async () => {
+          const runs = await window.gd.getAdviceHistory(event.envelope.character);
+          setHistory(runs);
+          setAdviceId(runs[0]?.id);
+        })();
       } else if (event.type === 'advise-error') {
         setRun(null);
         setAdviceError(event.message);
@@ -169,6 +265,16 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
           startedAt: Date.now() - (status.elapsedMs ?? 0),
           elapsedMs: status.elapsedMs ?? 0,
         });
+        // Seeded from the bounded tail: this window was not here for the rest of
+        // it, and it says so rather than presenting a fragment as the whole.
+        if (status.activity) {
+          setActivity({
+            kind: status.activity.kind,
+            text: status.activity.tail,
+            partial: true,
+            ...(status.activity.outputTokens !== undefined ? { outputTokens: status.activity.outputTokens } : {}),
+          });
+        }
       } else if (status.phase === 'error' && status.message) {
         setAdviceError(status.message);
       }
@@ -202,9 +308,31 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
   const value: SessionValue = {
     loading,
     run,
+    adviceHistory: history,
+    selectAdvice: (id: string) => {
+      void (async () => {
+        if (!snapshot) return;
+        const envelope = await window.gd.getAdvice(snapshot.character, id);
+        if (!envelope) return;
+        setAdvice(envelope);
+        setAdviceId(id);
+      })();
+    },
+    newRun: () => {
+      // Nothing is fetched and nothing is written: the whole action is to stop
+      // showing a stored run. The transcript goes with it — it belongs to that run
+      // and would otherwise sit above a Run button as if it were this one's.
+      setAdvice(undefined);
+      setAdviceId(undefined);
+      setActivity(undefined);
+      setAdviceError(undefined);
+    },
     startAdvice: (question?: string) => {
       void (async () => {
         setAdviceError(undefined);
+        // A new run's reasoning is its own; the previous run's would read as a
+        // preamble to it.
+        setActivity(undefined);
         try {
           const { runId } = await window.gd.startAdvise(question ? { question } : {});
           // Optimistic, and superseded by the first push a moment later. Without
@@ -249,6 +377,8 @@ export function SessionProvider({ children }: { children: ReactNode }): ReactNod
   if (bootstrap) value.bootstrap = bootstrap;
   if (snapshot) value.snapshot = snapshot;
   if (advice) value.advice = advice;
+  if (activity) value.activity = activity;
+  if (adviceId) value.adviceId = adviceId;
   if (adviceError) value.adviceError = adviceError;
   if (progress) value.progress = progress;
   if (error) value.error = error;

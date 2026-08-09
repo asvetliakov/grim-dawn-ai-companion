@@ -8,8 +8,10 @@
 
 import { useState } from 'react';
 
-import type { Bootstrap, Difficulty, UiSnapshot } from '../../../shared/ipc.js';
+import type { AdviceRunRef, Bootstrap, Difficulty, UiSnapshot } from '../../../shared/ipc.js';
 import { DIFFICULTY_CHOICES } from '../../../shared/ipc.js';
+import { ExplainedButton } from './ExplainedButton.js';
+import { RunPicker } from './RunPicker.js';
 
 export function Header({
   bootstrap,
@@ -17,20 +19,30 @@ export function Header({
   loading,
   hasAdvice = false,
   runningAdvice = false,
+  history = [],
+  adviceId,
   onCharacter,
   onDifficulty,
   onRefresh,
   onRunAdvice,
+  onSelectAdvice,
+  onNewRun,
 }: {
   bootstrap?: Bootstrap;
   snapshot?: UiSnapshot;
   loading: boolean;
   hasAdvice?: boolean;
   runningAdvice?: boolean;
+  /** Every stored run for this character, newest first. */
+  history?: readonly AdviceRunRef[];
+  adviceId?: string;
   onCharacter: (name: string) => void;
   onDifficulty: (difficulty: Difficulty | undefined) => void;
   onRefresh: () => void;
   onRunAdvice?: () => void;
+  onSelectAdvice?: (id: string) => void;
+  /** Put the open run away, so a new one can be started. Deletes nothing. */
+  onNewRun?: () => void;
 }): React.ReactNode {
   const [showPaths, setShowPaths] = useState(false);
   const characters = bootstrap?.characters ?? [];
@@ -71,23 +83,74 @@ export function Header({
         </select>
       </label>
 
-      <button type="button" className="chrome-button" onClick={onRefresh} disabled={loading}>
-        {loading ? 'Reading…' : 'Refresh'}
-      </button>
+      {/*
+        Refresh re-reads the save. Nothing else: not the item database, not a run
+        in flight, not the answer on screen.
+
+        Which is worth saying, because all three are the natural worry — and the
+        third is the reason this button is the last step of the loop the app is
+        for. Play, come back, refresh, and the plan you are working through says
+        which of its moves you have made.
+      */}
+      <ExplainedButton
+        className="chrome-button"
+        label={loading ? 'Reading…' : 'Refresh'}
+        disabled={loading}
+        onClick={onRefresh}
+        note={{
+          title: 'Read your save file again',
+          body: runningAdvice
+            ? 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. The question already being asked is not affected: it has everything it needs, and it is answering about the gear it started with.'
+            : 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. An answer you have open stays open, and the green DONE and amber CHANGED stamps on it are worked out again from what you are wearing now.',
+        }}
+      />
 
       <div className="header-spacer" />
 
-      {/* The app's one expensive action, where an expensive action belongs.
-          It is also in the advice panel, next to what it produces. */}
-      <button
-        type="button"
-        className="chrome-button primary"
-        onClick={onRunAdvice}
-        disabled={runningAdvice || !onRunAdvice || !snapshot}
-        title="Compile the dossier and ask the model — several minutes"
-      >
-        {runningAdvice ? 'Thinking…' : hasAdvice ? 'Re-run advice' : 'Run advice'}
-      </button>
+      {/*
+        The advice controls, up here as well as in the panel — the panel is below
+        the loadout and scrolls with it, so on a fourteen-slot character it can be
+        entirely off screen while the marks it produced are still on the gear.
+        "Which answer is this, and how do I get a new one" is exactly the question
+        that arises then.
+
+        One control at a time, and never both. With an answer open there is no Run
+        button: a second run costs eight minutes and a few dollars and does not
+        replace the answer, so offering it beside one is inviting an accident. `New
+        run` puts the answer away — it stays in the picker — and the Run button
+        comes back with it.
+      */}
+      <div className="header-advice">
+        {onSelectAdvice && <RunPicker history={history} {...(adviceId ? { adviceId } : {})} onSelect={onSelectAdvice} />}
+        {hasAdvice && onNewRun && (
+          <ExplainedButton
+            className="chrome-button subtle"
+            label="New run"
+            disabled={runningAdvice}
+            onClick={onNewRun}
+            note={{
+              title: 'Put this answer away and start fresh',
+              body: 'Nothing is deleted and nothing is spent — this answer stays in the list next to the button, and you can open it again whenever you like. Use it when you have changed something the plan did not mention and want to ask again.',
+            }}
+          />
+        )}
+        {/* The app's one expensive action, where an expensive action belongs.
+            It is also in the advice panel, next to what it produces. */}
+        {(!hasAdvice || runningAdvice) && (
+          <ExplainedButton
+            className="chrome-button primary"
+            label={runningAdvice ? 'Thinking…' : 'Run advice'}
+            disabled={runningAdvice || !onRunAdvice || !snapshot}
+            {...(onRunAdvice ? { onClick: onRunAdvice } : {})}
+            note={{
+              title: runningAdvice ? 'Already asking' : 'Ask the model what to change',
+              body: runningAdvice
+                ? 'One question at a time. Cancel it in the Advice panel below if you would rather ask something else — two at once would cost two answers, and the second would be about gear the first has already moved.'
+                : 'Everything this character can reach goes to the model in one go — worn gear, both weapon sets, bags, stashes, learned blueprints and what the factions will sell you — and it comes back with a recommendation for every slot. Takes about eight minutes and a few dollars.',
+            }}
+          />
+        )}
+      </div>
 
       <button
         type="button"

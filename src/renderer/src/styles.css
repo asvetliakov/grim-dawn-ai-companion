@@ -44,6 +44,9 @@
   --bad: #e07a6b;
   --good: #8fc271;
   --lit: #ffd76e;
+  /* "This item is spent" — an extraction destroys it. Off the red/amber/green
+     scale on purpose: see `.action-destroy`. */
+  --spend: #b07bf5;
 
   --rarity-common: #ece4d3;
   --rarity-magical: #ffd76e;
@@ -176,6 +179,23 @@ h3 {
   min-width: 170px;
 }
 
+/*
+ * One height for every control in a toolbar row.
+ *
+ * Set rather than left to the content, because the row mixes a 15 px select, a
+ * 14 px button and a 12 px one — three different line heights, and so three
+ * different heights sitting on one baseline, which reads as a row that has not
+ * been laid out. `border-box` so the borders and padding they each carry come out
+ * of the same 30 px rather than adding to it.
+ */
+.field select,
+.advice-runs,
+.chrome-button,
+.run-button {
+  box-sizing: border-box;
+  height: 30px;
+}
+
 .header-spacer {
   flex: 1;
 }
@@ -188,7 +208,19 @@ h3 {
   background: var(--bg-raised);
   border: 1px solid var(--line);
   border-radius: 3px;
-  padding: 6px 16px;
+  /*
+   * Centred by the box, not by padding.
+   *
+   * These buttons have a fixed height (below) and inherit the body's line-height,
+   * which is taller than the space 6 px of padding leaves them — so the line box
+   * was placed under the padding and spilled out of the bottom, sitting the label a
+   * pixel or two low. Symmetrical padding does not fix that; a flex box that centres
+   * both ways does, at any font size or height.
+   */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
   cursor: pointer;
 }
 
@@ -386,10 +418,20 @@ h3 {
 .advice-header {
   display: flex;
   align-items: center;
-  gap: 16px;
+  /* Wraps rather than squeezing: the row carries a title, a run picker whose
+     label is a whole sentence, two buttons and — mid-run — a phase, a clock and
+     a token count. On a narrow window the alternative to wrapping is a Clear
+     button pushed half out of the panel, which is what it was doing. */
+  flex-wrap: wrap;
+  gap: 8px 16px;
   margin-bottom: 12px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 8px;
+}
+
+/* Everything from here on is a control, so it goes to the right edge together. */
+.advice-header .header-spacer {
+  flex: 1 1 auto;
 }
 
 .loadout-header h2,
@@ -704,8 +746,48 @@ h3 {
   padding-left: 4px;
 }
 
+/*
+ * A placeholder sits on the arrow's line.
+ *
+ * The two cards in a row are 34 px tall and a bare `—` is one line of text, so
+ * the grid's `align-items: center` put it in the middle of the *row* while the
+ * arrow beside it centred on the taller card — close enough to look like a
+ * mistake rather than a difference. Given the card's height it lands on the same
+ * baseline as everything else in the row.
+ */
+.face-empty,
+.face-locked {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+}
+
 .face-locked.waiting {
   color: var(--line);
+}
+
+/*
+ * A control explaining itself, in the window's own panel rather than the OS's.
+ *
+ * Narrower than an item panel: this is two sentences of prose, and prose set to
+ * the width of a stat block is hard to read across.
+ */
+/* Two classes, so it beats `.tooltip`'s own width whatever order they land in. */
+.tooltip.control-note {
+  max-width: 340px;
+  user-select: text;
+}
+
+.control-note-title {
+  font-size: 14px;
+  color: var(--accent);
+}
+
+.control-note-body {
+  margin-top: 4px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--ink-dim);
 }
 
 /* --- advice ------------------------------------------------------------- */
@@ -787,10 +869,233 @@ h3 {
  * ones by name is the whole point: an item quietly missing from the advice looks
  * exactly like advice that never mentioned it.
  */
-.advice-stale {
+.advice-stale,
+.advice-drift {
   margin: 10px 0 0;
   font-size: 13px;
   color: var(--accent);
+}
+
+/* Green, and above the amber one: the plan being carried out is the good half of
+   the same comparison, and it must not be read as part of the warning. */
+.advice-done {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--good);
+}
+
+/*
+ * How a slot stands against the run, under its name.
+ *
+ * A word rather than a colour alone: `DONE` and `CHANGED` are opposite readings
+ * of the same comparison and the reader has to be able to tell them apart at a
+ * glance, in a column 84 px wide, without a legend.
+ */
+.slot-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 3px;
+  padding: 0 4px 0 3px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  /* A border, so it reads as a stamp on the row rather than as a third line of
+     the slot's name. The glyph carries the meaning at a glance and the word
+     settles which of the two it is — the same division of labour the container
+     marks use. */
+  border: 1px solid currentColor;
+  border-radius: 3px;
+}
+
+.slot-state.done {
+  color: var(--good);
+  background: color-mix(in srgb, var(--good) 12%, transparent);
+}
+
+.slot-state.changed {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+/* The row itself recedes: a finished move is a record, not an instruction. */
+.slot-row.done .slot-reason,
+.slot-row.done .slot-arrow {
+  opacity: 0.55;
+}
+
+/* Same in the loadout: the verb stays, the urgency goes. */
+.verdict-tag.done {
+  color: var(--ink-faint);
+  border-color: var(--line-soft);
+  text-decoration: line-through;
+}
+
+/* A move already made. Dimmed and struck rather than dropped — the row is why
+   the rest of the plan holds together, and a table that silently loses rows
+   between launches cannot be trusted to be complete. */
+.verdict-table tbody.done th[scope='row'],
+.verdict-table tbody.done td {
+  color: var(--ink-faint);
+  text-decoration: line-through;
+}
+
+.verdict-table tbody.done .verdict-detail td {
+  text-decoration: none;
+}
+
+/*
+ * The advice controls in the header: the run picker, and whichever one of `New run`
+ * and `Run advice` applies — never both.
+ *
+ * They are here *as well as* in the advice panel because the panel is below the
+ * loadout and scrolls with it — on a fourteen-slot character the whole panel can
+ * be off screen while the marks it produced are still painted on the gear, and
+ * "which run am I looking at" is exactly the question that arises then.
+ */
+.header-advice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/*
+ * Which stored run is on screen.
+ *
+ * Wide, because the label is the run's identity — the question that was asked, or
+ * the verdict count, then when and what it cost — and truncating that turns the
+ * picker back into a list of timestamps.
+ */
+.advice-runs {
+  font: inherit;
+  font-size: 12px;
+  max-width: 340px;
+  min-width: 0;
+  color: var(--ink-dim);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+/*
+ * Narrower inside the panel than in the header.
+ *
+ * Same control, tighter row: the panel is ~690 px and the header is the window, and
+ * at 340 px the picker pushed `New run` onto a second line — a wrapped row is the
+ * right answer to a squeezed one, but not when the fix is 100 px of a label whose
+ * full text is in the open list anyway.
+ */
+.advice-panel .advice-runs {
+  max-width: 230px;
+}
+
+/*
+ * `New run` — quieter than the run it replaces in the row, and **not red**.
+ *
+ * It was red when it was `Clear` and deleted the answer it sat beside. It does not
+ * delete anything now: it stops showing the open answer, which stays in the picker.
+ * A red hover on that would be a warning about nothing, and the one place this
+ * window uses `--bad` is where something is actually lost.
+ */
+.run-button.subtle {
+  color: var(--ink-dim);
+  font-size: 13px;
+  padding: 0 10px;
+}
+
+/*
+ * The model's own writing, live and afterwards.
+ *
+ * The **expanded** height is capped and scrolls, rather than growing: the text
+ * arrives several times a second, and a box that sized itself to its contents
+ * would reflow the panel — and the loadout above it — continuously for twelve
+ * minutes. The **collapsed** height is one line, so a finished run's reasoning is
+ * available without being in the way of the answer it produced.
+ */
+.activity-log {
+  margin: 8px 0 0;
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+}
+
+/* The whole header is the toggle. A caret alone is a 10 px target. */
+.activity-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--ink-dim);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.activity-head:hover {
+  color: var(--ink);
+}
+
+.activity-caret {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+}
+
+.activity-kind {
+  flex: 0 0 auto;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.activity-count {
+  flex: 0 0 auto;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Collapsed, the newest line is what says the run is alive — so it gets whatever
+   width is left and gives up gracefully rather than wrapping the header. */
+.activity-peek {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink-faint);
+}
+
+.activity-text {
+  max-height: 180px;
+  margin: 0;
+  padding: 0 8px 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-faint);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  /* It is a transcript of the reader's own build; selecting a line out of it is a
+     reasonable thing to want. */
+  user-select: text;
+}
+
+/* A window that joined a run in progress has the tail and not the beginning, and
+   says so rather than presenting a fragment as the whole. */
+.activity-note {
+  color: var(--accent);
+}
+
+/* What it is doing inside the phase, beside the phase label. */
+.run-activity {
+  color: var(--ink-faint);
+  font-size: 12px;
 }
 
 /* What the run cost. Two calls and four dollars is not something a user should
@@ -813,6 +1118,12 @@ h3 {
 }
 
 .advice-summary {
+  color: var(--ink);
+}
+
+/* Brighter than the paragraph it ends: starting on the empty state must not read
+   as having lost the answers that are still there. */
+.advice-kept {
   color: var(--ink);
 }
 
@@ -923,6 +1234,7 @@ h3 {
   margin-right: 12px;
 }
 
+.next-levels h3,
 .hold-list h3 {
   margin: 12px 0 4px;
   font-size: 13px;
@@ -931,14 +1243,26 @@ h3 {
   color: var(--ink-dim);
 }
 
+.next-levels ul,
 .hold-list ul {
   margin: 0;
   padding-left: 20px;
   font-size: 14px;
 }
 
+.next-levels li,
 .hold-list li {
   cursor: pointer;
+}
+
+/* The threshold is the thing being decided, so it reads like the hold's own
+   "until level 84" — same amber, same meaning: this is not today. */
+.level-threshold {
+  color: var(--accent);
+}
+
+.level-unlocks {
+  color: var(--ink-dim);
 }
 
 .hold-until {
@@ -1367,26 +1691,42 @@ h3 {
 /*
  * An item the plan asks you to act on, marked for as long as the run stands.
  *
- * A corner flag rather than a second border: an item can be both actionable and
- * the one under the pointer, and two borders competing for the same four edges
- * would make the pointed-at one harder to find rather than easier — which is
- * the whole job of the brighter mark.
+ * A **bar along the bottom edge**, plus a faint tint, plus the glyph badge in the
+ * corner. Two earlier drafts were wrong in opposite directions and both were
+ * reported within a minute of being shown, which is what settled the shape.
+ *
+ * A **corner flag** was too small: 11 px inside a 32 px cell in a grid of two
+ * hundred, sitting on top of an icon that already has colour in that corner.
+ *
+ * A **full ring** was worse, and the interesting failure. It is perfectly
+ * visible, and it reads as *lit* — every marked cell looked like the answer to
+ * "what am I pointing at", which is the question the hover highlight exists to
+ * answer. Dimming it did not help, because the problem was never brightness: a
+ * border around a cell is how this window says "this one", and sixteen standing
+ * marks cannot borrow that vocabulary. A **border is a state; a bar is an
+ * annotation** — so the mark takes an edge the highlight never uses, and the four
+ * sides stay the pointer's alone.
  *
  * Coloured by *what* the action is. Putting something on now, keeping it for a
- * threshold, and destroying it for the component inside are three different
- * instructions, and one green flag for all three turns a stash of things to
- * wait for into a stash of upgrades.
+ * threshold, spending it in an extraction and selling it are four different
+ * instructions, and one colour for all four turns a stash of things to wait for
+ * into a stash of upgrades.
  */
 .item-cell.action::before,
 .material-row.action::before {
   content: '';
   position: absolute;
-  top: 0;
-  left: 0;
+  inset: auto 0 0 0;
   z-index: 1;
-  border-top: 11px solid var(--action);
-  border-right: 11px solid transparent;
+  height: 3px;
+  background: var(--action);
   pointer-events: none;
+}
+
+/* Faint enough not to read as a fill, present enough to survive a busy icon —
+   the bar alone can be hidden by dark art along the bottom row of pixels. */
+.item-cell.action {
+  background: color-mix(in srgb, var(--action) 9%, transparent);
 }
 
 /*
@@ -1428,15 +1768,26 @@ h3 {
   --action: var(--accent);
 }
 
-/* The extraction spends this item. Red is not decoration here. */
-.action-destroy {
+/*
+ * Red is the *sell* pile, which is where the traffic-light reading puts it:
+ * green go, amber wait, red stop carrying this. It also happens to be the
+ * commonest mark by a wide margin — thirteen of the sixteen on the first live
+ * run — and it spent that run in `--ink-faint`, which on a dark ground is the
+ * one colour a reader scanning a stash will not find.
+ */
+.action-sell {
   --action: var(--bad);
 }
 
-/* Also going away, but by choice rather than as the price of a move — so the
-   same warm end of the wheel, dimmer: a sell is never urgent. */
-.action-sell {
-  --action: var(--ink-faint);
+/*
+ * An extraction spends this item to get the component out of it, and that is not
+ * the same instruction as "sell". Violet because it is the one mark that is
+ * deliberately outside the traffic light: red/amber/green is a scale of urgency,
+ * and this is not a point on it — it is the price of a move somewhere else, and
+ * it is irreversible.
+ */
+.action-destroy {
+  --action: var(--spend);
 }
 
 .material-row {
@@ -1448,7 +1799,10 @@ h3 {
 }
 
 /* How many items in this container the plan wants moved, and to what end. The
-   dot says "something in here"; the numbers say whether it is worth opening. */
+   dot says "something in here"; the numbers say whether it is worth opening.
+   The colour comes from the same `.action-<kind>` class the flags and the legend
+   use — a fourth kind must not be able to arrive here with no colour, which is
+   exactly what the separate `.todo-*` set let happen to `sell`. */
 .tab-todo {
   margin-left: 5px;
   padding: 0 5px;
@@ -1456,18 +1810,6 @@ h3 {
   color: var(--bg);
   background: var(--action);
   border-radius: 8px;
-}
-
-.todo-equip {
-  --action: var(--good);
-}
-
-.todo-hold {
-  --action: var(--accent);
-}
-
-.todo-destroy {
-  --action: var(--bad);
 }
 
 /* What the corner flags mean, said once. It only appears when there are flags
@@ -1481,10 +1823,25 @@ h3 {
   color: var(--ink-dim);
 }
 
+/* A button because it does something — hovering it lights its own count — but
+   drawn as the text it was, since it is a legend and not a control the reader
+   goes looking for. */
 .legend-item {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: default;
+}
+
+.legend-item:hover,
+.legend-item:focus-visible {
+  color: var(--ink);
+  outline: none;
 }
 
 /* The same shape, colour and glyph as the badge on the item — a legend that does
@@ -1777,6 +2134,13 @@ h3 {
 
 /* The threshold that ends a hold, in the colour a threshold is written in
    everywhere else in this window. */
+/* Green, because a fit is part of the gain rather than part of the price. */
+.action-fit {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--good);
+}
+
 .action-until {
   margin-top: 5px;
   font-size: 13px;
@@ -1960,6 +2324,7 @@ h3 {
 .stats-note,
 .advice-summary,
 .key-moves li,
+.next-levels li,
 .hold-list li {
   overflow-wrap: anywhere;
 }

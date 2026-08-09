@@ -20,7 +20,13 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:c
 import { tmpdir } from 'node:os';
 
 import { ADVISOR_SYSTEM_PROMPT } from './prompt.js';
-import { parseAdvice, type AdvisorProvider, type AdvisorRequest, type AdvisorResult } from './provider.js';
+import {
+  parseAdvice,
+  type ActivityListener,
+  type AdvisorProvider,
+  type AdvisorRequest,
+  type AdvisorResult,
+} from './provider.js';
 
 export const CLAUDE_CLI_ID = 'claude-cli';
 
@@ -97,11 +103,19 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
       }
     },
 
-    async advise(req: AdvisorRequest, signal?: AbortSignal): Promise<AdvisorResult> {
+    async advise(req: AdvisorRequest, signal?: AbortSignal, onActivity?: ActivityListener): Promise<AdvisorResult> {
       const args = [
         '-p',
+        // `stream-json` rather than `json`, for one reason: a run is eight to
+        // twelve minutes and the plain envelope arrives all at once at the end,
+        // so there is nothing to show in between and no way to tell a working
+        // call from a wedged one. The *last* line of a stream is the identical
+        // `type: "result"` envelope, so this costs the parser nothing — see
+        // `envelopeFrom`. `--verbose` is required by the CLI for this format.
         '--output-format',
-        'json',
+        'stream-json',
+        '--include-partial-messages',
+        '--verbose',
         '--model',
         model,
         '--effort',
@@ -113,7 +127,7 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
         systemPrompt,
       ];
 
-      const proc = await run(spawn, binary, args, buildInput(req), timeoutMs, signal);
+      const proc = await run(spawn, binary, args, buildInput(req), timeoutMs, signal, onActivity);
 
       if (proc.timedOut) {
         throw new Error(
@@ -124,10 +138,8 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
         throw new Error(`claude CLI exited ${proc.code ?? 'by signal'}${tail(proc.stderr)}`);
       }
 
-      let envelope: Envelope;
-      try {
-        envelope = JSON.parse(proc.stdout) as Envelope;
-      } catch {
+      const envelope = envelopeFrom(proc.stdout);
+      if (!envelope) {
         throw new Error(
           `claude CLI did not return JSON — stdout began: ${JSON.stringify(proc.stdout.slice(0, 200))}`,
         );
@@ -155,6 +167,103 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
         ...(Object.keys(usage).length ? { usage } : {}),
       };
     },
+  };
+}
+
+/**
+ * The result envelope out of whatever the CLI printed.
+ *
+ * A stream ends with one `{"type":"result",…}` line whose fields are the same
+ * ones `--output-format json` prints on its own, so both formats are read here by
+ * the same code — which is what makes the switch to streaming a change to the
+ * *invocation* and not to the parsing. The plain-object branch is not dead code
+ * insurance either: `createMockProvider` and the tests print one object.
+ */
+function envelopeFrom(stdout: string): Envelope | undefined {
+  const trimmed = stdout.trim();
+  if (!trimmed) return undefined;
+
+  // Backwards, because the result is the last thing printed and everything
+  // before it is a stream event we have already reacted to.
+  const lines = trimmed.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (!line.startsWith('{')) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const type = (parsed as { type?: unknown }).type;
+    if (type === undefined || type === 'result') return parsed as Envelope;
+  }
+  // A single pretty-printed object spanning several lines.
+  try {
+    return JSON.parse(trimmed) as Envelope;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Turn the stream's line protocol into activity, one chunk of stdout at a time.
+ *
+ * Stateful because chunk boundaries fall wherever the pipe puts them, which is
+ * routinely mid-line and occasionally mid-multi-byte-character; the partial tail
+ * is carried to the next chunk. Anything unrecognised is skipped in silence — the
+ * event vocabulary is the CLI's and it is free to grow, and a new event kind must
+ * not be able to break a twelve-minute run that is otherwise going fine.
+ */
+function activityReader(onActivity: ActivityListener): (chunk: string) => void {
+  let pending = '';
+  let outputTokens: number | undefined;
+
+  return (chunk: string): void => {
+    pending += chunk;
+    const lines = pending.split('\n');
+    // The last element is either '' (the chunk ended on a newline) or a partial
+    // line; either way it is what carries over.
+    pending = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (!line.startsWith('{')) continue;
+      let event: StreamLine;
+      try {
+        event = JSON.parse(line) as StreamLine;
+      } catch {
+        continue;
+      }
+
+      // The CLI's own running estimate, which is cheaper and steadier than
+      // counting deltas — and it counts thinking tokens the deltas do not carry.
+      if (event.type === 'system' && event.subtype === 'thinking_tokens') {
+        if (typeof event.estimated_tokens === 'number') outputTokens = event.estimated_tokens;
+        continue;
+      }
+      if (event.type !== 'stream_event') continue;
+      const delta = event.event?.delta;
+      const usage = event.event?.usage;
+      if (typeof usage?.output_tokens === 'number') outputTokens = usage.output_tokens;
+      const text = delta?.thinking ?? delta?.text;
+      if (typeof text !== 'string' || text === '') continue;
+      onActivity({
+        kind: delta?.thinking !== undefined ? 'thinking' : 'answer',
+        text,
+        ...(outputTokens !== undefined ? { outputTokens } : {}),
+      });
+    }
+  };
+}
+
+/** As much of the stream vocabulary as this reads. Everything else is skipped. */
+interface StreamLine {
+  type?: string;
+  subtype?: string;
+  estimated_tokens?: number;
+  event?: {
+    delta?: { thinking?: string; text?: string };
+    usage?: { output_tokens?: number };
   };
 }
 
@@ -195,6 +304,7 @@ function run(
   input: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
+  onActivity?: ActivityListener,
 ): Promise<RunResult> {
   return new Promise<RunResult>((resolve, reject) => {
     let child: ChildProcess;
@@ -249,8 +359,19 @@ function run(
 
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
+    // Still accumulated in full: the result envelope is the last line, and the
+    // error paths quote the beginning of stdout. The reader is a second pass over
+    // the same bytes, and the whole stream is a few hundred kB.
+    const readActivity = onActivity ? activityReader(onActivity) : undefined;
     child.stdout?.on('data', (chunk: string) => {
       stdout += chunk;
+      // A listener that throws is the consumer's problem, not the run's — this is
+      // a progress report on a call that has already been paid for.
+      try {
+        readActivity?.(chunk);
+      } catch {
+        /* ignore */
+      }
     });
     child.stderr?.on('data', (chunk: string) => {
       stderr += chunk;

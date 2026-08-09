@@ -101,6 +101,21 @@ export interface SocketMove {
 }
 
 /**
+ * The socketables this slot is told to fit beyond the one its verdict is named
+ * for — see `socketFitSchema` in the provider.
+ *
+ * These are what makes an `EQUIP` proposal complete. "Wear Maiven's Lens" and
+ * "wear Maiven's Lens with a Dread Skull in it and a Sagethorn Powder on it" are
+ * different items with different stats, and the second is the one the advisor
+ * actually argued for.
+ */
+export function socketFits(advice: SlotAdvice | undefined): readonly SocketFit[] {
+  return advice?.plan?.fits ?? [];
+}
+
+export type SocketFit = NonNullable<PlanVerdict['fits']>[number];
+
+/**
  * The rendered rows carry everything but the verdict *word* — `verdictRows`
  * turns it into `replaces` and an action string — so the label comes back off
  * the plan itself. Worth the second lookup: "HOLD" and "SELL" are different
@@ -205,6 +220,122 @@ export function actionMarks(envelope: AdviseEnvelope | null): Record<string, Act
       else if (m.kind === 'hold') mark(id, 'hold');
       else if (m.incoming) mark(id, 'equip');
     }
+  }
+  return out;
+}
+
+/** What a slot is holding, and carrying, right now. */
+export interface WornSlot {
+  itemId: string;
+  /** Display name, so an item that was only re-socketed can be recognised. */
+  display: string;
+  componentId?: string;
+  augmentId?: string;
+}
+
+/** One slot whose contents no longer match what the run was written against. */
+export interface SlotDrift {
+  slot: string;
+  /** What was in it when the run started; empty if the slot was empty. */
+  wasId: string;
+  /** What is in it now; empty if the slot is now empty. */
+  nowId: string;
+  /**
+   * True when what is in it now is exactly what the plan told this slot to end up
+   * with — the advice was **carried out**, not overtaken.
+   */
+  applied: boolean;
+  /**
+   * Whether the *item* changed or only what it carries.
+   *
+   * These need telling apart because an item's document id **includes its
+   * attachments** — `itemId` hashes the component's and augment's names and seeds
+   * along with the base — so socketing a component changes the id of an item that
+   * is otherwise untouched. Reported as an item change, that reads "Feet now holds
+   * Bloodhound Greaves (was Bloodhound Greaves)".
+   */
+  changed: 'item' | 'sockets';
+  /** For a socket change, what is in the sockets now — by name where known. */
+  socketNames: string[];
+}
+
+/**
+ * Where the live loadout has moved away from the one the run was written for.
+ *
+ * The whole reason this is per-slot and not a single "is it stale" bit: **acting
+ * on the advice is what makes the loadout differ from it.** A run that says
+ * "equip Maiven's Lens" describes a save without Maiven's Lens equipped, so the
+ * instant the user does what it says, a naive fingerprint check calls the answer
+ * stale and — in the design that suggests itself first — throws away a twelve-
+ * minute, four-dollar answer as its reward for being followed. Splitting the two
+ * cases costs one comparison against the plan's own `nextId`, and turns the
+ * check from a nuisance into the most useful line in the panel: *this move is
+ * done*.
+ *
+ * A run stored before `worn` existed reports nothing rather than guessing.
+ */
+export function loadoutDrift(
+  envelope: AdviseEnvelope | null,
+  worn: Record<string, WornSlot>,
+): SlotDrift[] {
+  const before = envelope?.worn;
+  if (!before) return [];
+  const socketsBefore = envelope.wornSockets ?? {};
+
+  // The item each slot was told to end up holding, by the same slot key the
+  // verdict table joins on. Only a replacement changes the item, so everything
+  // else expects to find what it started with.
+  const equipTo = new Map<string, string>();
+  for (const row of envelope.verdictRows) {
+    if (row.replaces && row.nextId) equipTo.set(slotKey(row.slot), row.nextId);
+  }
+
+  // Every socketable the plan asked a slot to end up carrying: the one its verdict
+  // is named for, plus anything in `fits`. Socketables are identified by record
+  // path, so an installed copy and a proposed one share an id — which is what
+  // makes "is it in there yet" answerable at all.
+  const socketTo = new Map<string, Set<string>>();
+  for (const v of envelope.plan?.verdicts ?? []) {
+    const wanted = new Set<string>();
+    if (SOCKET_VERDICTS.has(v.verdict) && v.targetId) wanted.add(v.targetId);
+    for (const fit of v.fits ?? []) wanted.add(fit.id);
+    if (wanted.size > 0) socketTo.set(slotKey(v.slot), wanted);
+  }
+
+  const slots = new Set([...Object.keys(before), ...Object.keys(worn)]);
+  const out: SlotDrift[] = [];
+  for (const slot of slots) {
+    const wasId = before[slot] ?? '';
+    const now = worn[slot];
+    const nowId = now?.itemId ?? '';
+    if (wasId === nowId) continue;
+
+    const key = slotKey(slot);
+    const wasSockets = socketsBefore[slot] ?? {};
+    const nowSockets = [now?.componentId, now?.augmentId].filter((id): id is string => id !== undefined);
+    const socketsMoved =
+      (wasSockets.component ?? '') !== (now?.componentId ?? '') ||
+      (wasSockets.augment ?? '') !== (now?.augmentId ?? '');
+
+    // Same name, same slot, different id, and its sockets moved: the item was
+    // re-socketed rather than replaced. The name comparison is what rules out the
+    // coincidence of a *different* item arriving with different sockets — and the
+    // stored name is available because the envelope carries `itemNames`.
+    const sameItem =
+      socketsMoved && now !== undefined && wasId !== '' && envelope.itemNames[wasId] === now.display;
+
+    const wanted = socketTo.get(key);
+    const socketApplied = wanted !== undefined && nowSockets.some((id) => wanted.has(id));
+    const equipApplied = nowId !== '' && equipTo.get(key) === nowId;
+
+    out.push({
+      slot,
+      wasId,
+      nowId,
+      applied: equipApplied || (sameItem && socketApplied) || (socketApplied && !equipTo.has(key)),
+      changed: sameItem ? 'sockets' : 'item',
+      socketNames: nowSockets,
+    });
   }
   return out;
 }

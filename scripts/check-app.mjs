@@ -2,7 +2,7 @@
  * Behaviour checks against the real Electron app.
  *
  * Storybook covers the renderer and vitest covers the core; this covers the seam
- * between them, which neither can reach — the preload bridge, the nine IPC
+ * between them, which neither can reach — the preload bridge, the ten IPC
  * channels, the main-process run manager, and the advice file. It launches the
  * built app, clicks Advise, watches the phases, and reads the panel.
  *
@@ -37,9 +37,10 @@ function check(name, ok, detail = '') {
  */
 function dataDirectory() {
   if (process.env.GD_DATA_DIR) {
-    // Cold advice, warm everything else. Leaving the last run in place makes the
-    // "locked before any run" check fail *by working*, since an app restart is
-    // supposed to re-show stored advice.
+    // Cold advice, warm everything else: the run below is meant to be this
+    // character's first, and the picker's option count is asserted against that.
+    // (Since the window opens on the empty state either way, stored runs no longer
+    // change what the *first* checks see — only how many answers are on the list.)
     if (!process.env.KEEP_ADVICE) {
       rmSync(join(process.env.GD_DATA_DIR, 'advice'), { recursive: true, force: true });
     }
@@ -113,23 +114,61 @@ check('and the proposal column is no longer locked', (await page.locator('.face-
 // The file, and re-showing it after a reload
 // ---------------------------------------------------------------------------
 
-const adviceDir = join(dataDir, 'advice');
+// One directory per character, one file per run: runs are kept rather than
+// overwritten, because each is minutes and real money.
+const adviceDir = join(dataDir, 'advice', character);
 mkdirSync(adviceDir, { recursive: true });
-check(
-  'the run was written to advice/<character>.json',
-  readdirSync(adviceDir).includes(`${character}.json`),
-  readdirSync(adviceDir).join(', '),
-);
-const stored = JSON.parse(readFileSync(join(adviceDir, `${character}.json`), 'utf8'));
+const runFiles = readdirSync(adviceDir).filter((n) => n.endsWith('.json'));
+check('the run was written to advice/<character>/<run>.json', runFiles.length === 1, runFiles.join(', '));
+const stored = JSON.parse(readFileSync(join(adviceDir, runFiles[0] ?? 'missing.json'), 'utf8'));
 check('the stored envelope carries the question', stored.question === QUESTION);
 check('and the table it rendered', Array.isArray(stored.verdictRows), `${stored.verdictRows?.length} row(s)`);
+// And the loadout it was written against, which is what lets a stored run say
+// whether it is still about the save in front of the reader.
+check(
+  'and the loadout it was written against',
+  stored.worn && Object.keys(stored.worn).length > 0,
+  `${Object.keys(stored.worn ?? {}).length} slot(s)`,
+);
+
+// ---------------------------------------------------------------------------
+// New run: a fresh session that keeps the answer
+// ---------------------------------------------------------------------------
+
+// This control used to be `Clear` and used to delete the run it sat beside. It is
+// the button a reader reaches for after acting on a plan — "I have done these, ask
+// me again" — so it had a four-dollar answer one click from gone. Now it selects
+// nothing and destroys nothing, and this is where that is proved: same file on
+// disk, empty panel, Run button back.
+await page.locator('.advice-panel .run-button.subtle').click();
+await page.waitForTimeout(300);
+check('New run empties the panel', (await page.locator('.verdict-table').count()) === 0);
+check('and offers a run again', (await page.locator('.advice-panel .run-button:not(.cancel)').count()) === 1);
+check(
+  'while the answer stays on disk',
+  readdirSync(adviceDir).filter((n) => n.endsWith('.json')).length === 1,
+);
+// And is reachable: the picker is the only door into a stored answer now, so the
+// placeholder plus one run is what has to be there.
+const options = await page.locator('.advice-panel .advice-runs option').allInnerTexts();
+check('and on the list, behind a picker', options.length === 2, options.join(' | '));
+await page.locator('.advice-panel .advice-runs').selectOption({ index: 1 });
+await page.locator('.verdict-table').waitFor({ state: 'visible', timeout: 30_000 });
+check('picking it shows it again', (await page.locator('.verdict-table').count()) === 1);
 
 // A reload is what happens on every hot module replacement in development and on
-// any renderer crash in production. The run lives in main; the window re-asks.
+// any renderer crash in production. The run lives in main; the window comes back to
+// the empty state — deliberately, since reopening last week's plan by itself would
+// put its marks on the gear before the reader asked for them — and the answer is
+// still one pick away.
 await page.reload();
 await page.locator('.loadout-grid').waitFor({ state: 'visible', timeout: 120_000 });
-await page.locator('.verdict-table').waitFor({ state: 'visible', timeout: 60_000 });
-check('a reload re-shows the stored advice', (await page.locator('.verdict-table').count()) === 1);
+await page.waitForTimeout(500);
+check('a reload comes back to the empty state', (await page.locator('.verdict-table').count()) === 0);
+check('with the stored answer still on the list', (await page.locator('.advice-panel .advice-runs option').count()) === 2);
+await page.locator('.advice-panel .advice-runs').selectOption({ index: 1 });
+await page.locator('.verdict-table').waitFor({ state: 'visible', timeout: 30_000 });
+check('and re-shows it when picked', (await page.locator('.verdict-table').count()) === 1);
 
 // The marks, joined against the live grid by document id. A mock's placeholder
 // ids join onto nothing, which is the stale path — and it must say so.

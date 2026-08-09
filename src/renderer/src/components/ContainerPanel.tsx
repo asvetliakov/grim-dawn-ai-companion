@@ -42,7 +42,7 @@ export function ContainerPanel({
 }): React.ReactNode {
   const [tab, setTab] = useState<TabKey>(initialTab);
   const [page, setPage] = useState(0);
-  const { reveal, isHighlighted, actionFor } = useHighlight();
+  const { reveal, isHighlighted, actionFor, highlightKind } = useHighlight();
   // A tab lights for the item being pointed at and counts the ones the plan
   // asks you to act on — "there are three in here" is the reason to open it.
   const marked = (item: UiItem): boolean => isHighlighted(item.docId) || actionFor(item.docId) !== undefined;
@@ -120,7 +120,7 @@ export function ContainerPanel({
                 to keep for later" do not read as the same errand. */}
             {ACTIONS.map(({ kind, title }) =>
               t.todo[kind] > 0 ? (
-                <span className={`tab-todo todo-${kind}`} key={kind} title={title}>
+                <span className={`tab-todo action-${kind}`} key={kind} title={title}>
                   {t.todo[kind]}
                 </span>
               ) : null,
@@ -129,18 +129,34 @@ export function ContainerPanel({
         ))}
       </div>
 
-      {/* The corner flags and the tab counts are the only marks in the window
-          that mean something without being hovered, so they are the only ones
-          that need saying out loud. The same swatch, drawn the same way, in the
-          same colours as the flags themselves. */}
+      {/* The marks and the tab counts are the only things in the window that mean
+          something without being hovered, so they are the only ones that need
+          saying out loud. The same swatch, drawn the same way, in the same
+          colours as the marks themselves.
+
+          Each entry is also the control for its own count: hovering "sell or
+          salvage 13" lights those thirteen cells. The number answers "is it worth
+          opening this tab", and *which thirteen* is the question that comes
+          straight after it — previously answerable only by hovering the advice
+          table row by row. Scoped to the containers, which is what the legend is
+          counting; see `litKind` in `highlight.tsx`. */}
       {marks.length > 0 && (
         <div className="mark-legend">
-          {marks.map(({ kind, legend }) => (
-            <span className={`legend-item action-${kind}`} key={kind}>
+          {marks.map(({ kind, legend, title }) => (
+            <button
+              type="button"
+              className={`legend-item action-${kind}`}
+              key={kind}
+              title={`Highlight everything ${title}`}
+              onMouseEnter={() => highlightKind(kind)}
+              onMouseLeave={() => highlightKind(null)}
+              onFocus={() => highlightKind(kind)}
+              onBlur={() => highlightKind(null)}
+            >
               <span className="legend-flag">{badgeForKind(kind).glyph}</span>
               {legend}
               <span className="legend-count">{totals[kind]}</span>
-            </span>
+            </button>
           ))}
         </div>
       )}
@@ -191,7 +207,7 @@ export function ContainerPanel({
  */
 function MaterialList({ items }: { items: UiItem[] }): React.ReactNode {
   const tooltip = useTooltip();
-  const { isHighlighted, actionFor, adviceFor, highlight } = useHighlight();
+  const { isHighlighted, actionFor, adviceFor, highlight, litKind } = useHighlight();
   if (items.length === 0) return <Empty what="materials" />;
 
   const effect = (item: UiItem): string => item.tooltip.blocks.flatMap((b) => b.lines).join(' · ');
@@ -205,11 +221,12 @@ function MaterialList({ items }: { items: UiItem[] }): React.ReactNode {
       {sorted.map((item) => {
         const action = actionFor(item.docId);
         const mark = primaryMark(adviceFor(item.docId));
+        // Same two ways to be lit as a grid cell: the pointer, or the legend
+        // pointing at this whole kind of action.
+        const lit = isHighlighted(item.docId) || (action !== undefined && action === litKind);
         return (
           <div
-            className={`material-row ${isHighlighted(item.docId) ? 'highlighted' : ''} ${
-              action ? `action action-${action}` : ''
-            }`}
+            className={`material-row ${lit ? 'highlighted' : ''} ${action ? `action action-${action}` : ''}`}
             key={item.docId}
             // The whole row is the hover target, not just the icon — the name is
             // what the eye lands on and the icon is 32 px of it.

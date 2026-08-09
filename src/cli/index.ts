@@ -20,6 +20,8 @@ import {
 import {
   adviseWithRepair,
   buildEnvelope,
+  wornSlots,
+  wornSocketables,
   createProvider,
   verdictRows,
   normalizeName,
@@ -40,6 +42,7 @@ import { characterSavePath, formulasPath, reagentsPath, transferStashPath } from
 import {
   CoverageTracker,
   resolveCharacter,
+  shortHash,
   type ResolvedCharacter,
   type ResolvedItem,
 } from '../core/resolve.js';
@@ -956,7 +959,16 @@ interface DocRequest {
  * layer now: the composition itself lives in `src/core/session.ts`, so the CLI
  * and the window cannot drift into sending different documents.
  */
-function contextFor(db: GameDb, opts: DocRequest): { name: string; input: ContextInput; doc: ContextDoc } {
+function contextFor(
+  db: GameDb,
+  opts: DocRequest,
+): {
+  name: string;
+  input: ContextInput;
+  doc: ContextDoc;
+  worn: Record<string, string>;
+  wornSockets: Record<string, { component?: string; augment?: string }>;
+} {
   const snap = orExit(() =>
     loadSnapshot(db, resolveSettings(), {
       character: opts.char,
@@ -965,7 +977,15 @@ function contextFor(db: GameDb, opts: DocRequest): { name: string; input: Contex
       perGroup: opts.perGroup,
     }),
   );
-  return { name: snap.character, input: snap.input, doc: snap.doc };
+  // The loadout the document describes, so a stored envelope can later say
+  // whether it is still describing the save in front of the reader.
+  return {
+    name: snap.character,
+    input: snap.input,
+    doc: snap.doc,
+    worn: wornSlots(snap.resolved.items),
+    wornSockets: wornSocketables(snap.resolved.items, shortHash),
+  };
 }
 
 program
@@ -1152,7 +1172,7 @@ program
           process.exit(1);
         }
 
-        const { name, input, doc } = contextFor(db, {
+        const { name, input, doc, worn, wornSockets } = contextFor(db, {
           char: opts.char,
           difficulty: opts.difficulty,
           maxTokens: Number(opts.maxTokens),
@@ -1250,6 +1270,8 @@ program
             durationMs: Date.now() - started,
             itemNames: Object.fromEntries([...doc.itemsById].map(([id, item]) => [id, item.display])),
             socketableNames: Object.fromEntries([...doc.socketablesById].map(([id, item]) => [id, item.name])),
+            worn,
+            wornSockets,
           });
           writeFileSync(opts.json, `${JSON.stringify(envelope, null, 2)}\n`);
           console.error(`structured output written to ${opts.json}`);

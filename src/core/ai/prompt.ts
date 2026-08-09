@@ -81,6 +81,9 @@ Then, as the **final element of your answer and nothing after it**, emit exactly
       "targetName": "<the display name that id belongs to>",
       "enablers": ["<item ids whose joint equip is what satisfies this move's requirements>"],
       "componentFrom": "<only for extraction: the host item's id — that host is DESTROYED>",
+      "fits": [
+        { "kind": "component", "id": "<socketable id>", "name": "<its name>" }
+      ],
       "gains": ["+12% Fire Resistance", "+308 Health"],
       "costs": ["-35% Acid Resistance"],
       "reason": "<one line>"
@@ -126,9 +129,10 @@ Rules for the plan block:
 - **Identify everything by its dossier id** — the \`#abc123\` code printed with it. **Components and augments have ids too**, printed next to their names in §5, §7, §8 and §9; use them in \`targetId\`. Ids appearing nowhere in the dossier are treated as hallucinations and rejected.
 - **Give the id *and* the name**: \`itemId\`+\`itemName\`, \`targetId\`+\`targetName\`. The id is what the tool resolves; the name is what proves the id is the one you meant. A pair that disagrees is reported as an error, so copy both from the same dossier line rather than recalling either.
 - Include a verdict for every equipment slot you discuss, including \`KEEP\`.
+- **\`fits\` is how a slot carries a second socketable change.** One verdict per slot has one name, and an item holds a component **and** an augment in independent sockets — so when you tell a slot to do two things, the second one goes in \`fits\`. Use it for: an \`EQUIP\` whose new item you also want socketed (an EQUIP has no \`target\` socketable at all, so *every* component and augment for that item goes here); a \`RE-AUGMENT\` or \`BUY-AUGMENT\` on an item whose component socket you also want filled; any free fill of an empty socket. \`target\`/\`targetId\` stay the socketable the verdict is *named* for; \`fits\` is everything else the slot ends up carrying. At most one \`component\` and one \`augment\` per verdict. **Do not write a socketable recommendation into the prose alone** — a component you argue for in a key move and leave out of the plan is one the tool cannot show, so the user never sees it.
 - \`target\` for a socketable verdict is the **exact dossier name and nothing else** — no \`(loose)\`, no source annotation.
 - \`summary\`, \`keyMoves\` and \`projected\` are not optional extras: they are the machine-readable form of the analysis you just wrote, and a UI renders them instead of re-reading your prose. \`keyMoves\` must contain every multi-slot combination you argued for.
-- \`enablers\`, \`componentFrom\`, \`target\`, \`until\`, \`needs\`, \`gains\`, \`costs\` and \`nextLevels\` are optional; omit them rather than inventing a value.
+- \`enablers\`, \`componentFrom\`, \`fits\`, \`target\`, \`until\`, \`needs\`, \`gains\`, \`costs\` and \`nextLevels\` are optional; omit them rather than inventing a value.
 - \`gains\` and \`costs\` are **required on every verdict that changes anything** — a KEEP may omit them, nothing else may. This is what a UI shows next to the slot, so a move whose gains are only in the prose reads to the user as a move with no benefit.
 - An item named in \`componentFrom\` is destroyed by the extraction: it must not appear in \`hold\`, in \`sell\`, or as the subject of any other verdict.
 - \`gains\` and \`costs\` hold **fully-qualified** stat strings, exactly as the rule above requires of the prose. They are what a UI renders as a delta, so a bare \`+12 Fire\` is unusable there.

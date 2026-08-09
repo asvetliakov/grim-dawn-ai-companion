@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 import { adviceMarks } from '../../shared/advice-marks.js';
-import type { AdviseEnvelope, UiSnapshot } from '../../shared/ipc.js';
+import type { AdviceRunRef, AdviseEnvelope, UiSnapshot } from '../../shared/ipc.js';
 import { actionMarks } from './advice.js';
 import { AdvicePanel } from './components/AdvicePanel.js';
 import { ContainerPanel } from './components/ContainerPanel.js';
@@ -9,12 +9,13 @@ import { Header } from './components/Header.js';
 import { LoadoutPanel } from './components/LoadoutPanel.js';
 import { StatsPanel } from './components/StatsPanel.js';
 import { HighlightProvider, useHighlight } from './highlight.js';
-import { useSession, type AdviseRun } from './session.js';
+import { useSession, type AdviseRun, type RunActivity } from './session.js';
 import { TooltipProvider } from './tooltip.js';
 
 export function App(): React.ReactNode {
   const session = useSession();
-  const { bootstrap, snapshot, advice, run, adviceError, loading, progress, error } = session;
+  const { bootstrap, snapshot, advice, adviceHistory, adviceId, run, activity, adviceError, loading, progress, error } =
+    session;
 
   return (
     <Shell>
@@ -24,10 +25,14 @@ export function App(): React.ReactNode {
         loading={loading}
         hasAdvice={advice !== undefined}
         runningAdvice={run !== null}
+        history={adviceHistory}
+        {...(adviceId ? { adviceId } : {})}
         onCharacter={session.setCharacter}
         onDifficulty={(difficulty) => session.updateSettings({ difficultyOverride: difficulty })}
         onRefresh={session.refresh}
         onRunAdvice={() => session.startAdvice()}
+        onSelectAdvice={session.selectAdvice}
+        onNewRun={session.newRun}
       />
 
       {error && <div className="banner error">{error}</div>}
@@ -38,9 +43,14 @@ export function App(): React.ReactNode {
           snapshot={snapshot}
           advice={advice ?? null}
           run={run}
+          {...(activity ? { activity } : {})}
+          history={adviceHistory}
+          {...(adviceId ? { adviceId } : {})}
           {...(adviceError ? { adviceError } : {})}
           onRunAdvice={session.startAdvice}
           onCancelAdvice={session.cancelAdvice}
+          onSelectAdvice={session.selectAdvice}
+          onNewRun={session.newRun}
         />
       )}
 
@@ -80,17 +90,30 @@ export function Workspace({
   snapshot,
   advice,
   run = null,
+  activity,
+  history = [],
+  adviceId,
   adviceError,
   onRunAdvice,
   onCancelAdvice,
+  onSelectAdvice,
+  onNewRun,
 }: {
   snapshot: UiSnapshot;
   advice: AdviseEnvelope | null;
   /** The run in flight, if any — the panel's phase label and clock come off it. */
   run?: AdviseRun | null;
+  /** What the model has written, live and then afterwards. */
+  activity?: RunActivity;
+  /** Every stored run for this character, newest first. */
+  history?: readonly AdviceRunRef[];
+  adviceId?: string;
   adviceError?: string;
   onRunAdvice?: (question?: string) => void;
   onCancelAdvice?: () => void;
+  onSelectAdvice?: (id: string) => void;
+  /** Put the open run away and offer a fresh one. Deletes nothing. */
+  onNewRun?: () => void;
 }): React.ReactNode {
   const [weaponSet, setWeaponSet] = useState<1 | 2 | null>(null);
   const heldSet: 1 | 2 = snapshot.alternateWeaponSetActive ? 2 : 1;
@@ -119,9 +142,14 @@ export function Workspace({
           snapshot={snapshot}
           advice={advice}
           run={run}
+          {...(activity ? { activity } : {})}
+          history={history}
+          {...(adviceId ? { adviceId } : {})}
           {...(adviceError ? { error: adviceError } : {})}
           {...(onRunAdvice ? { onRun: onRunAdvice } : {})}
           {...(onCancelAdvice ? { onCancel: onCancelAdvice } : {})}
+          {...(onSelectAdvice ? { onSelect: onSelectAdvice } : {})}
+          {...(onNewRun ? { onNewRun } : {})}
         />
       </div>
       <div className="pane pane-stats">

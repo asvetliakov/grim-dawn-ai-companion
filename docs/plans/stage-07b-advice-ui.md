@@ -333,3 +333,199 @@ verifying the pipeline"` because the driver script's question string was reused
 for the live run. The question plumbing is what was being checked, and it round-
 tripped through the envelope and the file; the text is the harness's, not a real
 question.
+
+### Review pass after the live run
+
+Ten pieces of feedback, and the interesting thing about them is where they came
+from: **four were the live run telling us what the plan had no way to say.**
+
+- **`fits` on a verdict.** One verdict per slot has one name, and an item holds a
+  component *and* an augment in independent sockets — so a slot that needs two
+  socketable changes had nowhere to put the second. The Neck `EQUIP` argued in
+  prose for fitting Maiven's Lens with a loose Dread Skull *and* a Sagethorn
+  Powder and the plan carried neither; `projected.notes` contained the sentence
+  *"two free component fills are part of this plan and are not separate verdict
+  rows"*, which is a model working around a schema. `target`/`targetId` stay the
+  socketable the verdict is *named* for and `fits` is everything else. A fit is
+  checked against the item the slot **ends up** holding — the candidate for an
+  `EQUIP` — because checking the outgoing item would clear a component for gear
+  the plan is telling you to take off. It also earns two checks of its own: two
+  fits of one kind is not a legal item state, and a right id with a wrong name is
+  the failure an id-only plan hides.
+- **`nextLevels` was in the schema and rendered nowhere.** Two of the four entries
+  on the live run were *"skip this"* — a recommendation that exists only there,
+  since §12 costs every threshold and a costing with no verdict on it is not
+  advice.
+- **The plan block was printed twice**, once as the Plan tab and once as 17k of
+  raw JSON at the end of the Full answer's 28k. `answerProse` strips it by
+  *parsing* the trailing block rather than trusting its info string: `parseAdvice`
+  accepts a bare fence, so going by the tag alone eats any code block an answer
+  happens to end on — which is exactly what the hostile-answer story caught.
+- **Thirteen sells with no visible mark.** `sell` was `--ink-faint`, which on this
+  ground is the one colour a reader scanning a stash will not find. The mark is
+  now a **flat ring plus a tint plus a glyph**, since a corner flag is 11 px in a
+  32 px cell in a grid of two hundred; **sell is red** and **destroy is violet**,
+  deliberately off the traffic light because spending a host in an extraction is
+  not a point on a scale of urgency. The ring's first draft had an inset glow and
+  every marked cell then read as *highlighted* — reported within a minute of
+  being shown. A standing fact about sixteen items and the transient answer to
+  "what am I pointing at" must differ in kind, not degree, so light belongs to
+  the pointer alone.
+
+Three make a stored answer safe to keep, and they turn on one observation:
+**acting on the advice is what makes the loadout differ from it.** The envelope
+now records `worn` — the loadout the run was written against — and a single
+staleness bit over it would call an answer stale as its reward for being
+followed. Worse, the design that suggests itself next (discard the stored run on
+a mismatch) deletes a twelve-minute, four-dollar answer at the moment the user
+does what it says. `loadoutDrift` splits the comparison: `applied` slots are
+green and their rows struck through, moved slots are named in amber, and the run
+is never dropped. Runs are therefore kept rather than overwritten
+(`advice/<character>/<timestamp>.json`, a picker once there are two, `Clear` for
+the one on screen) — at four dollars each, a second opinion must not be a
+decision to destroy the first answer. The store validates every file on read,
+skips what it does not recognise, and migrates the pre-history flat file once.
+
+And one **correction to this plan's own premises**: the "Facts this stage builds
+on" list says *"No streaming"*. That was true of the invocation, not of the
+backend. `claude --output-format stream-json --include-partial-messages
+--verbose` emits `thinking_delta` and `text_delta` as they are written, plus its
+own `thinking_tokens` estimate — and the **last line of the stream is the same
+`type: "result"` envelope `--output-format json` prints on its own**, so adopting
+it is a change to the invocation and not to the parsing (`envelopeFrom` reads
+both, which also keeps the mock provider and every test working). It matters
+because the honest progress this stage shipped — three phases and a clock —
+cannot distinguish a working run from a wedged one when the phase reads "asking
+the model" for ten minutes. The runner coalesces to four pushes a second and
+keeps a 600-character tail, in a fixed-height box: the deltas arrive faster than
+a frame, and a box that sized itself to its contents would reflow the panel and
+the loadout under it continuously for twelve minutes. Written tokens, never a
+percentage.
+
+Also: `Refresh` and `Run advice` now state in a tooltip what they do to a run in
+flight and to the stored answer, which was the actual question behind the
+feedback — a refresh cannot disturb a run (it holds the snapshot it started
+with) and equally cannot make it answer about the newly-read save.
+
+369 tests, 181 story assertions, 14 app assertions.
+
+### Second review pass
+
+Twelve more pieces of feedback. Both of the substantive ones were about *identity*.
+
+**An item's document id includes its attachments.** `itemId` hashes
+`relicName`/`relicSeed` — the save's word for a component — and
+`augmentName`/`augmentSeed` along with the base and its affixes. So installing the
+component the plan asked for changes the worn item's id while changing nothing
+about which item it is, and the first drift check reported that as *"Feet now holds
+Bloodhound Greaves (was Bloodhound Greaves)"*: useless as a sentence, and the
+opposite of the truth, since what happened is that the reader did what the plan
+said. The envelope now carries `wornSockets` beside `worn` (a separate field, not a
+richer `worn`: changing that value type would fail validation on an already-stored
+run and silently discard a four-dollar answer), `loadoutDrift` classifies each
+moved slot as an item change or a socket change, and a socket move counts as
+**done** when the socketable now installed is the one the plan named — from the
+verdict's `targetId` or from `fits`. Telling "re-socketed" from "replaced" needs
+the stored name as well as the stored id, which the envelope already had.
+
+**A border is a state; a bar is an annotation.** The container mark had become a
+full ring, and it was reported as looking "always highlighted" — twice, the second
+time after the ring had been dimmed. Dimming was the wrong fix, because the problem
+was never brightness: a border around a cell is how this window says *this one*, so
+sixteen standing marks cannot borrow that vocabulary at any opacity. The mark now
+takes an edge the highlight never uses. Three shapes were tried in total — corner
+flag (invisible at 32 px), full ring (reads as lit), bottom bar — and the sequence
+is worth keeping, because each failure was informative and the second one is the
+kind that only shows up in front of a user.
+
+The rest, briefly. The drift notices moved to the **top of the Loadout pane**, with
+a bordered `DONE`/`CHANGED` stamp under each affected slot's name carrying both a
+glyph and a word: the glyph is recognisable in an 84 px column without reading, and
+the word settles which of the two it is. The run picker and `Clear` are in the
+**header** as well as the advice panel — the panel is below the loadout and scrolls
+with it, so on a fourteen-slot character it can be entirely off screen while the
+marks it produced are still painted on the gear, which is exactly when "which run
+is this?" arises. The hover panel is **centred** on its subject instead of
+left-aligned: with two panels the pair used to extend right until it hit the
+viewport, at which point `shift` slid the whole thing left, so an item's own panel
+sat somewhere different depending on whether the plan had anything to say about it.
+(The *seam* between the two panels is deliberately not what gets centred — that
+would put the panel describing the item entirely to one side of it.) The empty-slot
+`—` now sits on the arrow's line. The advice header wraps instead of pushing `Clear`
+out of the panel.
+
+Two changed a decision made earlier in this stage. The expensive and destructive
+buttons now explain themselves in the **window's own panel and carry no `title`**:
+native `title` takes about a second to appear, renders in the OS's style and
+vanishes while being read, and keeping both meant the OS's box landing on top of
+ours a second later — with no way to suppress one without the other. And the
+streamed reasoning is kept **whole and collapsible** rather than as a
+600-character tail. The tail was defended on the grounds that the panel has two
+lines to spare and the transcript is not the product; both true, and both beside
+the point, because *"why did it decide that"* is a question the finished answer
+routinely raises and does not answer. It is expanded while the run is live,
+collapsed to one line after, capped in height and scrolling, and not persisted with
+the envelope — it is the working-out, not a second answer.
+
+372 tests, 193 story assertions, 14 app assertions.
+
+### Third review pass — the run controls
+
+Four pieces of feedback, all about the two buttons, and the pass removed more code
+than it added.
+
+**`Clear` was a delete, and it was in the worst possible place.** It sat beside the
+answer and deleted it. Which means the one control a reader reaches for *after
+acting on a plan* — "I have done these three, ask me again" — was the one control
+that could throw a four-dollar, eight-minute answer away. It is now `New run`:
+selects nothing, deletes nothing, puts the open answer away (it stays in the picker)
+and brings the Run button and the question box back with it. `--bad` red came off
+the hover with the destruction; red is for something actually being lost.
+
+**No `Re-run` beside an answer.** A second opinion costs eight minutes and a few
+dollars and — by this stage's own design — does *not* replace the answer next to it,
+so a Re-run button there is an expensive misclick with nothing to recommend it.
+Asking again is two steps on purpose: `New run`, then `Run advice`.
+
+**The window opens on the empty state.** It used to reopen the newest stored answer
+on launch, which put a possibly-stale plan's marks on the gear before the reader had
+asked for them, and made *"is this still about what I am wearing?"* the first
+question of every session rather than one they chose to ask. So the picker became
+the door: it is shown whenever there is anything to choose (a placeholder counts as
+a choice), and the empty state says how many answers are kept, because starting
+fresh must not read as having lost them.
+
+Two IPC channels went with all that — `getLastAdvice` and `deleteAdvice`. There is
+no "open the newest" call any more (`getAdviceHistory` → `getAdvice` is the whole
+path in) and nothing in the window deletes a run; the store still has both
+functions, and vitest still covers them. Worth stating as a rule since it is easy to
+re-add by reflex.
+
+**A re-read must neither open nor close a run.** `load()` fires on every window
+focus and will fire on Stage 7C's watcher, so a refresh that dropped the open plan
+would take the marks off the gear at the exact moment the user came back from the
+game to compare them — and one that *opened* the newest would undo `New run` on the
+next focus event. It keeps the selection, and clears it only when the character
+changes, where the ids would join onto another loadout entirely. The comparison
+needs the previously-read character, which is a **ref**, not the `snapshot` state:
+`load` is wired to an event listener and must stay a stable callback.
+
+Also: the three button tooltips were rewritten **out of the app's own vocabulary**.
+"The item database is untouched", "compile the dossier", "the loadout it started
+with" — every one of those is a sentence for whoever wrote the app. `Refresh` now
+says it reads your save file again, names what it picks up, and says what happens to
+the answer on screen; `check-stories.mjs` asserts that *dossier*, *envelope*,
+*snapshot* and *item database* do not appear in it, because that drift is not
+hypothetical. Every control in a toolbar row is **one 30 px height**
+(`box-sizing: border-box`) with its label centred by a flex box rather than by
+padding — a fixed height plus inherited line-height put the label a pixel low. The
+picker is narrower inside the panel (230 px) than in the header (340 px), because at
+340 it pushed `New run` onto a second line.
+
+And the streamed reasoning got **a story of its own** (`parts--advice-thinking`,
+plus one for the collapsed state after a run). It already had one in the workspace,
+which was not the same thing: the advice panel sits under a fourteen-row loadout, so
+at 1080 the transcript is off the bottom of the screenshot — as much use as no story
+at all.
+
+372 tests, 218 story assertions, 21 app assertions.

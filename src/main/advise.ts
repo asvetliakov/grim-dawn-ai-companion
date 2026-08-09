@@ -8,10 +8,16 @@
  * that is already being paid for. Started in main, the subprocess outlives all
  * of it, and a freshly-mounted renderer re-attaches through `status()`.
  *
- * Progress is **honest phases plus elapsed time, and nothing else**. There is no
- * token stream to read and no way to know how far through an opaque subprocess
- * is, so a percentage would be an invention; the phases (`context` → `asking` →
- * `repair`) are the three things that genuinely happen, and the clock is real.
+ * Progress is **honest phases, elapsed time, and whatever the backend will tell
+ * us — never a percentage.** There is still no way to know how far through an
+ * opaque call is, so a bar would be an invention; the phases (`context` →
+ * `asking` → `repair`) are the three things that genuinely happen and the clock
+ * is real. What has changed since the first draft of this file is that the
+ * backend turned out to have more to say: a streaming provider reports the
+ * reasoning and the answer as they are written, which is the difference between
+ * "asking the model" for ten silent minutes and watching it work through the
+ * loadout. Coalesced here rather than forwarded raw — the deltas arrive dozens of
+ * times a second, which is far more often than a panel can be read or repainted.
  *
  * A second `start` while one is live is refused rather than queued. Two
  * concurrent runs would cost two runs and, worse, the second would finish
@@ -24,20 +30,27 @@ import {
   adviseWithRepair,
   buildEnvelope,
   createProvider,
-  loadLastAdvice,
+  listAdvice,
+  loadAdvice,
   normalizeName,
-  saveLastAdvice,
+  saveAdvice,
   totalUsage,
+  wornSlots,
+  wornSocketables,
   DEFAULT_EFFORT,
   DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
+  type AdviceRunRef,
+  type AdviseActivityState,
   type AdviseEnvelope,
   type AdviseStatus,
+  type AdvisorActivity,
   type AdvisorProvider,
   type PlanCheckInput,
   type PlanWarning,
 } from '../core/ai/index.js';
 import { documentSocketables } from '../core/context/builder.js';
+import { shortHash } from '../core/resolve.js';
 import type { CharacterSnapshot } from '../core/session.js';
 import type { Settings } from '../core/settings-schema.js';
 import type { PushEvent } from '../shared/ipc.js';
@@ -66,9 +79,24 @@ interface ActiveRun {
   controller: AbortController;
   startedAt: number;
   phase: RunPhase;
+  /** The live tail, when the provider streams. Absent until the first delta. */
+  activity?: AdviseActivityState;
+  /** Written but not yet pushed — the coalescing window's buffer. */
+  pending: string;
+  /** When a chunk was last pushed, for the coalescing below. */
+  activityPushedAt: number;
 }
 
 export const ALREADY_RUNNING = 'An advice run is already in flight — cancel it before starting another.';
+
+/**
+ * How much of the model's current writing to keep *here*, for a window that
+ * arrives late. A bound, so a twelve-minute run's memory is a constant.
+ */
+const ACTIVITY_TAIL = 600;
+
+/** Coalescing window for activity pushes: four a second outruns any reader. */
+const ACTIVITY_MS = 250;
 
 export class AdviseRunner {
   private active: ActiveRun | null = null;
@@ -111,6 +139,8 @@ export class AdviseRunner {
       controller: new AbortController(),
       startedAt: Date.now(),
       phase: 'context',
+      pending: '',
+      activityPushedAt: 0,
     };
     this.active = run;
     this.lastError = undefined;
@@ -141,14 +171,27 @@ export class AdviseRunner {
         runId: this.active.runId,
         character: this.active.character,
         elapsedMs: Date.now() - this.active.startedAt,
+        ...(this.active.activity ? { activity: this.active.activity } : {}),
       };
     }
     if (this.lastError) return { phase: 'error', runId: this.lastError.runId, message: this.lastError.message };
     return { phase: 'idle' };
   }
 
-  lastAdvice(character: string): AdviseEnvelope | null {
-    return loadLastAdvice(character) ?? null;
+  /**
+   * Every stored run for a character, newest first — the picker's list.
+   *
+   * The only way in. There is no `lastAdvice` here any more and no `discard`: the
+   * window opens on the empty state and a run is opened by being picked, and
+   * nothing deletes one. Both were real methods with real channels, and both went
+   * when the run controls stopped being "Clear" and "Re-run" — see `GdApi`.
+   */
+  history(character: string): AdviceRunRef[] {
+    return listAdvice(character);
+  }
+
+  advice(character: string, id: string): AdviseEnvelope | null {
+    return loadAdvice(character, id) ?? null;
   }
 
   private async execute(
@@ -169,6 +212,7 @@ export class AdviseRunner {
         {
           signal: run.controller.signal,
           onRepair: (_warnings: readonly PlanWarning[]) => this.advance(run, 'repair'),
+          onActivity: (activity) => this.observe(run, activity),
         },
       );
 
@@ -181,11 +225,15 @@ export class AdviseRunner {
         durationMs: Date.now() - run.startedAt,
         itemNames: Object.fromEntries([...snapshot.doc.itemsById].map(([id, item]) => [id, item.display])),
         socketableNames: Object.fromEntries([...snapshot.doc.socketablesById].map(([id, item]) => [id, item.name])),
+        // What the run is about, so a stored answer can say whether it still is —
+        // sockets included, because an item's id changes when its component does.
+        worn: wornSlots(snapshot.resolved.items),
+        wornSockets: wornSocketables(snapshot.resolved.items, shortHash),
       });
 
       // Persisted *before* the push, so a renderer that reloads on the same
       // frame as the answer arriving still finds it on disk.
-      saveLastAdvice(envelope);
+      saveAdvice(envelope);
       if (this.active?.runId === run.runId) this.active = null;
       this.host.push({ type: 'advise-done', runId: run.runId, envelope });
     } catch (err) {
@@ -194,6 +242,45 @@ export class AdviseRunner {
       this.lastError = { runId: run.runId, message };
       this.host.push({ type: 'advise-error', runId: run.runId, message });
     }
+  }
+
+  /**
+   * Fold one delta into the run's tail, and push at most every `ACTIVITY_MS`.
+   *
+   * Two economies, both necessary. The tail is capped, so the memory a
+   * twelve-minute run holds is bounded by a constant rather than by how much the
+   * model wrote. And the push is throttled, because the deltas arrive faster than
+   * a frame — forwarding each one would spend the whole run marshalling strings
+   * across a process boundary faster than the panel could paint them.
+   *
+   * A change of `kind` pushes immediately: thinking giving way to the answer is
+   * the one transition in a run that a reader is actually waiting for.
+   */
+  private observe(run: ActiveRun, activity: AdvisorActivity): void {
+    if (this.active?.runId !== run.runId) return;
+    const kindChanged = run.activity?.kind !== activity.kind;
+    // Two accumulations with different jobs. `pending` is what has not been sent
+    // yet, so the renderer can append; `tail` is a bounded snapshot for a window
+    // that mounts late and has nothing to append to.
+    run.pending += activity.text;
+    run.activity = {
+      kind: activity.kind,
+      tail: ((kindChanged ? '' : (run.activity?.tail ?? '')) + activity.text).slice(-ACTIVITY_TAIL),
+      ...(activity.outputTokens !== undefined ? { outputTokens: activity.outputTokens } : {}),
+    };
+
+    const now = Date.now();
+    if (!kindChanged && now - run.activityPushedAt < ACTIVITY_MS) return;
+    run.activityPushedAt = now;
+    const text = run.pending;
+    run.pending = '';
+    this.host.push({
+      type: 'advise-activity',
+      runId: run.runId,
+      kind: activity.kind,
+      text,
+      ...(activity.outputTokens !== undefined ? { outputTokens: activity.outputTokens } : {}),
+    });
   }
 
   private advance(run: ActiveRun, phase: RunPhase): void {

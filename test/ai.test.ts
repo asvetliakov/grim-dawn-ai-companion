@@ -239,8 +239,13 @@ describe('claude-cli provider', () => {
     expect(run.binary).toBe('claude');
     expect(run.args).toEqual([
       '-p',
+      // Streaming, so a twelve-minute call can report what it is doing. The final
+      // line of a stream is the same envelope `json` prints on its own, which is
+      // what makes this a change to the invocation and not to the parsing.
       '--output-format',
-      'json',
+      'stream-json',
+      '--include-partial-messages',
+      '--verbose',
       '--model',
       'opus',
       '--effort',
@@ -267,6 +272,78 @@ describe('claude-cli provider', () => {
       costUsd: 0.42,
       durationMs: 12_345,
     });
+  });
+
+  /**
+   * The streaming path, which is the whole reason for `--output-format stream-json`:
+   * a run is eight to twelve minutes behind one subprocess, and without this the
+   * only honest progress was a phase label that says "asking the model" for the
+   * duration.
+   */
+  it('forwards thinking and answer deltas as activity, and still reads the result line', async () => {
+    const stream = [
+      '{"type":"system","subtype":"init","tools":[]}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"Pierce"}}}',
+      '{"type":"system","subtype":"thinking_tokens","estimated_tokens":33}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":" build"}}}',
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"## Reading"}}}',
+      // An event kind this does not know. The vocabulary is the CLI's and it is
+      // free to grow; a new one must not be able to break a paid-for run.
+      '{"type":"invented_event","event":{"nonsense":true}}',
+      envelope(CANNED_ANSWER),
+      '',
+    ].join('\n');
+
+    const spawn = fakeSpawn((_run, child) => finish(child, stream));
+    const provider = createClaudeCliProvider({ spawn: spawn.fn });
+    const seen: { kind: string; text: string; outputTokens?: number }[] = [];
+
+    const result = await provider.advise({ contextDoc: 'x' }, undefined, (a) => seen.push(a));
+
+    expect(seen.map((a) => `${a.kind}:${a.text}`)).toEqual([
+      'thinking:Pierce',
+      'thinking: build',
+      'answer:## Reading',
+    ]);
+    // The CLI's own running estimate, picked up from the `thinking_tokens` line
+    // that arrived between the two deltas.
+    expect(seen[1]!.outputTokens).toBe(33);
+    // And the run still produced its answer: the result line is parsed exactly as
+    // the non-streaming envelope was.
+    expect(result.text).toBe(CANNED_ANSWER);
+    expect(result.usage?.costUsd).toBe(0.42);
+  });
+
+  it('reassembles a delta split across two stdout chunks', async () => {
+    const spawn = fakeSpawn((_run, child) => {
+      const line =
+        '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"halves"}}}';
+      // Chunk boundaries fall where the pipe puts them, routinely mid-line.
+      child.stdout.write(`${line.slice(0, 40)}`);
+      child.stdout.write(`${line.slice(40)}\n${envelope(CANNED_ANSWER)}\n`);
+      child.stdout.end();
+      child.stderr.end();
+      child.emit('close', 0);
+    });
+    const provider = createClaudeCliProvider({ spawn: spawn.fn });
+    const seen: string[] = [];
+
+    await provider.advise({ contextDoc: 'x' }, undefined, (a) => seen.push(a.text));
+    expect(seen).toEqual(['halves']);
+  });
+
+  it('survives an activity listener that throws — a progress report may not kill a paid run', async () => {
+    const stream = [
+      '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"a"}}}',
+      envelope(CANNED_ANSWER),
+    ].join('\n');
+    const spawn = fakeSpawn((_run, child) => finish(child, stream));
+    const provider = createClaudeCliProvider({ spawn: spawn.fn });
+
+    const result = await provider.advise({ contextDoc: 'x' }, undefined, () => {
+      throw new Error('renderer went away');
+    });
+    expect(result.text).toBe(CANNED_ANSWER);
   });
 
   it('counts cached input tokens — the dossier lands there, not in input_tokens', async () => {
@@ -570,6 +647,109 @@ describe('checkPlan', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatchObject({ kind: 'illegal-socket' });
     expect(warnings[0]!.message).toContain('does not accept head');
+  });
+
+  /**
+   * `fits` is how a slot says "and put these in it" — the second socketable
+   * change a one-verdict-per-slot shape had nowhere to put. Its host is the item
+   * the slot *ends up* holding, which for an `EQUIP` is the candidate.
+   */
+  it('checks a fit against the incoming item, not the one being taken off', () => {
+    const w = world();
+    // Ring 1 is told to equip the spare band and fit a ring-only component. Legal
+    // — and it would still be legal read against the outgoing item, which is also
+    // a ring, so the case that proves the rule is the head below.
+    expect(
+      checkPlan(
+        {
+          verdicts: [
+            {
+              slot: 'Ring 1',
+              itemId: 'ring01',
+              verdict: 'EQUIP',
+              target: 'ring02',
+              fits: [{ kind: 'component', id: 'bone1', name: 'Sanctified Bone' }],
+              reason: 'r',
+            },
+          ],
+          hold: [],
+          sell: [],
+        },
+        w,
+      ),
+    ).toEqual([]);
+
+    // The same component fitted to a *helmet* the plan is equipping: illegal, and
+    // only detectable by reading the incoming item's class.
+    const warnings = checkPlan(
+      {
+        verdicts: [
+          {
+            slot: 'Ring 1',
+            itemId: 'ring01',
+            verdict: 'EQUIP',
+            target: 'head01',
+            fits: [{ kind: 'component', id: 'bone1', name: 'Sanctified Bone' }],
+            reason: 'r',
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+      w,
+    );
+    expect(warnings.map((x) => x.kind)).toContain('illegal-socket');
+    expect(warnings.find((x) => x.kind === 'illegal-socket')!.message).toContain('does not accept head');
+  });
+
+  it('catches a fit whose id is not a socketable, and one whose name disagrees', () => {
+    const w = world();
+    const warnings = checkPlan(
+      {
+        verdicts: [
+          {
+            slot: 'Head',
+            itemId: 'head01',
+            verdict: 'KEEP',
+            fits: [
+              { kind: 'component', id: 'nope', name: 'Invented Thing' },
+              // Right id, wrong name — the one failure an id-only plan hides.
+              { kind: 'augment', id: 'mark1', name: 'Sanctified Bone' },
+            ],
+            reason: 'r',
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+      w,
+    );
+    expect(warnings.map((x) => x.kind)).toEqual(['unknown-socketable', 'name-mismatch']);
+  });
+
+  it('catches two fits of one kind — an item holds one component and one augment', () => {
+    const w = world();
+    const warnings = checkPlan(
+      {
+        verdicts: [
+          {
+            slot: 'Head',
+            itemId: 'head01',
+            verdict: 'KEEP',
+            fits: [
+              { kind: 'component', id: 'mark1', name: 'Mark of Illusions' },
+              { kind: 'component', id: 'mark1', name: 'Mark of Illusions' },
+            ],
+            reason: 'r',
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+      w,
+    );
+    expect(warnings.map((x) => x.kind)).toEqual(['illegal-socket']);
+    expect(warnings[0]!.message).toContain('two components');
   });
 
   it('catches a socketable the document never offered', () => {

@@ -144,3 +144,27 @@ export function primaryMark(marks: readonly AdviceMark[]): AdviceMark | undefine
     m.destroys ? 0 : m.incoming ? 1 : m.kind === 'sell' ? 2 : m.kind === 'hold' ? 3 : 4;
   return [...marks].sort((a, b) => rank(a) - rank(b))[0];
 }
+
+/**
+ * How a slot stands against the run, as a glyph.
+ *
+ * Drawn in the same 16-box as every other glyph in this file so they match
+ * optically, and given the same shapes the rest of the window already uses for
+ * these meanings: `KEEP`'s tick for a move that has been made, and a triangle for
+ * the one state in the loadout that wants a second look. A word alone was legible
+ * and needed reading; the pair is recognisable at a glance in an 84 px column.
+ */
+export const SLOT_STATE_GLYPH: Readonly<Record<'done' | 'changed', React.ReactNode>> = {
+  done: (
+    <Glyph>
+      <path d="M3.5 8.5l3 3 6-7" />
+    </Glyph>
+  ),
+  changed: (
+    <Glyph>
+      <path d="M8 3l5.5 10h-11z" />
+      <path d="M8 7v2.6" />
+      <path d="M8 11.4h.01" />
+    </Glyph>
+  ),
+};

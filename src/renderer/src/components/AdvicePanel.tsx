@@ -15,32 +15,56 @@
  * and a button that does not say so is a trap.
  */
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { adviceMarks, staleIds } from '../../../shared/advice-marks.js';
-import type { AdviseEnvelope, UiItem, UiSnapshot, UiSocketable } from '../../../shared/ipc.js';
-import { adviceBySlot, holds, slotKey, socketMove } from '../advice.js';
+import { answerProse } from '../../../shared/answer.js';
+import type {
+  AdviceRunRef,
+  AdviseActivityState,
+  AdviseEnvelope,
+  UiItem,
+  UiSnapshot,
+  UiSocketable,
+} from '../../../shared/ipc.js';
+import { adviceBySlot, holds, loadoutDrift, slotKey, socketMove } from '../advice.js';
 import { useHighlight } from '../highlight.js';
-import type { AdviseRun } from '../session.js';
+import type { AdviseRun, RunActivity } from '../session.js';
 import { useTooltip } from '../tooltip.js';
-import { itemsByDocId } from './LoadoutPanel.js';
+import { ExplainedButton } from './ExplainedButton.js';
+import { currentWorn, itemsByDocId } from './LoadoutPanel.js';
 import { Markdown } from './Markdown.js';
+import { RunPicker } from './RunPicker.js';
 
 export function AdvicePanel({
   snapshot,
   advice,
   run = null,
+  activity,
   error,
+  history = [],
+  adviceId,
   onRun,
   onCancel,
+  onSelect,
+  onNewRun,
 }: {
   snapshot: UiSnapshot;
   advice: AdviseEnvelope | null;
   run?: AdviseRun | null;
+  /** What the model has written — live, and afterwards until the next run. */
+  activity?: RunActivity;
   /** A start that was refused, or a run that died. Never a blank pane. */
   error?: string;
+  /** Every stored run for this character, newest first. */
+  history?: readonly AdviceRunRef[];
+  /** Which of them is on screen. */
+  adviceId?: string;
   onRun?: (question?: string) => void;
   onCancel?: () => void;
+  onSelect?: (id: string) => void;
+  /** Put the open answer away and offer a fresh run. Deletes nothing. */
+  onNewRun?: () => void;
 }): React.ReactNode {
   const highlight = useHighlight();
   const byId = itemsByDocId(snapshot);
@@ -52,19 +76,29 @@ export function AdvicePanel({
   const [question, setQuestion] = useState('');
   const running = run !== null;
 
-  /** The run control, in both the empty and the answered states. */
+  /**
+   * The run control — and, with an answer on screen, deliberately **not a
+   * Re-run**.
+   *
+   * A second opinion costs another eight minutes and a few dollars and does not
+   * replace the answer beside it, so a Re-run button next to a finished plan is an
+   * expensive misclick waiting to happen. Asking again is two steps on purpose:
+   * `New run` puts this answer away (it stays in the picker), and the Run button
+   * comes back with the question box.
+   */
   const control = running ? (
-    <RunProgress run={run} {...(onCancel ? { onCancel } : {})} />
-  ) : (
-    <button
-      type="button"
+    <RunProgress run={run} {...(activity ? { activity } : {})} {...(onCancel ? { onCancel } : {})} />
+  ) : advice ? null : (
+    <ExplainedButton
       className="run-button"
-      onClick={() => onRun?.(question.trim() || undefined)}
+      label="Run advice"
       disabled={!onRun}
-      title="Compiles the dossier and asks the model — about eight minutes"
-    >
-      {advice ? 'Re-run' : 'Run advice'}
-    </button>
+      onClick={() => onRun?.(question.trim() || undefined)}
+      note={{
+        title: 'Ask the model what to change',
+        body: 'Everything this character can reach goes to the model in one go — worn gear, both weapon sets, bags, stashes, learned blueprints and what the factions will sell you — and it comes back with a recommendation for every slot. Takes about eight minutes and a few dollars.',
+      }}
+    />
   );
 
   /**
@@ -73,8 +107,12 @@ export function AdvicePanel({
    * It is a plain input rather than a dialog because most runs want nothing here
    * — the dossier already asks the whole question — and the ones that do want one
    * sentence ("I am rerolling for bleeding", "ignore the two-hander").
+   *
+   * It belongs to the run that is about to start, so it appears with the Run
+   * button and nowhere else: over a finished answer it was a box that steered
+   * nothing, and over a live run there is nothing left to steer.
    */
-  const ask = !running && (
+  const ask = !running && !advice && (
     <input
       className="advice-question"
       type="text"
@@ -85,11 +123,21 @@ export function AdvicePanel({
     />
   );
 
+  /** How to reach an answer already paid for. The only way in — see `RunPicker`. */
+  const picker = onSelect ? (
+    <RunPicker history={history} {...(adviceId ? { adviceId } : {})} onSelect={onSelect} />
+  ) : null;
+
   if (!advice) {
     return (
       <section className="advice-panel empty">
         <header className="advice-header">
           <h2>Advice</h2>
+          {/* In the empty state the picker is the *door*, not a convenience: the
+              window no longer reopens the newest answer by itself, so without it a
+              run already paid for would be unreachable. */}
+          {picker}
+          <div className="header-spacer" />
           {control}
         </header>
         {/* The same paragraph in two tenses. Saying "no run yet" beside a
@@ -104,11 +152,24 @@ export function AdvicePanel({
           </p>
         ) : (
           <p className="advice-placeholder">
-            No run for <b>{snapshot.character}</b> yet. A run compiles the whole reachable loadout — equipped
+            Nothing open for <b>{snapshot.character}</b>. A run compiles the whole reachable loadout — equipped
             gear, both weapon sets, bags, stashes, blueprints and faction stock — into one dossier and asks the
             model to rank every slot. It takes about eight minutes and costs a few dollars of model time.
+            {/* The window starts here every time rather than reopening the newest
+                answer, so the empty state has to say that the old ones are still
+                there — otherwise starting fresh looks like having lost them. */}
+            {history.length > 0 && (
+              <>
+                {' '}
+                <span className="advice-kept">
+                  {history.length} earlier answer{history.length === 1 ? '' : 's'} {history.length === 1 ? 'is' : 'are'}{' '}
+                  kept — open {history.length === 1 ? 'it' : 'one'} from the list above.
+                </span>
+              </>
+            )}
           </p>
         )}
+        {activity && <ActivityLog activity={activity} running={running} />}
         {ask}
         {error && <p className="advice-error">{error}</p>}
       </section>
@@ -117,23 +178,65 @@ export function AdvicePanel({
 
   const plan = advice.plan;
   const held = holds(advice);
+  const prose = answerProse(advice.answer);
   // Document ids are only reproducible from identical save + database state, so a
   // save the game has rewritten since the run yields ids that simply fail to
   // join. Said out loud, by name: an item silently missing from the advice is
   // indistinguishable from advice that never mentioned it.
   const stale = staleIds(adviceMarks(plan), (id) => byId.has(id));
+  // Which rows have already been carried out. The *notices* about this live at the
+  // top of the loadout, next to the gear they are about — see `DriftNotice`; here
+  // it is only needed to strike the finished rows through.
+  const doneSlots = new Set(
+    loadoutDrift(advice, currentWorn(snapshot))
+      .filter((d) => d.applied)
+      .map((d) => slotKey(d.slot)),
+  );
   return (
     <section className="advice-panel">
       <header className="advice-header">
         <h2>Advice</h2>
+        {/*
+          Which answer is on screen. A `<select>` when there is something to choose
+          between, the date in prose when there is not — a picker with one option
+          that cannot change reads as a control that is broken.
+
+          Runs are kept rather than overwritten because each one costs minutes and
+          real money: taking a second opinion, or asking the same dossier a
+          different question, should not be a decision to destroy the first answer.
+        */}
+        {picker ?? <span className="advice-meta">{new Date(advice.generatedAt).toLocaleString()}</span>}
         <span className="advice-meta">
-          {new Date(advice.generatedAt).toLocaleString()} · {advice.model ?? advice.provider}
+          {advice.model ?? advice.provider}
           {advice.revised ? ' · revised once' : ''}
           {advice.warnings.length > 0 ? ` · ${advice.warnings.length} check warning(s)` : ' · checks clean'}
         </span>
+        <div className="header-spacer" />
+        {/*
+          Where `Clear` used to be, doing something else.
+
+          `Clear` deleted the run it sat beside, which put a four-dollar answer one
+          click from gone — and, worse, put it there under the button a reader
+          reaches for *after acting on the plan*, when what they mean is "I have
+          done these, let me ask again". That is now what it does: the answer is
+          kept and this only stops showing it.
+        */}
+        {onNewRun && (
+          <ExplainedButton
+            className="run-button subtle"
+            label="New run"
+            disabled={running}
+            onClick={onNewRun}
+            note={{
+              title: 'Put this answer away and start fresh',
+              body: 'Nothing is deleted and nothing is spent — this answer stays in the list at the top of the panel, and you can open it again whenever you like. Use it when you have changed something the plan did not mention and want to ask again.',
+            }}
+          />
+        )}
         {control}
       </header>
 
+      {activity && <ActivityLog activity={activity} running={running} />}
       {ask}
       {error && <p className="advice-error">{error}</p>}
 
@@ -150,9 +253,13 @@ export function AdvicePanel({
         ))}
       </div>
 
+      {/* The prose, without the plan block that ends it. Everything in that block
+          is already on the Plan tab as something hoverable and clickable; as raw
+          JSON it was 17k of the answer's 28k on the first live run, which buries
+          the argument the run was actually for. `answerProse` explains itself. */}
       {tab === 'answer' && (
         <div className="advice-answer">
-          {advice.answer ? <Markdown source={advice.answer} /> : <p className="empty-note">this run wrote no prose</p>}
+          {prose ? <Markdown source={prose} /> : <p className="empty-note">this run wrote no prose</p>}
         </div>
       )}
 
@@ -214,7 +321,11 @@ export function AdvicePanel({
               return (
                 <tbody
                   key={i}
-                  className={row.replaces ? 'replaces' : ''}
+                  // A row whose move has already been carried out is struck
+                  // through rather than removed: the reader wants to see that it
+                  // was on the list, and the argument for it is still the reason
+                  // the rest of the plan hangs together.
+                  className={`${row.replaces ? 'replaces' : ''} ${doneSlots.has(slotKey(row.slot)) ? 'done' : ''}`}
                   // Both halves of the move: what comes off and what goes on. The
                   // reader is comparing two items, so lighting one is half an answer.
                   onMouseEnter={() => highlight.highlight([row.currentId, row.nextId])}
@@ -304,6 +415,46 @@ export function AdvicePanel({
               </ul>
             </div>
           )}
+
+          {/*
+            The ladder: what to spend next, what it buys, and — the part that
+            makes it advice rather than a list — whether it is worth committing
+            to. Two of the four entries on the first live run were "skip this",
+            which is a recommendation that only exists here: §12 of the dossier
+            lists every blocked candidate so a threshold can be *costed*, and
+            without this section the reader is left holding the costing and no
+            verdict on it.
+
+            An attribute line is one decision, not one per item, which is why
+            these are thresholds with items hanging off them rather than items
+            with thresholds. Hovering an entry lights everything it unlocks.
+          */}
+          {plan?.nextLevels && plan.nextLevels.length > 0 && (
+            <div className="next-levels">
+              <h3>Next levels</h3>
+              <ul>
+                {plan.nextLevels.map((step, i) => (
+                  <li
+                    key={i}
+                    onMouseEnter={() => highlight.highlight(step.unlocks)}
+                    onMouseLeave={() => highlight.highlight(null)}
+                  >
+                    <b className="level-threshold">{step.threshold}</b>
+                    {step.unlocks.length > 0 && (
+                      <span className="level-unlocks">
+                        {' '}
+                        unlocks{' '}
+                        {step.unlocks
+                          .map((id) => byId.get(id)?.display ?? advice.itemNames[id] ?? `#${id}`)
+                          .join(', ')}
+                      </span>
+                    )}
+                    {step.recommendation && <span className="move-detail"> — {step.recommendation}</span>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </>
       )}
 
@@ -357,16 +508,105 @@ function formatDuration(ms: number): string {
  * than an honest clock, because it makes the user distrust the whole panel. The
  * phases are the three things that genuinely happen and the clock is real.
  */
-function RunProgress({ run, onCancel }: { run: AdviseRun; onCancel?: () => void }): React.ReactNode {
+function RunProgress({
+  run,
+  activity,
+  onCancel,
+}: {
+  run: AdviseRun;
+  activity?: RunActivity;
+  onCancel?: () => void;
+}): React.ReactNode {
   return (
     <span className="advice-run">
       <span className="spinner" aria-hidden />
       <span className="run-phase">{PHASE_LABEL[run.phase] ?? 'working'}</span>
+      {/* What it is doing *inside* the phase — the phase label says "asking the
+          model" for ten minutes either way. Written tokens rather than a
+          percentage: it is a real number that only goes up, and it makes no claim
+          about how much is left. */}
+      {activity && (
+        <span className="run-activity">
+          {activity.kind === 'thinking' ? 'thinking' : 'writing'}
+          {activity.outputTokens ? ` · ${activity.outputTokens.toLocaleString()} tokens` : ''}
+        </span>
+      )}
       <span className="run-clock">{formatDuration(run.elapsedMs)}</span>
       <button type="button" className="run-button cancel" onClick={onCancel} disabled={!onCancel}>
         Cancel
       </button>
     </span>
+  );
+}
+
+/**
+ * The model's own words — all of them, while it writes them and afterwards.
+ *
+ * The first version showed a 600-character tail on the argument that the panel has
+ * two lines to spare and the transcript is not the product. Both true, and both
+ * beside the point: this is a model reasoning about the reader's own build for ten
+ * minutes, and *"why did it decide that"* is a question the finished answer
+ * routinely raises and does not answer. So it is kept whole, and the panel's job
+ * is only to stay out of the way — **expanded while the run is live, collapsed
+ * once it ends**, and re-openable after that.
+ *
+ * Not persisted with the envelope. It is the working-out, not the answer, and a
+ * stored transcript beside a stored answer invites the two to be compared as if
+ * both were conclusions. It lives until the next run replaces it.
+ *
+ * The scroll is pinned to the bottom **only while the run is live and only if the
+ * reader has not scrolled away**: yanking someone back to the end of a paragraph
+ * they were reading is worse than letting the tail run on without them.
+ */
+function ActivityLog({ activity, running }: { activity: RunActivity; running: boolean }): React.ReactNode {
+  // `null` means "follow the run" — expanded while it is live, collapsed after.
+  // A click pins it either way, because by then the reader has an opinion.
+  const [pinned, setPinned] = useState<boolean | null>(null);
+  const open = pinned ?? running;
+  const box = useRef<HTMLPreElement | null>(null);
+  const stuck = useRef(true);
+
+  useEffect(() => {
+    const el = box.current;
+    if (!el || !open || !running || !stuck.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [activity.text, open, running]);
+
+  const lines = activity.text.split('\n');
+  const lastLine = lines.filter((l) => l.trim() !== '').pop() ?? '';
+
+  return (
+    <div className={`activity-log ${open ? 'open' : ''}`}>
+      <button type="button" className="activity-head" onClick={() => setPinned(!open)}>
+        <span className="activity-caret" aria-hidden>
+          {open ? '▾' : '▸'}
+        </span>
+        <span className="activity-kind">{activity.kind === 'thinking' ? 'reasoning' : 'writing the answer'}</span>
+        {activity.outputTokens ? (
+          <span className="activity-count">{activity.outputTokens.toLocaleString()} tokens</span>
+        ) : null}
+        {/* Collapsed, the newest line is the whole point — it is what says the run
+            is alive. Expanded, it would be a duplicate of the last line below. */}
+        {!open && <span className="activity-peek">{lastLine}</span>}
+      </button>
+      {open && (
+        <pre
+          className="activity-text"
+          ref={box}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            stuck.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+          }}
+        >
+          {activity.partial && (
+            <span className="activity-note">
+              …this window joined the run in progress, so the earlier reasoning is not here.{'\n'}
+            </span>
+          )}
+          {activity.text}
+        </pre>
+      )}
+    </div>
   );
 }
 

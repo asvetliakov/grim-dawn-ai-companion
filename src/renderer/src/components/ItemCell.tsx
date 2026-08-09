@@ -38,8 +38,11 @@ export function ItemCell({
 }): React.ReactNode {
   const tooltip = useTooltip();
   const highlight = useHighlight();
-  const lit = highlight.isHighlighted(item.docId);
   const action = highlight.actionFor(item.docId);
+  // Two ways to be lit: the pointer is on this item (or on something that names
+  // it), or the container legend is pointing at this whole kind of action —
+  // which is how "sell or salvage 13" becomes thirteen visible cells.
+  const lit = highlight.isHighlighted(item.docId) || (action !== undefined && action === highlight.litKind);
   const mark = primaryMark(highlight.adviceFor(item.docId));
 
   return (

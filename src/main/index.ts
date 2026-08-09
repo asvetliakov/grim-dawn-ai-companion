@@ -92,7 +92,8 @@ void app.whenReady().then(() => {
       startAdvise: (req) => advisor.start(req),
       cancelAdvise: (runId) => advisor.cancel(runId),
       getAdviseStatus: () => advisor.status(),
-      getLastAdvice: (character) => advisor.lastAdvice(character),
+      getAdviceHistory: (character) => advisor.history(character),
+      getAdvice: (character, id) => advisor.advice(character, id),
     }),
   );
 

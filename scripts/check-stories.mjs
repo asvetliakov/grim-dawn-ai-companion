@@ -80,6 +80,28 @@ check('the loadout renders one row per slot', rows === 14, `${rows} rows`);
 const proposals = page.locator('.slot-row:not(.socket-move) .slot-proposed .item-face');
 check('advice fills the proposal column', (await proposals.count()) === 2, `${await proposals.count()} proposals`);
 
+// An EQUIP can also say what to put *in* the new item, which one verdict per slot
+// had no room for: an item holds a component and an augment in independent
+// sockets, so a slot can legitimately need two socketable changes at once. The
+// first live run argued in prose for fitting the new amulet with a loose Dread
+// Skull and a Sagethorn Powder, and the plan could carry neither.
+// By the slot *label*, not by row text: an item name can contain a slot's name,
+// and `hasText` on the row would then match a weapon.
+const handsRow = page
+  .locator('.slot-row')
+  .filter({ has: page.locator('.slot-name', { hasText: /^Hands$/ }) });
+const fitChips = await handsRow.locator('.slot-proposed .socket-chip').allInnerTexts();
+check(
+  'an EQUIP proposal wears what the plan tells it to wear',
+  fitChips.length === 2,
+  fitChips.join(' | ').replace(/\n/g, ' '),
+);
+check(
+  'and names both sockets',
+  /Mogdrogen/.test(fitChips.join(' ')) && /Vigil/.test(fitChips.join(' ')),
+  fitChips.join(' | ').replace(/\n/g, ' '),
+);
+
 // ---------------------------------------------------------------------------
 // Socket moves — four of the seven verdicts keep the item and change what it
 // carries, so the proposal column has to render a socketable, not a sentence.
@@ -186,6 +208,26 @@ const titles = await page
   .evaluateAll((els) => [...new Set(els.map((e) => e.title.split(' →')[0]))].sort());
 check('and the glyph says which action it is', titles.length >= 3, titles.join(' | '));
 
+// A mark is a *standing* fact about sixteen items; the highlight is the transient
+// answer to "what am I pointing at". The two must not look alike — the first draft
+// of the ring gave the mark an inset glow, and every marked cell then read as lit.
+const litWithoutHover = await page.locator('.item-cell.action.highlighted').count();
+check('a marked item is not lit until something points at it', litWithoutHover === 0, `${litWithoutHover} lit`);
+// The mark takes an edge the highlight never uses. A **border** is how this window
+// says "this one", so sixteen standing marks may not borrow that vocabulary — the
+// full ring this started as was perfectly visible and read as lit. A bar is an
+// annotation; a border is a state.
+const bar = await page.locator('.item-cell.action').first().evaluate((el) => {
+  const before = getComputedStyle(el, '::before');
+  return {
+    height: before.height,
+    border: before.borderTopWidth,
+    background: before.backgroundColor,
+    tint: getComputedStyle(el).backgroundColor,
+  };
+});
+check('and carries an edge bar rather than a border', bar.height === '3px' && bar.border === '0px', JSON.stringify(bar));
+
 // A mark that means something without being hovered has to say what it means.
 const legend = await page.locator('.mark-legend .legend-item').allInnerTexts();
 check('the marks come with a legend', legend.length === 4, legend.join(' | ').replace(/\n/g, ' '));
@@ -194,6 +236,25 @@ check(
   'and with the same glyphs',
   (await page.locator('.mark-legend .legend-flag svg').count()) === legend.length,
 );
+
+// The legend is also the control for its own count. "Sell or salvage 13" answers
+// "is it worth opening this tab"; *which thirteen* is the question straight after
+// it, and before this it was answerable only by hovering the advice table row by
+// row. Scoped to the containers, which is what the legend counts.
+const equipLegend = page.locator('.mark-legend .legend-item.action-equip');
+await equipLegend.hover();
+await page.waitForTimeout(120);
+const litByLegend = await page.locator('.item-cell.action-equip.highlighted').count();
+const litOthers = await page.locator('.item-cell.action-hold.highlighted, .item-cell.action-sell.highlighted').count();
+check('hovering a legend entry lights that kind', litByLegend >= 1, `${litByLegend} lit`);
+check('and only that kind', litOthers === 0, `${litOthers} others lit`);
+// The loadout is not a container, so a candidate's card there is left alone: the
+// legend is counting the stash, and the same item is on both sides of a swap.
+const litCards = await page.locator('.loadout-grid .item-face.highlighted').count();
+check('and nothing in the loadout, which the legend does not count', litCards === 0, `${litCards} cards lit`);
+await page.mouse.move(4, 4);
+await page.waitForTimeout(120);
+check('leaving the legend puts them out again', (await page.locator('.item-cell.highlighted').count()) === 0);
 
 // The legend counts every container, not the open one — and that is the point:
 // the fourth kind lives on the Stash tab, so it is a count of something the
@@ -632,6 +693,12 @@ check('and not as a paragraph under it', !/rolled per hit/.test(armour));
 await page.locator('.advice-tabs .tab', { hasText: 'Full answer' }).click();
 await page.waitForTimeout(150);
 check('the answer tab renders the prose', (await page.locator('.markdown').count()) === 1);
+// And not the plan block that ends it. Every field in that block has already been
+// rendered on the Plan tab as something hoverable; as raw JSON it was 17k of the
+// first live answer's 28k, which buries the argument the run was actually for.
+const proseText = await page.locator('.advice-answer').innerText();
+check('and not the machine-readable plan it ends with', !/"verdicts"\s*:/.test(proseText), `${proseText.length} chars`);
+check('which is still on the Plan tab', proseText.length > 200);
 check('with its headings', (await page.locator('.markdown .md-h').count()) >= 3);
 check('its lists', (await page.locator('.markdown .md-list li').count()) >= 4);
 check('and its table', (await page.locator('.markdown .md-table tbody tr').count()) >= 3);
@@ -651,6 +718,21 @@ check('and the plan is still there behind it', (await page.locator('.verdict-tab
 const hold = await page.locator('.hold-list li').first().innerText();
 check('a hold names its slot and what it displaces', /for Head over /.test(hold), hold.split('\n')[0]);
 check('and what it gains', (await page.locator('.hold-list .gain').count()) >= 1);
+
+// The ladder. §12 of the dossier costs every threshold; a costing with no verdict
+// on it is not advice, and two of the four entries on the first live run were
+// "skip this" — a recommendation that exists nowhere else.
+const steps = await page.locator('.next-levels li').allInnerTexts();
+check('the plan tab carries the next-levels ladder', steps.length === 2, steps.join(' | ').replace(/\n/g, ' '));
+check('each threshold says whether it is worth committing to', /Skip/.test(steps.join(' ')));
+const unlocks = await page.locator('.next-levels .level-unlocks').first().innerText();
+check('and names what it unlocks, by name rather than by id', !/#/.test(unlocks), unlocks);
+// Hovering one lights everything it unlocks, wherever those items live.
+await page.locator('.next-levels li').first().hover();
+await page.waitForTimeout(120);
+check('hovering a threshold lights what it unlocks', (await page.locator('.item-cell.highlighted').count()) >= 1);
+await page.mouse.move(4, 4);
+await page.waitForTimeout(120);
 
 // An answer is model output this window has no control over. Each hostile shape
 // has its own escape hatch, and none of them may push the panel sideways —
@@ -695,6 +777,18 @@ const locked = await page.locator('.face-locked.waiting').count();
 check('without advice every proposal slot reads as locked', locked === 14, `${locked} locked`);
 check('and says what would fill it', (await page.locator('.loadout-hint').count()) === 1);
 check('the header offers the run', (await page.locator('.chrome-button.primary').innerText()).includes('Run advice'));
+// The question box belongs to the run that is about to start, so this is where it
+// lives: with an answer open it steers nothing, and mid-run there is nothing left
+// to steer.
+check('and the question box is offered with it', (await page.locator('.advice-question').count()) === 1);
+// Nothing to put away yet, and — with no stored runs for this character — nothing
+// to pick between either.
+check(
+  'with nothing to put away',
+  (await page.locator('.header-advice .chrome-button.subtle').count()) === 0 &&
+    (await page.locator('.advice-panel .run-button.subtle').count()) === 0,
+);
+check('and — no stored runs — nothing to pick between', (await page.locator('.advice-runs').count()) === 0);
 
 // The panes are `height: 100%` all the way down; if the chain breaks they
 // collapse to their content and a long loadout simply cannot be reached.
@@ -734,6 +828,65 @@ check('and nothing pretends to know how far along it is', (await page.locator('.
 // steer.
 check('the question box is out of the way while running', (await page.locator('.advice-question').count()) === 0);
 
+// What the backend *will* tell us. The phase label says "asking the model" for ten
+// minutes either way, so it cannot distinguish a working run from a wedged one —
+// and the streamed reasoning both can and is worth reading in its own right, being
+// about the reader's own gear. Kept **whole**, not as a tail: "why did it decide
+// that" is a question the finished answer routinely raises and does not answer.
+const hasLog = (await page.locator('.activity-log').count()) === 1;
+check('a streaming run shows what the model is writing', hasLog);
+const logKind = hasLog ? await page.locator('.activity-log .activity-kind').innerText() : '';
+check('and says whether it is reasoning or answering', /reasoning/i.test(logKind), logKind);
+const written = hasLog ? await page.locator('.run-activity').innerText() : '';
+check('with a token count rather than a percentage', /21,480 tokens/.test(written), written);
+// Expanded while the run is live, because that is when it is progress; the whole
+// transcript is there, not the last few hundred characters of it.
+const logBox = hasLog
+  ? await page.locator('.activity-log .activity-text').evaluate((el) => ({
+      chars: el.textContent.length,
+      height: Math.round(el.getBoundingClientRect().height),
+      scrolls: el.scrollHeight > el.clientHeight + 1,
+      atBottom: el.scrollHeight - el.scrollTop - el.clientHeight < 30,
+    }))
+  : { chars: 0, height: 0, scrolls: false, atBottom: false };
+check('the whole transcript is there, not a tail', logBox.chars > 1500, `${logBox.chars} chars`);
+// A **capped** height that scrolls: the text arrives several times a second, and a
+// box that sized itself to its contents would reflow the panel — and the loadout
+// above it — continuously for twelve minutes.
+check('in a box whose height does not depend on it', logBox.height <= 190 && logBox.scrolls, JSON.stringify(logBox));
+check('scrolled to the newest line while the run is live', logBox.atBottom, JSON.stringify(logBox));
+// And it collapses to one line, so a finished run's reasoning is available without
+// being in the way of the answer it produced.
+if (hasLog) {
+  await page.locator('.activity-head').click();
+  await page.waitForTimeout(150);
+  check('clicking the header collapses it', (await page.locator('.activity-text').count()) === 0);
+  const peek = await page.locator('.activity-peek').innerText();
+  check('leaving the newest line visible', peek.trim().length > 20, peek.slice(0, 60));
+}
+
+// The same thing as its own story, on the panel alone.
+//
+// Because in the workspace it is *below the fold*: the advice panel sits under a
+// fourteen-row loadout, so at 1080 the transcript is off the bottom of the
+// screenshot — which is exactly as much use as not having a story for it.
+await page.goto(story('parts--advice-thinking'), { waitUntil: 'networkidle' });
+await page.waitForTimeout(200);
+check('the reasoning has a story of its own', (await page.locator('.activity-log.open').count()) === 1);
+const partsLog = await page.locator('.activity-text').innerText();
+check('showing the whole transcript', partsLog.length > 1500, `${partsLog.length} chars`);
+
+// And after the run: collapsed, not gone. `open = pinned ?? running` is what makes
+// the box follow the run without arguing with a reader who has an opinion.
+await page.goto(story('parts--advice-thinking-done'), { waitUntil: 'networkidle' });
+await page.waitForTimeout(200);
+check('once the answer is in, the reasoning is one line', (await page.locator('.activity-log:not(.open)').count()) === 1);
+check('and out of the way of the plan', (await page.locator('.activity-text').count()) === 0);
+check('but still reachable', (await page.locator('.activity-head').count()) === 1);
+await page.locator('.activity-head').click();
+await page.waitForTimeout(150);
+check('a click reopens it', (await page.locator('.activity-text').count()) === 1);
+
 // A refused start is the readable half of this feature. It must be a sentence in
 // the panel, never a blank pane.
 await page.goto(story('app-workspace--advice-failed'), { waitUntil: 'networkidle' });
@@ -747,6 +900,165 @@ await page.goto(story('parts--advice-stale'), { waitUntil: 'networkidle' });
 const staleNote = await page.locator('.advice-stale').innerText();
 check('a stale id is named rather than dropped', /Mythical Ashfallen Visor/.test(staleNote), staleNote.replace(/\n/g, ' '));
 check('and the fix is stated', /Re-run/.test(staleNote));
+
+// ---------------------------------------------------------------------------
+// A run the user has partly acted on
+// ---------------------------------------------------------------------------
+
+// The distinction the panel exists to draw: **carrying the advice out is what
+// makes the loadout differ from it**. A single "is it stale" bit would call this
+// answer stale as its reward for being followed, and discarding the stored run on
+// any mismatch — the design that suggests itself next — would delete a
+// twelve-minute answer at the moment the user did what it said.
+await page.goto(story('app-workspace--advice-after-acting'), { waitUntil: 'networkidle' });
+await page.waitForTimeout(300);
+// Counted before it is read: a missing note must fail this check rather than hang
+// it waiting for an element that is never coming.
+const hasDone = (await page.locator('.advice-done').count()) === 1;
+check('a move already made is reported as done', hasDone);
+const doneNote = hasDone ? await page.locator('.advice-done').innerText() : '';
+check('and names the slot and what is in it now', /Hands now holds/.test(doneNote), doneNote.replace(/\n/g, ' '));
+const hasDrift = (await page.locator('.advice-drift').count()) === 1;
+check('a slot the plan did not ask about gets its own note', hasDrift);
+const driftNote = hasDrift ? await page.locator('.advice-drift').innerText() : '';
+check(
+  'a slot the plan did not ask about is reported separately',
+  /changed since this run/i.test(driftNote),
+  driftNote.replace(/\n/g, ' '),
+);
+check('and named, so the reader knows which verdicts to ignore', /Feet/.test(driftNote));
+// The answer is still there. Most of a fourteen-slot plan survives one slot moving.
+check('the plan is still shown', (await page.locator('.verdict-table').count()) === 1);
+const struck = await page.locator('.verdict-table tbody.done').count();
+check('with the finished row struck through rather than removed', struck === 1, `${struck} struck`);
+// And in the loadout, where the same item now sits on both sides of the row: an
+// unmarked EQUIP there reads as "equip the item you are already wearing".
+const doneTag = await page.locator('.slot-row.done .verdict-tag').count();
+check('and the loadout row no longer reads as an instruction', doneTag === 1, `${doneTag} marked`);
+
+// Stamped under the slot name, where the eye starts on a row, and stamped with a
+// glyph as well as a word: a tick and a warning triangle are recognisable in an
+// 84 px column without reading, and the word settles which of the two it is.
+const stamps = await page
+  .locator('.slot-state')
+  .evaluateAll((els) =>
+    els.map((e) => ({
+      text: e.textContent.trim(),
+      glyph: e.querySelector('svg') !== null,
+      bordered: getComputedStyle(e).borderTopWidth !== '0px',
+    })),
+  );
+check('each affected slot is stamped', stamps.length === 2, JSON.stringify(stamps));
+check('DONE and CHANGED are told apart', stamps.map((x) => x.text).sort().join(',') === 'CHANGED,DONE');
+check('each stamp carries a glyph', stamps.every((x) => x.glyph));
+check('and a border, so it reads as a stamp not a third line of the name', stamps.every((x) => x.bordered));
+
+// ---------------------------------------------------------------------------
+// The landing state: answers kept, none of them open
+// ---------------------------------------------------------------------------
+
+// The window no longer reopens the newest answer by itself — that put a stale
+// plan's marks on the gear before the reader had asked for them. So the picker is
+// the *door*, and the empty state has to say the old answers are still behind it,
+// or starting fresh reads as having lost them.
+await page.goto(story('app-workspace--advice-nothing-open'), { waitUntil: 'networkidle' });
+await page.waitForTimeout(300);
+check('nothing is open on arrival', (await page.locator('.verdict-table').count()) === 0);
+check('and the proposal column reads as locked', (await page.locator('.face-locked.waiting').count()) === 14);
+check('with no marks on the containers', (await page.locator('.item-cell.action').count()) === 0);
+const doorOptions = await page.locator('.advice-panel .advice-runs option').allInnerTexts();
+check('the stored answers are one click away', doorOptions.length === 3, doorOptions.join(' | '));
+check(
+  'and the list says how many there are',
+  /2 saved answers/.test(doorOptions[0] ?? ''),
+  doorOptions[0] ?? '(no placeholder)',
+);
+const keptNote = await page.locator('.advice-kept').innerText();
+check('the panel says they are kept', /2 earlier answers are kept/.test(keptNote), keptNote);
+check('the run is offered', (await page.locator('.advice-panel .run-button:not(.cancel)').count()) === 1);
+check('and there is nothing to put away yet', (await page.locator('.run-button.subtle').count()) === 0);
+
+// ---------------------------------------------------------------------------
+// Several stored runs
+// ---------------------------------------------------------------------------
+
+// Runs are kept rather than overwritten: each is minutes and real money, so taking
+// a second opinion must not be a decision to destroy the first answer.
+await page.goto(story('app-workspace--advice-history'), { waitUntil: 'networkidle' });
+await page.waitForTimeout(300);
+// Scoped to the panel: the same picker is in the header too, deliberately.
+const runOptions = await page.locator('.advice-panel .advice-runs option').allInnerTexts();
+check('two stored runs get a picker', runOptions.length === 2, runOptions.join(' | '));
+if (runOptions.length !== 2) runOptions.push('', '');
+// The label is the run's identity. Two runs on one save differ by what was asked
+// far more usefully than by two timestamps half an hour apart.
+check('labelled by what was asked', /committing to bleeding/.test(runOptions[0]), runOptions[0]);
+check('and by what it cost', /\$4\.16/.test(runOptions[0]));
+check('the newest is marked as such', /newest/.test(runOptions[0]));
+// The same two controls are in the header as well, because the advice panel is
+// below the loadout and scrolls with it: on a fourteen-slot character it can be
+// entirely off screen while the marks it produced are still on the gear.
+check('the run picker is in the header too', (await page.locator('.app-header .advice-runs option').count()) === 2);
+check('and so is New run', (await page.locator('.header-advice .chrome-button.subtle').count()) === 1);
+
+// One control at a time, and never both. A second opinion costs eight minutes and a
+// few dollars and does *not* replace the answer beside it, so offering a Re-run next
+// to a finished plan is inviting an expensive accident: asking again is two steps on
+// purpose.
+check('no Re-run is offered beside an answer', (await page.locator('.chrome-button.primary').count()) === 0);
+check(
+  'and none in the panel either',
+  (await page.locator('.advice-panel .run-button:not(.cancel):not(.subtle)').count()) === 0,
+);
+check('the question box goes with it', (await page.locator('.advice-question').count()) === 0);
+
+// Every control in the toolbar row on one height. Three different font sizes across
+// a select and two buttons is three different heights on one baseline, which reads
+// as a row that has not been laid out.
+const rowHeights = await page.evaluate(() =>
+  ['.field select', '.app-header .advice-runs', '.app-header .chrome-button'].map((sel) =>
+    Math.round(document.querySelector(sel)?.getBoundingClientRect().height ?? 0),
+  ),
+);
+check('the picker is the same height as the buttons and the selects', new Set(rowHeights).size === 1, rowHeights.join(' / '));
+
+// It used to be `Clear`, and it used to delete the answer it sat beside — one click
+// from gone, under the button a reader reaches for *after acting on the plan*. It
+// says what it does now, in the window's own panel: a native `title` takes a second
+// to appear, renders in the OS's style, and vanishes while being read.
+await clearTip();
+await page.locator('.advice-header .run-button.subtle').hover();
+await page.locator('.control-note').waitFor({ state: 'visible', timeout: 3000 });
+const newRunNote = await page.locator('.control-note').innerText();
+check(
+  'New run explains itself in a panel',
+  /Put this answer away/.test(newRunNote),
+  newRunNote.replace(/\n/g, ' — '),
+);
+check('saying nothing is deleted and nothing is spent', /Nothing is deleted and nothing is spent/.test(newRunNote));
+const nativeTitle = await page.locator('.advice-header .run-button.subtle').getAttribute('title');
+check('and not also in a native tooltip on top of it', nativeTitle === null, String(nativeTitle));
+await page.mouse.move(4, 4);
+await page.waitForTimeout(300);
+
+// Refresh is the last step of the loop this app is for — play, come back, refresh,
+// and the plan says which of its moves you have made. So its note is about the save
+// and the stamps, in those words: "the item database is untouched" is a sentence for
+// whoever wrote it.
+await clearTip();
+await page.locator('.app-header .chrome-button', { hasText: 'Refresh' }).hover();
+await page.locator('.control-note').waitFor({ state: 'visible', timeout: 3000 });
+const refreshNote = await page.locator('.control-note').innerText();
+check('Refresh explains itself in the reader’s terms', /save file again/i.test(refreshNote), refreshNote.replace(/\n/g, ' — '));
+check('naming what it picks up', /wearing/.test(refreshNote) && /bags and stashes/.test(refreshNote));
+check('and what happens to the answer on screen', /stays open/.test(refreshNote) && /DONE and amber CHANGED/.test(refreshNote));
+check(
+  'with no jargon from the inside of the app',
+  !/dossier|envelope|snapshot|item database/i.test(refreshNote),
+  refreshNote.replace(/\n/g, ' — '),
+);
+await page.mouse.move(4, 4);
+await page.waitForTimeout(300);
 
 await page.goto(story('app-workspace--first-boot'), { waitUntil: 'networkidle' });
 check('a first boot reports progress instead of sitting blank', (await page.locator('.banner.loading').count()) === 1);

@@ -57,6 +57,16 @@ export interface AdviceMark {
   targetName?: string;
   /** The slot the move is about; for a hold, the slot it is being held *for*. */
   slot?: string;
+  /**
+   * Socketables to fit into the item this move leaves in the slot.
+   *
+   * Carried on the mark because the candidate's own badge is where a reader
+   * standing in front of a stash will look: "fetch this" and "fetch this and put
+   * a Dread Skull in it" are different errands, and the second one is only
+   * findable here — the loadout's proposal card shows the finished item, but the
+   * container cell is what you are pointing at when you go to get it.
+   */
+  fits?: readonly { kind: 'component' | 'augment'; id: string; name?: string }[];
   gains: string[];
   costs: string[];
   reason: string;
@@ -114,6 +124,7 @@ export function adviceMarks(plan: AdvisorPlan | null | undefined): Map<string, A
       reason: v.reason,
       ...(targetId ? { targetId } : {}),
       ...(v.targetName ?? v.target ? { targetName: v.targetName ?? v.target! } : {}),
+      ...(v.fits?.length ? { fits: v.fits } : {}),
     };
 
     add(v.itemId, { ...common, keyMoves: keyMoves(v.itemId) });

@@ -219,6 +219,10 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     for (const enabler of v.enablers ?? []) known(enabler, `${where} enabler`);
     if (v.componentFrom) known(v.componentFrom, `${where} extraction host`);
     if (SOCKET_VERDICTS.includes(v.verdict)) checkSocket(v, input, warn);
+    // The extra sockets. Checked against the item the slot will actually hold —
+    // for an `EQUIP` that is the candidate, and checking the outgoing item's
+    // class instead would clear a component for the wrong kind of gear.
+    checkFits(v, input, warn);
   }
 
   // A hold is a recommendation, not a status.
@@ -319,6 +323,63 @@ function checkStatClarity(
   if (plan.summary) scan(plan.summary, 'the summary');
   for (const note of plan.projected?.notes ?? []) scan(note, 'a projection note');
   if (answer) scan(answer, 'the answer');
+}
+
+/**
+ * The socketables a verdict tells the slot to fit, beyond the one it is named
+ * for.
+ *
+ * Same three questions as `checkSocket` — does the id resolve, does the name
+ * agree with it, will the item accept it — with one difference that is the whole
+ * reason this is separate: the **host is the item the slot ends up holding**.
+ * For an `EQUIP` that is the candidate, so a fit is legal or illegal according to
+ * the incoming item's class; running it against the outgoing item would clear a
+ * component for gear the plan is telling you to take off.
+ *
+ * A fourth question is only askable here: `kind` is asserted rather than derived,
+ * so a plan can claim an augment is a component. The two go in independent
+ * sockets, so getting it wrong means the window renders the fit into the wrong
+ * one — silently, since both sockets exist on every item.
+ */
+function checkFits(
+  v: AdvisorPlan['verdicts'][number],
+  input: PlanCheckInput,
+  warn: (kind: PlanWarningKind, message: string) => void,
+): void {
+  if (!v.fits?.length) return;
+  const where = `${v.verdict} on ${v.slot}`;
+  // The item that will be wearing them. An `EQUIP`'s `target` is an item id;
+  // every other verdict keeps what is in the slot.
+  const hostId = v.verdict === 'EQUIP' ? v.target : v.itemId;
+  const host = hostId ? input.itemsById.get(hostId) : undefined;
+  const flag = slotFlagForClass(host?.base?.slot);
+
+  const seen = new Set<string>();
+  for (const fit of v.fits) {
+    const part = fit.id ? input.socketablesById?.get(fit.id) : undefined;
+    if (!part) {
+      warn(
+        'unknown-socketable',
+        `${where} fits \`#${fit.id}\`, which is not a component or augment id in the document`,
+      );
+      continue;
+    }
+    if (fit.name && !namesAgree(fit.name, part.name)) {
+      warn('name-mismatch', `${where} fits "${fit.name}" but \`#${fit.id}\` is ${part.name}`);
+    }
+    // One component and one augment, in independent sockets. Two of either is
+    // not a legal item state, and the second would silently overwrite the first.
+    if (seen.has(fit.kind)) {
+      warn('illegal-socket', `${where} fits two ${fit.kind}s — an item holds one`);
+    }
+    seen.add(fit.kind);
+    if (flag && part.allowedSlots?.length && !part.allowedSlots.includes(flag)) {
+      warn(
+        'illegal-socket',
+        `${part.name} cannot go on ${host?.display ?? v.slot} — its use-on restriction does not accept ${flag}`,
+      );
+    }
+  }
 }
 
 function checkSocket(

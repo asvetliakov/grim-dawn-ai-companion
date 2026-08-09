@@ -12,13 +12,22 @@
  * builtin.
  */
 
-import type { AdvisePhase, AdviseStatus, AdviseEnvelope, AdviseUsage } from '../core/ai/envelope.js';
+import type {
+  AdviceRunRef,
+  AdviseActivityState,
+  AdvisePhase,
+  AdviseStatus,
+  AdviseEnvelope,
+  AdviseUsage,
+} from '../core/ai/envelope.js';
 import type { AdvisorPlan, PlanWarning, VerdictRow } from '../core/ai/provider.js';
 import type { Settings } from '../core/settings-schema.js';
 import type { Difficulty } from '../core/save/types.js';
 import type { UiSnapshot } from './view.js';
 
 export type {
+  AdviceRunRef,
+  AdviseActivityState,
   AdviseEnvelope,
   AdvisePhase,
   AdviseStatus,
@@ -67,6 +76,19 @@ export interface Bootstrap {
 
 export type PushEvent =
   | { type: 'advise-progress'; runId: string; phase: 'context' | 'asking' | 'repair'; elapsedMs: number }
+  /**
+   * A chunk of what the model has just written, coalesced in main to a few a
+   * second. A separate event from `advise-progress` because the two have different
+   * rates and different meanings: a phase change is rare and structural, this is
+   * continuous.
+   *
+   * A **delta**, not a snapshot: the renderer accumulates the whole transcript, so
+   * sending the accumulation each time would re-marshal a hundred kilobytes across
+   * the process boundary several times a second to append a few words to it. The
+   * *tail* on `AdviseStatus` is the snapshot, and it exists for the other case —
+   * a window that mounts nine minutes in and has no transcript to append to.
+   */
+  | { type: 'advise-activity'; runId: string; kind: 'thinking' | 'answer'; text: string; outputTokens?: number }
   | { type: 'advise-done'; runId: string; envelope: AdviseEnvelope }
   | { type: 'advise-error'; runId: string; message: string }
   | { type: 'db-progress'; message: string }
@@ -83,7 +105,20 @@ export interface GdApi {
   startAdvise(req: { question?: string }): Promise<{ runId: string }>;
   cancelAdvise(runId: string): Promise<void>;
   getAdviseStatus(): Promise<AdviseStatus>;
-  getLastAdvice(character: string): Promise<AdviseEnvelope | null>;
+  /**
+   * Every stored run for a character, newest first.
+   *
+   * There is deliberately **no "open the newest one" channel**, and no delete.
+   * The window starts on the empty state and a run is opened by picking it:
+   * reopening last week's answer on every launch puts a stale plan's marks on the
+   * gear before the reader has asked for them, and makes "is this still about what
+   * I am wearing?" the first question of every session rather than one they chose
+   * to ask. And nothing removes a run — each is minutes and real money, so the
+   * fresh-session control had to stop being a delete button (it is now `New run`,
+   * which selects nothing and destroys nothing).
+   */
+  getAdviceHistory(character: string): Promise<AdviceRunRef[]>;
+  getAdvice(character: string, id: string): Promise<AdviseEnvelope | null>;
   /** Subscribe to pushes; the returned function unsubscribes. */
   onPush(cb: (e: PushEvent) => void): () => void;
 }
@@ -98,7 +133,8 @@ export const IPC_CHANNELS = [
   'startAdvise',
   'cancelAdvise',
   'getAdviseStatus',
-  'getLastAdvice',
+  'getAdviceHistory',
+  'getAdvice',
 ] as const satisfies readonly (keyof GdApi)[];
 
 export type IpcChannel = (typeof IPC_CHANNELS)[number];
