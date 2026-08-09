@@ -47,6 +47,10 @@ function stubDb(skills: Record<string, string> = {}, items: Record<string, DbIte
     difficultyPenalty: () => ({}),
     armorAbsorptionBase: () => 70,
     speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
+    combatFormulas: () => ({
+      attributeDamage: { physical: 1 / 245, pierce: 1 / 245, physicalDot: 1 / 215, magical: 1 / 215, magicalDot: 1 / 200 },
+      hitChances: { Head: 15, Shoulders: 15, Chest: 26, Hands: 12, Legs: 20, Feet: 12 },
+    }),
     baseSpeeds: () => ({ attack: 1.25, cast: 1.25, run: 0.93, dualWieldFactor: 0.5 }),
     levelProgression: () => ({
       attributePointsPerLevel: 1,
@@ -785,14 +789,19 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     }
   });
 
-  it('names what the attributes scale without inventing a rate', async () => {
+  it('states the attribute damage rates from the combat formulas record', async () => {
     const three = section(buildContextDoc(await context('_Suchka')).markdown, 3);
-    expect(three).toContain('Internal Trauma **Damage**');
-    expect(three).toContain('**No damage scaling at all.**');
-    // The rate is engine-side. Saying so is the point: the alternative is an
-    // advisor that either ignores the term or makes a coefficient up.
-    expect(three).toContain('is in no game record');
-    expect(three).toContain('must not be used to block a move');
+    // The rates turned out to be in the game data after all — equation strings
+    // in `combatformulas.dbr` — so the section now states the character's
+    // current bonus per type instead of declaring the rate underivable.
+    expect(three).toContain("rates from the game's combat formulas record");
+    expect(three).toMatch(/\*\*Cunning \d+\*\* — currently \+[\d.]+% Physical Damage/);
+    expect(three).toMatch(/\+[\d.]+% Internal Trauma Damage/);
+    expect(three).toMatch(/\*\*Spirit \d+\*\* — currently \+[\d.]+% to each magical damage type/);
+    expect(three).toContain('**No damage scaling at all**');
+    // How the bonus stacks is still community knowledge, not data — the section
+    // must attribute it rather than state it as a data fact.
+    expect(three).toContain('Per the community mechanics guide');
   });
 
   it('gives every component and augment an id that no item id collides with', async () => {

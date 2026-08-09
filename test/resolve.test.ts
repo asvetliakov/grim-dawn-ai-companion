@@ -48,6 +48,10 @@ function stubDb(items: Record<string, DbItem>, affixes: Record<string, string>):
     difficultyPenalty: () => ({}),
     armorAbsorptionBase: () => 70,
     speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
+    combatFormulas: () => ({
+      attributeDamage: { physical: 1 / 245, pierce: 1 / 245, physicalDot: 1 / 215, magical: 1 / 215, magicalDot: 1 / 200 },
+      hitChances: { Head: 15, Shoulders: 15, Chest: 26, Hands: 12, Legs: 20, Feet: 12 },
+    }),
     baseSpeeds: () => ({ attack: 1.25, cast: 1.25, run: 0.93, dualWieldFactor: 0.5 }),
     levelProgression: () => ({
       attributePointsPerLevel: 1,

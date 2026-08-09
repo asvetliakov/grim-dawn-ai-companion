@@ -25,11 +25,13 @@ import {
   type LevelProgression,
   type SpeedCaps,
   type BaseSpeeds,
+  type AttributeDamageRates,
+  type CombatFormulas,
   type StatValue,
 } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 11;
+export const DB_SCHEMA_VERSION = 12;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -66,6 +68,8 @@ export interface NormalizedDb {
   baseSpeeds: BaseSpeeds;
   /** Attribute/skill points per level, from the player-levels record. */
   levelProgression: LevelProgression;
+  /** Attribute→damage rates and hit-location weights, from the combat manager record. */
+  combatFormulas: CombatFormulas;
   factions: DbFaction[];
   /** faction id → market tier → item record paths. */
   vendor: Record<string, Partial<Record<RepTier, string[]>>>;
@@ -95,6 +99,9 @@ const WANTED_PREFIXES = [
   'records/creatures/pc/malepc01.dbr',
   // The 13 itemcost records whose equations produce attribute requirements.
   'records/game/itemcostformulas',
+  // The combat manager record (`gameengine.dbr` points at it): the
+  // attribute→damage equations and the hit-location weights live here.
+  'records/game/combatformulas.dbr',
 ];
 
 /**
@@ -162,6 +169,81 @@ function buildLevelProgression(records: Map<string, ArzRecord>): LevelProgressio
     },
     maxLevel: num(rec, 'maxPlayerLevel') ?? d.maxLevel,
     maxDevotionPoints: num(rec, 'maxDevotionPoints') ?? d.maxDevotionPoints,
+  };
+}
+
+/**
+ * The combat manager record — `gameengine.dbr` names it in
+ * `defaultCombatManagerRecord`, and Game.dll loads every field below by name
+ * (each has its own "Combat Manager Equation load failure" string).
+ *
+ * The attribute→damage rates are equation strings, e.g.
+ * `physicalDamageEquation = physicalDamageDV*((dexterityDV/245)+1)` — evaluated
+ * at 0 and 1 points of the attribute rather than parsed for the denominator, so
+ * any rebalanced shape still reads correctly. The defaults are 1.3.0.6's values
+ * (1/245, 1/215, 1/200), corroborated to the fourth decimal by the official
+ * Game Guide's rounded 0.41%/0.46%/0.47%/0.5%.
+ */
+const COMBAT_FORMULAS_RECORD = 'records/game/combatformulas.dbr';
+
+const DEFAULT_ATTRIBUTE_RATES: AttributeDamageRates = {
+  physical: 1 / 245,
+  pierce: 1 / 245,
+  physicalDot: 1 / 215,
+  magical: 1 / 215,
+  magicalDot: 1 / 200,
+};
+
+/** The data's `combatRegion<Part>Chance` names, mapped to our slot labels. */
+const HIT_REGIONS: readonly { slot: string; field: string; fallback: number }[] = [
+  { slot: 'Head', field: 'combatRegionHeadChance', fallback: 15 },
+  { slot: 'Shoulders', field: 'combatRegionShouldersChance', fallback: 15 },
+  { slot: 'Chest', field: 'combatRegionTorsoChance', fallback: 26 },
+  { slot: 'Hands', field: 'combatRegionArmsChance', fallback: 12 },
+  { slot: 'Legs', field: 'combatRegionLegsChance', fallback: 20 },
+  { slot: 'Feet', field: 'combatRegionFeetChance', fallback: 12 },
+];
+
+/**
+ * One point's worth, from an equation: evaluate at attribute 0 and attribute 1
+ * on a fixed damage pool and take the relative step. Anything malformed — a
+ * missing record, an unknown variable, a shape that no longer scales — falls
+ * back to the shipped constant rather than poisoning every damage figure.
+ */
+function ratePerPoint(
+  record: ArzRecord | undefined,
+  field: string,
+  damageVar: string,
+  attrVar: string,
+  fallback: number,
+): number {
+  const equation = str(record, field);
+  if (!equation) return fallback;
+  try {
+    const at0 = evaluateFormula(equation, { [damageVar]: 100, [attrVar]: 0 });
+    const at1 = evaluateFormula(equation, { [damageVar]: 100, [attrVar]: 1 });
+    if (!(at0 > 0)) return fallback;
+    const rate = at1 / at0 - 1;
+    return rate > 0 && rate < 1 ? rate : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function buildCombatFormulas(records: Map<string, ArzRecord>): CombatFormulas {
+  const rec = records.get(COMBAT_FORMULAS_RECORD);
+  const d = DEFAULT_ATTRIBUTE_RATES;
+  return {
+    attributeDamage: {
+      physical: ratePerPoint(rec, 'physicalDamageEquation', 'physicalDamageDV', 'dexterityDV', d.physical),
+      pierce: ratePerPoint(rec, 'pierceDamageEquation', 'pierceDamageDV', 'dexterityDV', d.pierce),
+      physicalDot: ratePerPoint(rec, 'physicalDurationDamageEquation', 'physicalDamageDV', 'dexterityDV', d.physicalDot),
+      magical: ratePerPoint(rec, 'magicalDamageEquation', 'magicalDamageDV', 'intelligenceDV', d.magical),
+      magicalDot: ratePerPoint(rec, 'magicalDurationDamageEquation', 'magicalDamageDV', 'intelligenceDV', d.magicalDot),
+    },
+    hitChances: Object.fromEntries(
+      HIT_REGIONS.map(({ slot, field, fallback }) => [slot, num(rec, field) ?? fallback]),
+    ),
   };
 }
 
@@ -673,6 +755,7 @@ export function buildDb(input: BuildInput): NormalizedDb {
   };
   const baseSpeeds = buildBaseSpeeds(records);
   const levelProgression = buildLevelProgression(records);
+  const combatFormulas = buildCombatFormulas(records);
   const { factions, vendor } = buildFactions(records, items, localize);
   const recipes = buildRecipes(records, items);
 
@@ -694,6 +777,7 @@ export function buildDb(input: BuildInput): NormalizedDb {
     speedCaps,
     baseSpeeds,
     levelProgression,
+    combatFormulas,
     factions,
     vendor,
     recipes,

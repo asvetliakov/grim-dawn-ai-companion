@@ -296,6 +296,24 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
     expect(lp.maxDevotionPoints).toBe(55);
   });
 
+  it('derives the attribute damage rates from the combat formulas record', { timeout: BUILD_TIMEOUT }, async () => {
+    // The rates come out of equation strings (`physicalDamageDV*((dexterityDV/245)+1)`),
+    // evaluated rather than hardcoded — this is what retired the "engine-side,
+    // refuse a number" stance. The official Game Guide's rounded 0.41/0.46/0.5
+    // corroborates these exact fractions.
+    const db = await gameDb();
+    const cf = db.combatFormulas();
+    expect(cf.attributeDamage.physical).toBeCloseTo(1 / 245, 8);
+    expect(cf.attributeDamage.pierce).toBeCloseTo(1 / 245, 8);
+    expect(cf.attributeDamage.physicalDot).toBeCloseTo(1 / 215, 8);
+    expect(cf.attributeDamage.magical).toBeCloseTo(1 / 215, 8);
+    expect(cf.attributeDamage.magicalDot).toBeCloseTo(1 / 200, 8);
+    // The hit-location weights are in the same record — and differ from the
+    // community table (12/12/24/16/20/16) this tool once hardcoded.
+    expect(cf.hitChances).toEqual({ Head: 15, Shoulders: 15, Chest: 26, Hands: 12, Legs: 20, Feet: 12 });
+    expect(Object.values(cf.hitChances).reduce((a, b) => a + b, 0)).toBe(100);
+  });
+
   it('knows crafting-bonus affixes even though they have no name', { timeout: BUILD_TIMEOUT }, async () => {
     const db = await gameDb();
     const crafting = 'records/items/lootaffixes/crafting/ao306_poison.dbr';

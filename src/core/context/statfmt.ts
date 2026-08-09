@@ -16,7 +16,7 @@
  */
 
 import type { GameDb, StatValue } from '../db/types.js';
-import { atRank } from '../mechanics/skills.js';
+import { atRank, statRecord, type EffectiveRank } from '../mechanics/skills.js';
 import {
   conversions,
   DAMAGE_TYPES,
@@ -36,6 +36,15 @@ export interface StatContext {
   invested?: ReadonlySet<string>;
   /** False inside an expansion, so a modifier cannot expand another modifier. */
   expandModifiers?: boolean;
+  /**
+   * The character's current effective skill ranks, when the item being rendered
+   * is a **candidate** — it turns `+3 to Onslaught` into `+3 to Onslaught (rank
+   * 20→23: 186%→198% Weapon Damage, 129→152 Cold Damage)`, which is the whole
+   * argument for such an item. Deliberately absent for *worn* items: a worn
+   * item's bonus is already inside the effective rank, and annotating it would
+   * double-count.
+   */
+  ranks?: ReadonlyMap<string, EffectiveRank>;
 }
 
 const SCALAR = (value: StatValue): number => (typeof value === 'number' ? value : 0);
@@ -769,7 +778,7 @@ function skillLines(
     if (perSkill) {
       const level = read(stats[`augmentSkillLevel${perSkill[1]}`] ?? 0);
       claim(field, `augmentSkillLevel${perSkill[1]}`);
-      if (level) add(Bucket.Skills, `+${num(level)} to ${name(raw)}`);
+      if (level) add(Bucket.Skills, `+${num(level)} to ${name(raw)}${rankDelta(raw, level, ctx)}`);
       continue;
     }
     const perMastery = /^augmentMasteryName(\d*)$/.exec(field);
@@ -811,6 +820,66 @@ function skillLines(
       add(Bucket.Skills, `Modifies: ${name(raw)}${has ? '' : ' (no points invested)'}${detail}`);
     }
   }
+}
+
+/**
+ * What a candidate's `+N to <skill>` would actually buy.
+ *
+ * `+3 to Onslaught` is three words until it is `rank 20→23: 186%→198% Weapon
+ * Damage, 129→152 Cold Damage` — for a skill whose `% Weapon Damage` climbs
+ * with rank, the plus is often the item's whole argument, and without the
+ * numbers the advisor weighs it as a token. Only fires when `ctx.ranks` is
+ * provided (candidates; worn items would double-count) and only for skills the
+ * character has points in — Grim Dawn grants no oskills, so `+N` to an
+ * uninvested skill genuinely does nothing.
+ *
+ * The delta is read against *today's* rank; an incoming item replacing gear
+ * that itself boosts this skill shifts the baseline, and that post-swap
+ * arithmetic belongs to the advisor, exactly as with requirements.
+ */
+function rankDelta(record: string, bonus: number, ctx: StatContext): string {
+  const rank = ctx.ranks?.get(record);
+  if (!rank) return '';
+  const skill = ctx.db.getSkill(record);
+  if (!skill) return '';
+  const stats = statRecord(skill, ctx.db);
+  const ceiling = stats.ultimateLevel ?? skill.ultimateLevel ?? stats.maxLevel ?? skill.maxLevel;
+  const from = rank.effective;
+  const to = ceiling ? Math.min(from + bonus, ceiling) : from + bonus;
+  if (to <= from) return ' (already at this skill\'s rank ceiling — wasted here)';
+  const readFrom = atRank(from);
+  const readTo = atRank(to);
+  const parts: string[] = [];
+  const weapon = stats.stats['weaponDamagePct'];
+  if (weapon !== undefined) {
+    const a = readFrom(weapon);
+    const b = readTo(weapon);
+    if (a !== b) parts.push(`${num(a)}%→${num(b)}% Weapon Damage`);
+  }
+  for (const t of DAMAGE_TYPES) {
+    const value = stats.stats[`offensive${t.stem}Min`];
+    if (value === undefined) continue;
+    const a = readFrom(value);
+    const b = readTo(value);
+    if (a !== b) parts.push(`${num(a)}→${num(b)} ${t.label} Damage${t.overTime ? ' over time' : ''}`);
+  }
+  // Passives mostly pay in `+%` per rank rather than flat — without these a
+  // `+3 to Endless Rage` annotated only "(rank 3→6)" and left the value out.
+  for (const t of DAMAGE_TYPES) {
+    const value = stats.stats[`offensive${t.stem}Modifier`];
+    if (value === undefined) continue;
+    const a = readFrom(value);
+    const b = readTo(value);
+    if (a !== b) parts.push(`+${num(a)}%→+${num(b)}% ${t.label} Damage${t.overTime ? ' over time' : ''}`);
+  }
+  const total = stats.stats['offensiveTotalDamageModifier'];
+  if (total !== undefined) {
+    const a = readFrom(total);
+    const b = readTo(total);
+    if (a !== b) parts.push(`+${num(a)}%→+${num(b)}% Total Damage`);
+  }
+  const arrow = `rank ${from}→${to}${to === ceiling && from + bonus > to ? ' (ceiling)' : ''}`;
+  return parts.length ? ` (${arrow}: ${parts.join(', ')})` : ` (${arrow})`;
 }
 
 // ---------------------------------------------------------------------------

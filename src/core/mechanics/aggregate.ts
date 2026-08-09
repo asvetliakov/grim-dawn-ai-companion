@@ -878,7 +878,7 @@ export function aggregateCharacter(
       secondary: [...secondary].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value),
     },
     damage: damageProfile(damage, conversionRows, attackRows, rrRows, ranks, save, db),
-    defense: defenseSummary(defense, armorPieces, slots, db.armorAbsorptionBase()),
+    defense: defenseSummary(defense, armorPieces, slots, db.armorAbsorptionBase(), db.combatFormulas().hitChances),
     speed: speedSummary(speedPermanent, speedMaintainable, slots, db),
     ranks: [...ranks.values()].sort((a, b) => b.invested - a.invested),
     maintained,
@@ -1080,6 +1080,7 @@ function defenseSummary(
   pieces: Map<string, number>,
   slots: EquippedSlot[],
   absorptionBase: number,
+  hitChances: Record<string, number>,
 ): DefenseSummary {
   const armorClasses = new Set<string>();
   let hasShield = false;
@@ -1095,7 +1096,10 @@ function defenseSummary(
     const piece = pieces.get(part.slot) ?? 0;
     return {
       slot: part.slot,
-      hitChance: part.hitChance,
+      // From the combat manager record, not the constant: the shipped weights
+      // (Head 15, Shoulders 15, Chest 26, Hands 12, Legs 20, Feet 12) differ
+      // from the community table this tool once hardcoded.
+      hitChance: hitChances[part.slot] ?? part.hitChance,
       piece,
       effective: (piece + fields.bonusArmor) * (1 + fields.armorPercent / 100),
     };

@@ -228,6 +228,44 @@ export interface SpeedCaps {
 }
 
 /**
+ * How much damage one point of an attribute buys, as a fraction (0.00408 =
+ * +0.408% per point). Derived by *evaluating* the combat manager's equation
+ * strings (`physicalDamageEquation = physicalDamageDV*((dexterityDV/245)+1)`
+ * and siblings) rather than by hardcoding the denominators, so a rebalance in
+ * the data changes the answer here. The DBR names one more time: dexterity =
+ * Cunning, intelligence = Spirit — and strength (Physique) has no damage
+ * equation at all, which is data confirming the "Physique scales no damage"
+ * gotcha rather than folklore.
+ *
+ * One engine-side residue remains: *which* damage types sit in the "physical"
+ * vs "magical" group is an enum in Game.dll. The membership comes from the
+ * game's own attribute descriptions: physical = Physical + Pierce (their DoTs,
+ * Internal Trauma and Bleeding, ride `physicalDot`), magical = Fire, Cold,
+ * Lightning, Acid, Vitality, Aether, Chaos (their DoTs ride `magicalDot`).
+ */
+export interface AttributeDamageRates {
+  /** Cunning → Physical damage, per point. */
+  physical: number;
+  /** Cunning → Pierce damage, per point (same equation shape, kept separate in the data). */
+  pierce: number;
+  /** Cunning → physical duration damage (Bleeding, Internal Trauma), per point. */
+  physicalDot: number;
+  /** Spirit → magical damage, per point. */
+  magical: number;
+  /** Spirit → magical duration damage, per point. */
+  magicalDot: number;
+}
+
+export interface CombatFormulas {
+  attributeDamage: AttributeDamageRates;
+  /**
+   * Body-part slot label → % of physical hits that roll against it (sums to
+   * 100). The data's names are combatRegion Torso/Arms; ours are Chest/Hands.
+   */
+  hitChances: Record<string, number>;
+}
+
+/**
  * The rates a `SpeedCaps` percentage is a percentage *of*, read from the player
  * creature record (`records/creatures/pc/malepc01.dbr`; the female record is
  * identical).
@@ -325,6 +363,14 @@ export interface GameDb {
   armorAbsorptionBase(): number;
   /** The engine's player speed caps (attack/cast 200, run 135). */
   speedCaps(): SpeedCaps;
+  /**
+   * The combat manager's own formulas, from `records/game/combatformulas.dbr` —
+   * the record `gameengine.dbr` wires in as `defaultCombatManagerRecord`. Two
+   * things the tool long believed were engine-side turn out to be data: the
+   * attribute→damage rates (equation strings, evaluated rather than hardcoded)
+   * and the hit-location weights each physical hit rolls against.
+   */
+  combatFormulas(): CombatFormulas;
   /** The unmodified rates those caps are percentages of, plus the dual-wield factor. */
   baseSpeeds(): BaseSpeeds;
   /**

@@ -18,12 +18,13 @@ import type { DbItem, DbRecipe, DbSet, DbSkill, GameDb, RepTier, StatValue } fro
 import { REP_TIERS } from '../db/types.js';
 import type { CharacterAggregate, DualWieldEnabler, MatrixRow } from '../mechanics/aggregate.js';
 import type { CharacterStanding, RequirementCheck, RequirementGap } from '../mechanics/requirements.js';
-import { atRank, modifierParent, skillLabel, statRecord } from '../mechanics/skills.js';
+import { atRank, modifierParent, skillLabel, statRecord, type EffectiveRank } from '../mechanics/skills.js';
 import {
   addDamage,
   ATTR_KEYS,
   DAMAGE_TYPES,
   emptyDamage,
+  ARMOR_PARTS,
   RESIST_COLUMNS,
   type AttrKey,
   type DamageKey,
@@ -253,6 +254,7 @@ function render(
     socketableIds,
     equipped,
     invested,
+    ranks: new Map(input.aggregate.ranks.map((r) => [r.record, r])),
     recipes,
     iron: ironOutlook(input, recipes),
   };
@@ -306,6 +308,11 @@ interface RenderContext extends ContextInput {
   equipped: ResolvedItem[];
   /** Skill records with at least one invested point. */
   invested: Set<string>;
+  /**
+   * Current effective rank per invested skill, for turning a candidate's
+   * `+N to <skill>` into the ranks (and numbers) it would actually buy.
+   */
+  ranks: ReadonlyMap<string, EffectiveRank>;
   /** §10's blueprint scope, computed once because §2 prices against it too. */
   recipes: RecipeView;
   /** Whether iron is actually scarce for this character — see `ironOutlook`. */
@@ -441,7 +448,8 @@ function gameRules(out: Writer, ctx: RenderContext): void {
   out.line('Enemies in the late game carry resistance reduction of their own, so the community target is **+20 to +30 overcap** on the resistances a build actually faces, not exactly 80. Being under cap on a resistance the character meets constantly is the single most common cause of death.');
 
   out.line();
-  out.line('**Armour is localized, not pooled.** Every physical hit rolls one body part — Head 12%, Shoulders 12%, Chest 24%, Hands 16%, Legs 20%, Feet 16% — and is met by *that piece alone*. Summing six ratings describes a character who does not exist. Flat `+Armor` from rings, components and skills is added to **every** part. Absorption is multiplicative on a 70% base: `+20% Armor Absorption` gives 84%, not 90%, and it caps at 100%.');
+  const hits = ctx.db.combatFormulas().hitChances;
+  out.line(`**Armour is localized, not pooled.** Every physical hit rolls one body part — ${ARMOR_PARTS.map((p) => `${p.slot} ${num(hits[p.slot] ?? p.hitChance)}%`).join(', ')} (the game's own combat formulas record) — and is met by *that piece alone*. Summing six ratings describes a character who does not exist. Flat \`+Armor\` from rings, components and skills is added to **every** part. Absorption is multiplicative on a 70% base: \`+20% Armor Absorption\` gives 84%, not 90%, and it caps at 100%.`);
 
   out.line();
   out.line(
@@ -580,27 +588,35 @@ function attributesAndDefenses(out: Writer, ctx: RenderContext): void {
 }
 
 /**
- * What the three attributes buy beyond wearing gear.
+ * What the three attributes buy beyond wearing gear — with the game's own
+ * rates.
  *
  * Stated because §4's damage profile does *not* include it, and an advisor with
  * no note here has two bad options: ignore a real term, or invent a coefficient.
- * The types come from the game's own attribute descriptions
- * (`tagCharAttributeDescription01`/`02`/`03`); the *rate* is engine-side and
- * appears in no record, exactly like the armour hit weights — so the size is
- * declared underivable rather than guessed.
+ * The types come from the game's attribute descriptions
+ * (`tagCharAttributeDescription01`/`02`/`03`); the *rates* come from the combat
+ * manager's equation strings (`GameDb.combatFormulas()`), which overturned this
+ * section's original "the rate is engine-side, refuse a number" stance. How the
+ * bonus stacks is the one part the data does not spell out: per the community
+ * mechanics guide it joins the same additive pool as gear's `+%` — said with
+ * that attribution rather than as a data fact.
  */
 function attributeScaling(out: Writer, ctx: RenderContext): void {
   const a = ctx.aggregate.attributes;
+  const rates = ctx.db.combatFormulas().attributeDamage;
+  const perPoint = ctx.db.levelProgression().attributePerPoint;
+  const pct = (points: number, rate: number): string => `+${num(points * rate * 100)}%`;
+  const cun = Math.round(a.cunning.total);
+  const spi = Math.round(a.spirit.total);
   out.line();
-  out.line('**What the attributes themselves scale** (the game\'s own attribute descriptions; *not* included in §4\'s damage profile):');
+  out.line('**What the attributes themselves scale** (rates from the game\'s combat formulas record; *not* included in §4\'s `+%` columns):');
   out.bullets([
-    '**Cunning** — Physical, Pierce, Bleeding and Internal Trauma **Damage**, plus Offensive Ability, critical hits and health.',
-    '**Spirit** — the magical damage types (Fire, Cold, Lightning, Aether, Chaos, Vitality **Damage** and their damage-over-time twins), plus energy and energy regeneration.',
-    '**Physique** — health, health regeneration, dodge and crit avoidance. **No damage scaling at all.**',
-    'The **rate** is engine-side and is in no game record, so this document gives no number for it and §4\'s `+% damage` figures exclude it. ' +
-      'Weigh it as a direction, not a quantity: against this character\'s ' +
-      `${Math.round(a.cunning.total)} Cunning and ${Math.round(a.spirit.total)} Spirit, a swap moving either by a few tens of points is **not** a damage argument and must not be used to block a move. ` +
-      'It becomes one only when the shift is large against the total, or when it crosses a requirement — and requirements are checked exactly, above.',
+    `**Cunning ${cun}** — currently ${pct(cun, rates.physical)} Physical Damage, ${pct(cun, rates.physical)} Pierce Damage, ${pct(cun, rates.physicalDot)} Bleeding Damage and ${pct(cun, rates.physicalDot)} Internal Trauma Damage ` +
+      `(${num(rates.physical * 100 * perPoint.cunning)}% / ${num(rates.physicalDot * 100 * perPoint.cunning)}% per assigned point of ${perPoint.cunning} Cunning), plus Offensive Ability and health.`,
+    `**Spirit ${spi}** — currently ${pct(spi, rates.magical)} to each magical damage type (Fire, Cold, Lightning, Acid, Vitality, Aether, Chaos) and ${pct(spi, rates.magicalDot)} to each of their damage-over-time twins ` +
+      `(${num(rates.magical * 100 * perPoint.spirit)}% / ${num(rates.magicalDot * 100 * perPoint.spirit)}% per assigned point of ${perPoint.spirit} Spirit), plus energy and energy regeneration.`,
+    '**Physique** — health, health regeneration, dodge and crit avoidance. **No damage scaling at all** (the combat formulas carry no strength damage equation).',
+    'Per the community mechanics guide this joins the **same additive pool** as gear\'s `+% damage`. One assigned point is a few `+%` against §4\'s totals — a swap moving an attribute by tens of points is a damage argument only when the resulting shift is large against §4\'s column, or when it crosses a requirement (checked exactly, above).',
   ]);
 }
 
@@ -894,7 +910,7 @@ function damageSection(out: Writer, ctx: RenderContext): void {
     // multiplied by the whole accumulated pool. Stated with the same caveat as
     // the attack-speed composition — the combining is engine behaviour.
     out.line(
-      'Reading the table: on a weapon attack, flat damage joins the pool first and the type\'s whole `+%` column then scales it — so against `+N%`, one more point of on-type flat damage delivers roughly `1 + N/100` points, while another `+25%` of the same type is only a `25/(100+N)` relative gain. Flat damage on gear reaches weapon attacks and `% Weapon Damage` skills only (§2). How flat and `+%` combine is engine behaviour, inferred like the attack-speed composition in §3 — treat it as a strong direction, not an exact figure (the Cunning/Spirit bonus multiplies on top and is given no number).',
+      'Reading the table: flat damage joins the weapon-attack pool first, and the type\'s whole `+%` column then scales it — against `+N%`, one extra on-type flat point delivers ≈`1 + N/100` points, while another `+25%` is only a `25/(100+N)` relative gain. Gear flat reaches weapon attacks and `% Weapon Damage` skills only (§2). The combination is inferred engine behaviour, like §3\'s attack-speed composition — a strong direction, not an exact figure. §3\'s attribute damage bonus is *excluded* from the `+%` column here and joins the same pool.',
     );
     out.line();
   }
@@ -911,7 +927,7 @@ function damageSection(out: Writer, ctx: RenderContext): void {
       .map((s) => `${s.share}% ${s.label} Damage${s.overTime ? ' (over time)' : ''}`)
       .join(' · ');
     out.line();
-    out.line(`**Weapon attack composition:** ${shares}${d.weaponAttack.mainAttack ? ` — main attack is **${d.weaponAttack.mainAttack}**` : ''}. This is what every point of flat damage on gear feeds.`);
+    out.line(`**Weapon attack composition:** ${shares}${d.weaponAttack.mainAttack ? ` — main attack is **${d.weaponAttack.mainAttack}**` : ''}. This is what every point of flat damage on gear feeds. The shares cover gear and permanent buffs only — a default-attack replacer's own flat damage and \`% Weapon Damage\` multiplier are on its row below, not in these shares.`);
   }
 
   if (d.skillDamage.length) {
@@ -1047,8 +1063,18 @@ function itemBlock(
   out.line();
 
   out.line(`- requirements: ${requirementText(item, check)}`);
+  // A candidate's `+N to <skill>` gets the rank arithmetic; a worn item's bonus
+  // is already inside the effective rank, so annotating it would double-count.
+  const worn = item.position.kind === 'equipment' || item.position.kind === 'weapon';
   const statLines = (stats: Record<string, number | string> | undefined, read?: (v: StatValue) => number) =>
-    stats ? formatStats(stats, { db, invested: ctx.invested, ...(read ? { read } : {}) }) : [];
+    stats
+      ? formatStats(stats, {
+          db,
+          invested: ctx.invested,
+          ...(worn ? {} : { ranks: ctx.ranks }),
+          ...(read ? { read } : {}),
+        })
+      : [];
 
   emit(out, 'base', statLines(base?.stats));
   if (item.prefix) emit(out, `prefix "${item.prefixName ?? '?'}"${jitter(item.prefix.jitter)}`, statLines(item.prefix.stats));

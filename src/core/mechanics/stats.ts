@@ -184,17 +184,20 @@ export const SECONDARY_RESIST_FIELDS: Readonly<Record<string, string>> = {
  * nothing to that hit. So the meaningful figure is per part, and a big total can
  * hide a slot that folds to any real hit.
  *
- * These are the engine's hit-location weights. They are not in the game data —
- * `records/game/gameengine.dbr` carries the absorption constant and nothing
- * about locations — so they come from the documented mechanics.
+ * The hit-location weights ARE in the game data after all — the
+ * `combatRegion<Part>Chance` fields of `records/game/combatformulas.dbr`, read
+ * via `GameDb.combatFormulas().hitChances` — and the installed values differ
+ * from the community table this list once carried (12/12/24/16/20/16). These
+ * entries are the slot roster plus a fallback matching 1.3.0.6's data; the
+ * aggregate overlays the live values.
  */
 export const ARMOR_PARTS: readonly { slot: string; hitChance: number }[] = [
-  { slot: 'Head', hitChance: 12 },
-  { slot: 'Shoulders', hitChance: 12 },
-  { slot: 'Chest', hitChance: 24 },
-  { slot: 'Hands', hitChance: 16 },
+  { slot: 'Head', hitChance: 15 },
+  { slot: 'Shoulders', hitChance: 15 },
+  { slot: 'Chest', hitChance: 26 },
+  { slot: 'Hands', hitChance: 12 },
   { slot: 'Legs', hitChance: 20 },
-  { slot: 'Feet', hitChance: 16 },
+  { slot: 'Feet', hitChance: 12 },
 ];
 
 export interface DefenseFields {

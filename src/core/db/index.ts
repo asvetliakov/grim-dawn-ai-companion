@@ -35,6 +35,7 @@ import {
   type LevelProgression,
   type SpeedCaps,
   type BaseSpeeds,
+  type CombatFormulas,
 } from './types.js';
 
 export interface LoadDbOptions {
@@ -145,6 +146,10 @@ export class NormalizedGameDb implements GameDb {
 
   speedCaps(): SpeedCaps {
     return this.db.speedCaps;
+  }
+
+  combatFormulas(): CombatFormulas {
+    return this.db.combatFormulas;
   }
 
   baseSpeeds(): BaseSpeeds {

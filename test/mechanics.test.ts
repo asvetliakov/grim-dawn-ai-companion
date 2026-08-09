@@ -71,6 +71,10 @@ function stubDb(world: World): GameDb {
     difficultyPenalty: (d) => world.penalty?.[d] ?? {},
     armorAbsorptionBase: () => 70,
     speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
+    combatFormulas: () => ({
+      attributeDamage: { physical: 1 / 245, pierce: 1 / 245, physicalDot: 1 / 215, magical: 1 / 215, magicalDot: 1 / 200 },
+      hitChances: { Head: 15, Shoulders: 15, Chest: 26, Hands: 12, Legs: 20, Feet: 12 },
+    }),
     baseSpeeds: () => ({ attack: 1.25, cast: 1.25, run: 0.93, dualWieldFactor: 0.5 }),
     levelProgression: () => ({
       attributePointsPerLevel: 1,
@@ -739,8 +743,10 @@ describe('resistanceMatrix', () => {
     expect(d.armorSlots.find((s) => s.slot === 'Head')).toMatchObject({ piece: 0, effective: 35 });
     // A bare slot is the finding worth surfacing, not a rounding detail.
     expect(d.weakestSlot?.piece).toBe(0);
-    // Hit-weighted, not a sum: 24% chest + 20% legs + 35 flat everywhere else.
-    expect(d.armorAverage).toBeCloseTo(0.24 * 1026 + 0.2 * 485 + 0.56 * 35);
+    // Hit-weighted, not a sum: 26% chest + 20% legs + 35 flat everywhere else —
+    // the weights are the combat formulas record's own (Chest is 26, not the
+    // community table's 24).
+    expect(d.armorAverage).toBeCloseTo(0.26 * 1026 + 0.2 * 485 + 0.54 * 35);
   });
 
   it('reports the resulting absorption, not the raw modifier', () => {
