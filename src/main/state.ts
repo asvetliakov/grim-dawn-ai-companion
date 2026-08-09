@@ -32,6 +32,14 @@ export class SessionState {
   private db: GameDb | undefined;
   private icons: IconService | undefined;
   private snapshot: UiSnapshot | undefined;
+  /**
+   * The snapshot the UI one was built *from*, kept because an advice run needs
+   * the context document and the id maps that go with it — and it must be the
+   * same document the window is showing, not a second one compiled a moment
+   * later from a save the game may have rewritten in between. That identity is
+   * the whole basis of the advice-to-item join.
+   */
+  private core: CharacterSnapshot | undefined;
   /** In-flight database load, so two callers never build it twice. */
   private loading: Promise<GameDb> | undefined;
   private character: string | undefined;
@@ -60,6 +68,7 @@ export class SessionState {
     if (character && character !== this.character) {
       this.character = character;
       this.snapshot = undefined;
+      this.core = undefined;
     }
     if (this.snapshot) return this.snapshot;
     return this.rebuildSnapshot();
@@ -69,10 +78,34 @@ export class SessionState {
     return this.rebuildSnapshot();
   }
 
+  /**
+   * The character as `src/core` sees it — document, id maps and all.
+   *
+   * Builds it if the window has not asked for a snapshot yet, so an advice run
+   * started from a cold window works rather than reporting nothing to advise on.
+   */
+  async characterSnapshot(): Promise<CharacterSnapshot> {
+    if (!this.core) await this.rebuildSnapshot();
+    // `rebuildSnapshot` either sets it or throws, so this cannot be reached
+    // undefined; the assertion is for the compiler, not for the runtime.
+    return this.core!;
+  }
+
+  /** The version string the envelope records, so an old advice file can be dated. */
+  async gameVersion(): Promise<string> {
+    return (await this.gameDb()).gameVersion;
+  }
+
+  /** Provider, model, effort and timeout for a run — never inherited elsewhere. */
+  currentSettings(): Settings {
+    return this.settings;
+  }
+
   async setActiveCharacter(name: string): Promise<void> {
     if (name === this.character) return;
     this.character = name;
     this.snapshot = undefined;
+    this.core = undefined;
     // Remembered across restarts: reopening on whoever you were last looking at
     // is the whole point of the setting.
     this.persist({ ...this.settings, activeCharacter: name });
@@ -91,6 +124,7 @@ export class SessionState {
       this.loading = undefined;
     }
     this.snapshot = undefined;
+    this.core = undefined;
     this.push({ type: 'snapshot-invalidated' });
     return this.settings;
   }
@@ -156,6 +190,7 @@ export class SessionState {
       throw err;
     }
     this.character = snap.character;
+    this.core = snap;
     this.snapshot = await buildUiSnapshot(snap, icons);
     return this.snapshot;
   }

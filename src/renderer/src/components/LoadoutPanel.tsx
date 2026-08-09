@@ -20,6 +20,8 @@
  * their head.
  */
 
+import { useState } from 'react';
+
 import type { AdviseEnvelope, UiItem, UiSnapshot, UiSocketable } from '../../../shared/ipc.js';
 import { adviceBySlot, shortVerdict, slotKey, socketMove, type SlotAdvice, type SocketMove } from '../advice.js';
 import { useHighlight } from '../highlight.js';
@@ -165,6 +167,26 @@ function SlotRow({
 
   const destroys = socket?.from ? (byId.get(socket.from)?.display ?? socket.from) : '';
 
+  /**
+   * Which of the row's two cards the highlight belongs to.
+   *
+   * A socket move proposes the *same item* — `withSocketable` copies it so the
+   * tooltip is right for free — which means both cards carry one document id, and
+   * an id-based highlight lights the pair. That reads as "this whole row" where
+   * the reader pointed at one side of a comparison, so the row remembers which.
+   *
+   * Deliberately not cleared on leave: the panel keeps its subject lit while the
+   * pointer is on it, and clearing here would take the card dark on the way. It
+   * stops mattering the moment the id stops being highlighted at all.
+   */
+  const [side, setSide] = useState<'current' | 'proposed'>('current');
+  // Only ambiguous when the two cards *are* the same item. For an EQUIP the ids
+  // differ, and filtering by side there would stop a verdict row from lighting the
+  // worn item just because the proposal was pointed at last.
+  const ambiguous = afterSocket !== undefined;
+  const litFor = (docId: string, which: 'current' | 'proposed'): boolean =>
+    highlight.isHighlighted(docId) && (!ambiguous || side === which);
+
   return (
     <div className={`slot-row ${verdict ? `verdict-${verdict.toLowerCase()}` : ''} ${socket ? 'socket-move' : ''}`}>
       {/* The label is a hover target too: at a glance you want the slot, and
@@ -179,7 +201,15 @@ function SlotRow({
 
       <div className="slot-side slot-current">
         {current ? (
-          <ItemFace item={current} />
+          // Lit by id, not by `:hover`. The two are usually the same thing, but
+          // not while the pointer is on the item's own panel: the panel keeps its
+          // subject lit so the card and its container copy do not go dark under a
+          // reader half way through a stat block.
+          <ItemFace
+            item={current}
+            highlighted={litFor(current.docId, 'current')}
+            onHover={(docId) => docId && setSide('current')}
+          />
         ) : (
           <div className="face-empty">empty</div>
         )}
@@ -212,11 +242,20 @@ function SlotRow({
           <ItemFace
             item={afterSocket}
             changed={socket.kind}
-            // An extraction is about that other item too, so pointing at the
-            // proposal lights it up wherever it sits — exactly as an EQUIP
-            // lights up the candidate it names.
-            highlighted={socket.from ? highlight.isHighlighted(socket.from) : false}
-            {...(socket.from ? { onHover: (docId) => highlight.highlight(docId ? socket.from! : null) } : {})}
+            // Two reasons this card can be lit, and it needs both. Its own id,
+            // because a socket move proposes the *same item* and its panel holds
+            // that subject — without this the card went dark the moment the
+            // pointer moved onto the panel describing it. And the extraction
+            // source, because that other item is part of the move too, exactly as
+            // an EQUIP lights up the candidate it names.
+            highlighted={
+              litFor(afterSocket.docId, 'proposed') ||
+              (socket.from ? highlight.isHighlighted(socket.from) : false)
+            }
+            onHover={(docId) => {
+              setSide('proposed');
+              if (socket.from) highlight.highlight(docId ? socket.from : null);
+            }}
           />
         ) : advice ? (
           // A verdict that is not a replacement still has something to say —

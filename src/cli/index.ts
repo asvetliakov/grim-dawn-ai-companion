@@ -19,6 +19,7 @@ import {
 } from '../core/context/builder.js';
 import {
   adviseWithRepair,
+  buildEnvelope,
   createProvider,
   verdictRows,
   normalizeName,
@@ -1240,42 +1241,17 @@ program
         // The markdown stays the model's own: it is where the reasoning happens
         // and it is the human product, so the JSON sits beside it, not over it.
         if (opts.json) {
-          const rows = result.structured
-            ? verdictRows(result.structured, (id) => doc.itemsById.get(id)?.display)
-            : [];
-          writeFileSync(
-            opts.json,
-            `${JSON.stringify(
-              {
-                character: name,
-                generatedAt: new Date().toISOString(),
-                gameVersion: db.gameVersion,
-                provider: result.provider,
-                model: result.model ?? null,
-                effort: result.effort ?? null,
-                calls: outcome.results.length,
-                usage,
-                durationMs: Date.now() - started,
-                warnings: outcome.warnings,
-                // What the *first* call got wrong, which the terminal only ever
-                // showed as a count. Keeping it is what makes two runs on one
-                // dossier comparable — the surviving warnings say nothing about
-                // how much repair it took to get there.
-                firstWarnings: outcome.firstWarnings,
-                revised: outcome.revised,
-                revisionRejected: outcome.revisionRejected,
-                answer: result.text,
-                plan: result.structured ?? null,
-                // Derived here rather than in the UI so the CLI table and the
-                // Stage 7 grid cannot disagree about which rows are swaps.
-                verdictRows: rows,
-                itemNames: Object.fromEntries([...doc.itemsById].map(([id, item]) => [id, item.display])),
-                socketableNames: Object.fromEntries([...doc.socketablesById].map(([id, item]) => [id, item.name])),
-              },
-              null,
-              2,
-            )}\n`,
-          );
+          const envelope = buildEnvelope({
+            character: name,
+            gameVersion: db.gameVersion,
+            ...(opts.question ? { question: opts.question } : {}),
+            outcome,
+            usage,
+            durationMs: Date.now() - started,
+            itemNames: Object.fromEntries([...doc.itemsById].map(([id, item]) => [id, item.display])),
+            socketableNames: Object.fromEntries([...doc.socketablesById].map(([id, item]) => [id, item.name])),
+          });
+          writeFileSync(opts.json, `${JSON.stringify(envelope, null, 2)}\n`);
           console.error(`structured output written to ${opts.json}`);
         }
         const bits = [

@@ -86,44 +86,57 @@ export function isReplacement(verdict: Verdict): boolean {
  * be describable from the renderer, where nothing may reach a module that
  * imports `node:fs`.
  */
-export type PlanWarningKind =
-  | 'unknown-id'
-  | 'unknown-socketable'
-  | 'missing-target'
-  | 'destroyed-host'
-  | 'illegal-socket'
-  | 'ambiguous-stat'
-  | 'name-mismatch'
-  | 'unjustified-hold';
+export const PLAN_WARNING_KINDS = [
+  'unknown-id',
+  'unknown-socketable',
+  'missing-target',
+  'destroyed-host',
+  'illegal-socket',
+  'ambiguous-stat',
+  'name-mismatch',
+  'unjustified-hold',
+] as const;
 
-export interface PlanWarning {
-  kind: PlanWarningKind;
-  message: string;
-}
+export type PlanWarningKind = (typeof PLAN_WARNING_KINDS)[number];
+
+/**
+ * Schemas rather than bare interfaces because a stored advice envelope carries
+ * these and has to be *validated on the way back in*: a file written by an older
+ * build must degrade to "no last advice", not to a renderer reading fields that
+ * are not there. The types stay inferred, so there is still one definition.
+ */
+export const planWarningSchema = z.object({
+  kind: z.enum(PLAN_WARNING_KINDS),
+  message: z.string(),
+});
+
+export type PlanWarning = z.infer<typeof planWarningSchema>;
 
 /** The `Slot | Current | New | Action | Gains / Costs | Why` row for one verdict. */
-export interface VerdictRow {
-  slot: string;
-  current: string;
+export const verdictRowSchema = z.object({
+  slot: z.string(),
+  current: z.string(),
   /** Display name of `current`, without the id — for a UI that renders ids separately. */
-  currentName: string;
-  currentId: string;
+  currentName: z.string(),
+  currentId: z.string(),
   /** `— (keep)` unless the item itself is replaced. */
-  next: string;
-  nextName: string;
-  nextId: string;
+  next: z.string(),
+  nextName: z.string(),
+  nextId: z.string(),
   /** The socketable move, or `KEEP`. Empty on a plain replacement. */
-  action: string;
+  action: z.string(),
   /**
    * What the move adds and what it costs, already qualified. The first live
    * table showed neither, so "+12% Fire Resistance and +12% Lightning
    * Resistance" existed in the prose and nowhere a UI could reach it.
    */
-  gains: string[];
-  costs: string[];
-  why: string;
-  replaces: boolean;
-}
+  gains: z.array(z.string()),
+  costs: z.array(z.string()),
+  why: z.string(),
+  replaces: z.boolean(),
+});
+
+export type VerdictRow = z.infer<typeof verdictRowSchema>;
 
 /** What a row shows when the slot keeps the item it already has. */
 export const KEEP_CELL = '— (keep)';

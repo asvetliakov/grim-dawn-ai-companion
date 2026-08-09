@@ -524,6 +524,9 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
   const gauntlets = bag[1]!;
   const girdle = bag[2]!;
   const spareBlade = bag[5]!;
+  // The second copy of a pair, so the fourth kind of mark has something to be
+  // about: a sell is not an extraction, and the two must not read alike.
+  const duplicateGauntlets = snapshot.personalStash[0]?.items[0]!;
 
   return {
     character: snapshot.character,
@@ -532,6 +535,7 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
     provider: 'claude-cli',
     model: 'opus',
     effort: 'high',
+    question: 'I am committing to bleeding — do not protect the physical damage.',
     calls: 2,
     usage: { inputTokens: 36_412, outputTokens: 40_180, costUsd: 4.16 },
     durationMs: 845_000,
@@ -546,9 +550,41 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
       summary:
         'A dual-wield pierce/bleed Reaver at the Ultimate resistance wall. Bleeding is 42 points under cap and Physical is barely modelled at all; both are fixable from what is already in the bags, at the cost of a little armour on the hands.',
       verdicts: [
-        { slot: 'Head', itemId: head.docId, verdict: 'KEEP', reason: '' },
-        { slot: 'Hands', itemId: hands.docId, verdict: 'EQUIP', target: gauntlets.docId, reason: '' },
-        { slot: 'Belt', itemId: belt.docId, verdict: 'EQUIP', target: girdle.docId, reason: '' },
+        {
+          slot: 'Head',
+          itemId: head.docId,
+          itemName: head.display,
+          verdict: 'KEEP',
+          reason: 'The Mythical version is two levels away and strictly better.',
+        },
+        // The two swaps carry their own gains, costs and argument. `verdictRows`
+        // is *derived* from these fields, so a fixture that filled only the rows
+        // would be describing an envelope no run can produce — and the item
+        // panels, which read the plan, would have nothing to say.
+        {
+          slot: 'Hands',
+          itemId: hands.docId,
+          itemName: hands.display,
+          verdict: 'EQUIP',
+          target: gauntlets.docId,
+          targetId: gauntlets.docId,
+          targetName: gauntlets.display,
+          gains: ['+10% Pierce Resistance', '+18% Chaos Resistance', '+214 Armor'],
+          costs: ['−10% Vitality Resistance', '−15% Bleeding Resistance'],
+          reason: 'Chaos goes over cap; the component you lose is replaceable from the store.',
+        },
+        {
+          slot: 'Belt',
+          itemId: belt.docId,
+          itemName: belt.display,
+          verdict: 'EQUIP',
+          target: girdle.docId,
+          targetId: girdle.docId,
+          targetName: girdle.display,
+          gains: ['+400 Health'],
+          costs: ['−6% Aether Resistance', '−16% Vitality Resistance'],
+          reason: 'Aether is 74 points over cap, so it is free to spend.',
+        },
         // The three shapes a socket move comes in: an empty socket filled (free),
         // an augment replaced (the old one is simply gone), and a component
         // taken out of another item, which destroys that item.
@@ -604,7 +640,7 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
           needs: { levels: 2 },
         },
       ],
-      sell: [],
+      sell: [duplicateGauntlets.docId],
       keyMoves: [
         {
           title: 'Close the Bleeding gap',
@@ -729,10 +765,19 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
       },
     ],
     itemNames: Object.fromEntries(
-      [head, feet, hands, ring1, belt, mainHand, mythicalVisor, gauntlets, girdle, spareBlade].map((i) => [
-        i.docId,
-        i.display,
-      ]),
+      [
+        head,
+        feet,
+        hands,
+        ring1,
+        belt,
+        mainHand,
+        mythicalVisor,
+        gauntlets,
+        girdle,
+        spareBlade,
+        duplicateGauntlets,
+      ].map((i) => [i.docId, i.display]),
     ),
     socketableNames: {
       's-mark-of-mogdrogen': 'Mark of Mogdrogen',

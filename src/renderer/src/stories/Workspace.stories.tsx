@@ -13,6 +13,7 @@ import { LoadingBanner, Shell, Workspace } from '../App.js';
 import { Header } from '../components/Header.js';
 import { fixtureAdvice, fixtureSnapshot } from '../fixtures.js';
 import { IconUrlProvider } from '../icons.js';
+import type { AdviseRun } from '../session.js';
 import type { Bootstrap, UiSnapshot } from '../../../shared/ipc.js';
 import { fixtureIconUrl } from './fixtureIcons.js';
 
@@ -26,12 +27,17 @@ const bootstrap: Bootstrap = {
 function Screen({
   snapshot,
   withAdvice = false,
+  run,
+  adviceError,
   loading = false,
   progress,
   error,
 }: {
   snapshot?: UiSnapshot;
   withAdvice?: boolean;
+  /** A run in flight, at the age the story wants to show it at. */
+  run?: AdviseRun;
+  adviceError?: string;
   loading?: boolean;
   progress?: string;
   error?: string;
@@ -44,6 +50,7 @@ function Screen({
           {...(snapshot ? { snapshot } : {})}
           loading={loading}
           hasAdvice={withAdvice}
+          runningAdvice={run !== undefined}
           onCharacter={() => {}}
           onDifficulty={() => {}}
           onRefresh={() => {}}
@@ -52,7 +59,14 @@ function Screen({
         {error && <div className="banner error">{error}</div>}
         {loading && !snapshot && <LoadingBanner {...(progress ? { progress } : {})} />}
         {snapshot && (
-          <Workspace snapshot={snapshot} advice={withAdvice ? fixtureAdvice(snapshot) : null} onRunAdvice={() => {}} />
+          <Workspace
+            snapshot={snapshot}
+            advice={withAdvice ? fixtureAdvice(snapshot) : null}
+            run={run ?? null}
+            {...(adviceError ? { adviceError } : {})}
+            onRunAdvice={() => {}}
+            onCancelAdvice={() => {}}
+          />
         )}
       </Shell>
     </IconUrlProvider>
@@ -72,6 +86,34 @@ export const BeforeAdvice: Story = {
 /** After a run: proposals in the right-hand column, projections in the sheet. */
 export const WithAdvice: Story = {
   render: () => <Screen snapshot={fixtureSnapshot()} withAdvice />,
+};
+
+/**
+ * Four minutes into a run.
+ *
+ * The state the app spends the most *time* in and the easiest one to get wrong:
+ * an eight-minute call with an opaque subprocess at the end of it. What the panel
+ * can honestly say is which of the three phases is happening and how long it has
+ * been going — the clock is deliberately at a number that looks like a real run
+ * rather than at zero, because "0:03" and "4:07" are read completely differently.
+ */
+export const AdviceRunning: Story = {
+  render: () => (
+    <Screen
+      snapshot={fixtureSnapshot()}
+      run={{ runId: 'story', phase: 'asking', startedAt: Date.now() - 247_000, elapsedMs: 247_000 }}
+    />
+  ),
+};
+
+/** A start that was refused. It has to be a sentence in the panel, not a blank pane. */
+export const AdviceFailed: Story = {
+  render: () => (
+    <Screen
+      snapshot={fixtureSnapshot()}
+      adviceError="claude CLI not found on PATH. Install it, or set `provider` to another backend in settings.json."
+    />
+  ),
 };
 
 /** The first boot, which builds the item database and takes real time. */

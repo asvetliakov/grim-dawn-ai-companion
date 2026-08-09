@@ -155,3 +155,181 @@ npm test && npm run typecheck
 npm run cli -- advise --char _Suchka --json out.json   # then: envelope validates, UI can load it
 npm run dev   # mock-provider run for flow; one real run for the record; screenshot panel + marked grid
 ```
+
+## Outcome
+
+All five deliverables landed, and the run manager turned out to be the testable
+part rather than the untestable one. Verification: **346 tests**, **150 story
+assertions** (up from 100), and **12 assertions driven through the real Electron
+window** — the half no story can reach.
+
+### What the plan got right and what it cost
+
+- **The envelope moved to `buildEnvelope` and the CLI's `--json` is byte-identical.**
+  Proven rather than asserted: the same `advise --provider mock --json` run
+  before and after the change, diffed with `generatedAt`/`durationMs` masked —
+  same eighteen keys in the same order, same values. `question` is **omitted**
+  when there is none rather than written empty, which is what keeps that true for
+  a run with no question.
+- **`PlanWarning` and `VerdictRow` became zod schemas** (in `provider.ts`, where
+  they already lived) so `adviseEnvelopeSchema` could compose them. Their
+  exported *types* are now inferred from the schemas, so there is still one
+  definition of each and no drift to police.
+
+### Two deviations from the plan, both forced
+
+- **Persistence is `src/core/ai/advice-store.ts`, not "the same file".** The plan
+  put `saveLastAdvice`/`loadLastAdvice` in `envelope.ts` — but that module is in
+  the *renderer's* type graph via `src/shared/ipc.ts`, which compiles with
+  `types: []`. A `node:fs` import there is a compile error, which is exactly the
+  mechanical guarantee the repo wants; the split is what preserves it rather than
+  a taste call. Same reasoning made `buildEnvelope` take an `AdviseRun` described
+  structurally instead of importing `RepairOutcome`, which would have dragged
+  `verify.ts` → the resolver → the database types across that boundary for the
+  sake of six field names.
+- **No `lucide-react`.** Nine glyphs at 12 px are nine `<path>`s, and the repo
+  takes no runtime dependencies — Stage 7A declined `react-markdown` on the same
+  grounds and was right to. `badges.tsx` draws them in one 16×16 box so they
+  match optically at the size a 32 px cell allows. The plan's **blue for socket
+  moves** went with it, and for a sharper reason than bundle size: a socket
+  verdict's subject is the item you are *wearing*, and worn items are not in a
+  container, so the colour would have had nothing to colour. The four colours
+  that survive are the four things that can happen to something in a container.
+
+### What the review passes changed
+
+- **`ActionKind` gained a fourth member, `sell`.** 7A's three colours covered
+  equip / hold / destroy; `plan.sell` had nowhere to go and was silently unmarked.
+  Red for both destroy and sell would have merged two different instructions —
+  an extraction *spends* the host to recover what is in it, a sell is a judgement
+  that the item is not for this build — so sell is the dim end of the same warm
+  range, because it is never urgent.
+- **The corner flag grew a glyph.** Four colours in a stash of two hundred items
+  is where a mark stops explaining itself; an arrow pointing up out of the cell
+  does not need the legend, and a clock is a clock. The legend keeps its swatch,
+  now drawn as the same badge, because each *kind* has exactly one glyph — which
+  is only true because everything a container holds is put on, kept, spent or
+  sold.
+- **`actionMarks` is derived from `adviceMarks`** rather than reading the envelope
+  a second time. The badge, the colour, the tab counts and the action tooltip are
+  four views of one reading of the plan.
+- **The fixture's EQUIP verdicts carried no `gains`, `costs` or `reason`** — only
+  their rendered rows did. A story caught it: the action tooltip reads the *plan*,
+  so it had nothing to say about the two most important moves in the fixture.
+  `verdictRows` is derived *from* those fields, so a fixture that filled only the
+  rows was describing an envelope no run can produce.
+
+### The tooltip, which took four passes of its own
+
+The advice panel beside the item panel turned the floating layer from one child
+into two, and every consequence of that was a bug worth fixing:
+
+- **The wheel died over the panel.** It takes pointer events (7A's decision, and
+  right) and is portaled to the body, so a wheel there reached neither the panel
+  — nothing to scroll — nor the pane it was covering, which is not an ancestor.
+  Now a panel taller than the viewport scrolls itself (`max-height: calc(100vh -
+  24px)`), and one with nothing left to scroll forwards the delta to the pane the
+  *card* lives in. A native listener, because React registers `wheel` passively
+  at the root and `preventDefault` there is ignored — and attached from the **ref
+  callback**, because `FloatingPortal` mounts its child in an effect of its own,
+  so an effect here finds `refs.floating.current` still null and, with nothing
+  left to change, never retries.
+- **`scrollTop += deltaY` is correct and feels wrong.** A mouse notch is one
+  ~100 px event that Chromium *animates* over about a tenth of a second; applied
+  directly it landed in a single frame and read as clunky beside the container
+  next to it. So a notch eases out over frames (22% of the remainder each) and a
+  **trackpad gesture is passed straight through** — easing that would put the
+  scroll four frames behind the fingers, which is the lag this exists to remove.
+  The 40 px threshold is what tells them apart.
+- **The empty space beside the shorter panel was an invisible hover target.** Two
+  panels of different heights make the flex row's own box as tall as the taller
+  one, and the row took pointer events — so the pointer could sit in open ground
+  below the advice block with the tooltip refusing to close. The layer now takes
+  **no** pointer events and each panel takes its own, which makes the hover region
+  exactly what a reader can see. `gap: 0` for the mirror-image reason: a gap
+  between them belongs to neither panel, and crossing it would hand the pointer
+  to whatever item cell is underneath.
+- **A 200 ms delay before a panel appears, and 220 ms before it goes.** The first
+  draft delayed only the *cold* open and switched instantly afterwards, on the
+  theory that a reader comparing items has already asked to see them. Reverted on
+  review: it made the two cases feel like different controls, and the strobe came
+  straight back the moment a panel was up — brushing a component chip on the way
+  to the panel flashed the component and flashed back. One rule now, and the
+  anchor moves **with** the subject rather than with the pointer, or the panel
+  would slide to the new card while still describing the old one.
+- **The highlight follows the panel, not the pointer.** Moving onto the panel to
+  finish reading it emptied the pointer set, so the card and its container copy
+  went dark mid-sentence. A second *held* set, unioned with the pointer's and
+  owned by the tooltip — everything else that highlights (a verdict row naming
+  two items, a key move naming four) really is transient. That exposed two gaps:
+  the loadout's **worn** card had never been wired for the highlight class at all
+  (it relied on `:hover`), and a socket-move row lit **both** its cards, because
+  the proposal *is* the same item and carries the same document id. The row now
+  remembers which side was pointed at, and only where the two ids collide —
+  filtering by side on an EQUIP would stop a verdict row from lighting the worn
+  item just because the proposal was pointed at last.
+
+### The run manager
+
+`src/main/advise.ts` imports nothing from Electron, which turned the hardest part
+of this stage into ordinary unit tests: phases in order, the revising phase when
+a plan fails a check, a second `start` refused, cancel-by-id (and a stale id
+**not** killing the live run), a dead backend surfacing in its own words, and a
+failure kept until someone asks so a reload does not lose it. The provider is
+injected the same way `claude-cli` injects its `spawn` — cancellation and
+survival-across-a-reload are *timing*, and neither can be tested against a real
+eight-minute subprocess. The character is the live save, because `planCheckInput`
+verifies a plan against what the document actually offered and a stubbed dossier
+would test a document nothing produces.
+
+`SessionState` keeps the `CharacterSnapshot` the UI snapshot was built from, so a
+run uses **the document the window is showing** rather than one compiled a moment
+later from a save the game may have rewritten in between. That identity is the
+whole basis of the advice-to-item join.
+
+### Driving the real window
+
+Playwright's `_electron` runs the built app, which covers what no story can: the
+preload bridge, the nine IPC channels, the run manager and the file. Click Advise
+→ phases → verdict table → cost line → `advice/_Suchka.json` on disk → reload →
+the advice comes back. One trap worth recording: **this environment exports
+`ELECTRON_RUN_AS_NODE=1`**, which turns the Electron binary into plain Node, so
+`require('electron').protocol` is undefined and the main process dies on line
+one. `env -u ELECTRON_RUN_AS_NODE` is the fix. A second, funnier one: "the
+proposal column is locked before any run" fails on the *second* invocation — by
+working, because an app restart is supposed to re-show the stored advice.
+
+### The live run, for the record
+
+One real `claude-cli` run, started from the window's own Advise button and driven
+by `scripts/check-app.mjs` against the real settings directory:
+
+**2 calls · opus, effort high · 210,627 in · 64,878 out · $3.78 · 12m 03s.**
+`asking the model` at 0 s, `revising the plan` at **598 s**, answer at 723 s —
+so the repair loop fired live and the phase labels are only observable on a run
+that takes real time, which is why the sequence itself is pinned in
+`test/advise-runner.test.ts`. **2 `ambiguous-stat` warnings on the first call →
+one revision → clean**, which is the branch Stage 6B built and the one worth
+seeing end to end in the UI.
+
+The answer: 14 verdicts (**9 BUY-AUGMENT**, 2 RE-AUGMENT, 1 EQUIP, 2 KEEP), 3
+holds, **13 sells**, 5 key moves, 28 k of prose, `itemName` on 14/14 and
+`targetId` on 12/14. Sixteen items marked on the live grid, and the legend read
+*equip now 1 · keep for later 3 · sell or salvage 13* — so the fourth
+`ActionKind` earned itself on the first real plan rather than on a hypothetical:
+without it, thirteen items the plan says to get rid of would have carried no mark
+at all.
+
+What it argued, which is the thing the window exists to show: *nine augment slots
+are empty and the three that are filled all carry Wight Skin Powder, pouring 45
+points into an Aether resistance already 74 over cap.* The nine BUY-AUGMENT rows
+render as the same item with the new augment in it and only the augment chip
+marked, and the sheet's projection column carries the consequence — Pierce 87 →
+129, Fire 74 → 122, Lightning 74 → 122, Bleeding 38 → 78, **Aether 154 → 109**,
+which is the over-cap resistance being spent rather than lost.
+
+One cosmetic note on the record: the cost line reads `asked: "mock run —
+verifying the pipeline"` because the driver script's question string was reused
+for the live run. The question plumbing is what was being checked, and it round-
+tripped through the envelope and the file; the text is the harness's, not a real
+question.

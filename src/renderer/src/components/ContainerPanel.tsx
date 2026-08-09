@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react';
 
 import type { ItemPosition, UiGrid, UiItem, UiSnapshot } from '../../../shared/ipc.js';
 import type { ActionKind } from '../advice.js';
+import { AdviceBadge, badgeForKind, primaryMark } from '../badges.js';
 import { useHighlight } from '../highlight.js';
 import { rarityClass } from '../rarity.js';
 import { useTooltip } from '../tooltip.js';
@@ -97,7 +98,7 @@ export function ContainerPanel({
       for (const { kind } of ACTIONS) sum[kind] += t.todo[kind];
       return sum;
     },
-    { equip: 0, hold: 0, destroy: 0 } as TodoCount,
+    { equip: 0, hold: 0, destroy: 0, sell: 0 } as TodoCount,
   );
   const marks = ACTIONS.filter(({ kind }) => totals[kind] > 0);
 
@@ -136,7 +137,7 @@ export function ContainerPanel({
         <div className="mark-legend">
           {marks.map(({ kind, legend }) => (
             <span className={`legend-item action-${kind}`} key={kind}>
-              <span className="legend-flag" aria-hidden />
+              <span className="legend-flag">{badgeForKind(kind).glyph}</span>
               {legend}
               <span className="legend-count">{totals[kind]}</span>
             </span>
@@ -190,7 +191,7 @@ export function ContainerPanel({
  */
 function MaterialList({ items }: { items: UiItem[] }): React.ReactNode {
   const tooltip = useTooltip();
-  const { isHighlighted, actionFor, highlight } = useHighlight();
+  const { isHighlighted, actionFor, adviceFor, highlight } = useHighlight();
   if (items.length === 0) return <Empty what="materials" />;
 
   const effect = (item: UiItem): string => item.tooltip.blocks.flatMap((b) => b.lines).join(' · ');
@@ -201,33 +202,38 @@ function MaterialList({ items }: { items: UiItem[] }): React.ReactNode {
 
   return (
     <div className="material-list">
-      {sorted.map((item) => (
-        <div
-          className={`material-row ${isHighlighted(item.docId) ? 'highlighted' : ''} ${
-            actionFor(item.docId) ? `action action-${actionFor(item.docId)}` : ''
-          }`}
-          key={item.docId}
-          // The whole row is the hover target, not just the icon — the name is
-          // what the eye lands on and the icon is 32 px of it.
-          onMouseEnter={(e) => {
-            tooltip.show(e.currentTarget, item);
-            highlight(item.docId);
-          }}
-          onMouseLeave={() => {
-            tooltip.hide();
-            highlight(null);
-          }}
-        >
-          <div className="material-art">
-            <ItemArt item={item} />
+      {sorted.map((item) => {
+        const action = actionFor(item.docId);
+        const mark = primaryMark(adviceFor(item.docId));
+        return (
+          <div
+            className={`material-row ${isHighlighted(item.docId) ? 'highlighted' : ''} ${
+              action ? `action action-${action}` : ''
+            }`}
+            key={item.docId}
+            // The whole row is the hover target, not just the icon — the name is
+            // what the eye lands on and the icon is 32 px of it.
+            onMouseEnter={(e) => {
+              tooltip.show(e.currentTarget, item);
+              highlight(item.docId);
+            }}
+            onMouseLeave={() => {
+              tooltip.hide();
+              highlight(null);
+            }}
+          >
+            <div className="material-art">
+              <ItemArt item={item} />
+              {mark && <AdviceBadge mark={mark} />}
+            </div>
+            <div className="material-text">
+              <span className={`material-name ${rarityClass(item.rarity)}`}>{item.display}</span>
+              {effect(item) && <span className="material-effect">{effect(item)}</span>}
+            </div>
+            <span className="material-count">×{item.stackCount}</span>
           </div>
-          <div className="material-text">
-            <span className={`material-name ${rarityClass(item.rarity)}`}>{item.display}</span>
-            {effect(item) && <span className="material-effect">{effect(item)}</span>}
-          </div>
-          <span className="material-count">×{item.stackCount}</span>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -256,11 +262,12 @@ const ACTIONS: readonly { kind: ActionKind; title: string; legend: string }[] = 
   { kind: 'equip', title: 'to equip now', legend: 'equip now' },
   { kind: 'hold', title: 'to keep for a level or attribute threshold', legend: 'keep for later' },
   { kind: 'destroy', title: 'destroyed by an extraction', legend: 'destroyed by an extraction' },
+  { kind: 'sell', title: 'to sell or salvage', legend: 'sell or salvage' },
 ];
 
 /** How many items in here the plan asks you to act on, by kind of action. */
 function todoIn(items: UiItem[], actionFor: (docId: string) => ActionKind | undefined): TodoCount {
-  const out: TodoCount = { equip: 0, hold: 0, destroy: 0 };
+  const out: TodoCount = { equip: 0, hold: 0, destroy: 0, sell: 0 };
   for (const item of items) {
     const kind = actionFor(item.docId);
     if (kind) out[kind]++;

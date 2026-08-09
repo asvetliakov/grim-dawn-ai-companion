@@ -9,6 +9,7 @@
  * disappearing from the table.
  */
 
+import { adviceMarks } from '../../shared/advice-marks.js';
 import type { AdviseEnvelope, AdvisorPlan, VerdictRow } from '../../shared/ipc.js';
 
 /** One entry of the plan's own verdict array, before it became a table row. */
@@ -158,19 +159,20 @@ export function holds(envelope: AdviseEnvelope | null): HeldItem[] {
 }
 
 /**
- * What the plan asks you to do with an item — three different things, so three
+ * What the plan asks you to do with an item — four different things, so four
  * different marks.
  *
  * `equip` is "put this on now". `hold` is "keep this, you will put it on later"
  * — a different action with a different urgency, and lumping the two together
- * makes a stash of held items look like a stash of upgrades. `destroy` is the
- * one that cannot be undone: an Inventor extraction recovers the component *or*
- * the item, so the host is spent.
+ * makes a stash of held items look like a stash of upgrades. `destroy` and
+ * `sell` are both "this item goes away", and they are still not the same
+ * instruction: an Inventor extraction spends the host to recover what is in it,
+ * where a sell is a judgement that the item is not for this build.
  */
-export type ActionKind = 'equip' | 'hold' | 'destroy';
+export type ActionKind = 'equip' | 'hold' | 'destroy' | 'sell';
 
 /** Irreversible first, then what to do now, then what to do later. */
-const ACTION_RANK: Record<ActionKind, number> = { destroy: 0, equip: 1, hold: 2 };
+const ACTION_RANK: Record<ActionKind, number> = { destroy: 0, equip: 1, sell: 2, hold: 3 };
 
 /**
  * Every id the plan asks the player to act on, and what the action is.
@@ -179,10 +181,15 @@ const ACTION_RANK: Record<ActionKind, number> = { destroy: 0, equip: 1, hold: 2 
  * the question that comes first — "which of these two hundred items does the
  * advice touch at all". So it is a standing mark rather than a hover.
  *
+ * Derived from `adviceMarks` rather than read off the envelope a second time:
+ * the badge, the colour and the action tooltip all describe the same judgement,
+ * and two readings of one plan is one reading too many.
+ *
  * What is already worn is deliberately absent: it is on the character, not in a
- * container, and marking it would light up half the grid. So are `keyMoves`
- * item ids — a key move *argues* about items its verdicts already name, and a
- * mark meaning "mentioned somewhere" is not an action.
+ * container, so the *outgoing* half of a move gets no flag here — the loadout's
+ * own verdict column says it, in the place the reader is already looking. So are
+ * `keyMoves` item ids: a key move *argues* about items its verdicts already
+ * name, and a mark meaning "mentioned somewhere" is not an action.
  */
 export function actionMarks(envelope: AdviseEnvelope | null): Record<string, ActionKind> {
   const out: Record<string, ActionKind> = {};
@@ -191,10 +198,14 @@ export function actionMarks(envelope: AdviseEnvelope | null): Record<string, Act
     const existing = out[id];
     if (existing === undefined || ACTION_RANK[kind] < ACTION_RANK[existing]) out[id] = kind;
   };
-  if (!envelope) return out;
-  for (const row of envelope.verdictRows) mark(row.nextId, 'equip');
-  for (const h of envelope.plan?.hold ?? []) mark(h.itemId, 'hold');
-  for (const v of envelope.plan?.verdicts ?? []) if (v.componentFrom) mark(v.componentFrom, 'destroy');
+  for (const [id, marks] of adviceMarks(envelope?.plan)) {
+    for (const m of marks) {
+      if (m.destroys) mark(id, 'destroy');
+      else if (m.kind === 'sell') mark(id, 'sell');
+      else if (m.kind === 'hold') mark(id, 'hold');
+      else if (m.incoming) mark(id, 'equip');
+    }
+  }
   return out;
 }
 

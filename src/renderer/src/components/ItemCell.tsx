@@ -8,15 +8,20 @@
  *
  * The action mark is the standing version of the same idea and answers the
  * earlier question — which of these two hundred items the advice touches at
- * all. It is drawn as a corner flag rather than as a second border so that a
- * cell can be both at once and still read as one thing being pointed at, and it
- * is coloured by *what* the action is: putting something on now, keeping it for
- * later, and destroying it are three different instructions.
+ * all. It sits in the corner rather than being a second border so that a cell
+ * can be both at once and still read as one thing being pointed at, and it is
+ * coloured by *what* the action is: putting something on now, keeping it for
+ * later, destroying it and selling it are four different instructions.
+ *
+ * It carries a glyph, not just a colour. Four colours need a legend to be read;
+ * an arrow pointing up out of the cell does not, and the glyph is what makes the
+ * mark survive being looked at without one.
  */
 
 import type { CSSProperties } from 'react';
 
 import type { UiItem } from '../../../shared/ipc.js';
+import { AdviceBadge, primaryMark } from '../badges.js';
 import { useHighlight } from '../highlight.js';
 import { rarityClass } from '../rarity.js';
 import { useTooltip } from '../tooltip.js';
@@ -35,6 +40,7 @@ export function ItemCell({
   const highlight = useHighlight();
   const lit = highlight.isHighlighted(item.docId);
   const action = highlight.actionFor(item.docId);
+  const mark = primaryMark(highlight.adviceFor(item.docId));
 
   return (
     <div
@@ -52,6 +58,7 @@ export function ItemCell({
       }}
     >
       <ItemArt item={item} />
+      {mark && <AdviceBadge mark={mark} />}
       {item.stackCount > 1 && <span className="item-stack">{item.stackCount}</span>}
     </div>
   );

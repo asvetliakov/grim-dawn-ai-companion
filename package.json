@@ -15,7 +15,8 @@
     "storybook": "storybook dev -p 6006 --no-open",
     "storybook:build": "storybook build -o out/storybook",
     "stories:shoot": "node scripts/shoot-stories.mjs",
-    "stories:check": "node scripts/check-stories.mjs"
+    "stories:check": "node scripts/check-stories.mjs",
+    "app:check": "npm run build && env -u ELECTRON_RUN_AS_NODE node scripts/check-app.mjs"
   },
   "dependencies": {
     "commander": "^14.0.1",

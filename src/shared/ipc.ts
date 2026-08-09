@@ -12,14 +12,25 @@
  * builtin.
  */
 
-import type { AdviseEnvelope, AdviseStatus } from '../core/ai/envelope.js';
-import type { AdvisorPlan, VerdictRow } from '../core/ai/provider.js';
+import type { AdvisePhase, AdviseStatus, AdviseEnvelope, AdviseUsage } from '../core/ai/envelope.js';
+import type { AdvisorPlan, PlanWarning, VerdictRow } from '../core/ai/provider.js';
 import type { Settings } from '../core/settings-schema.js';
 import type { Difficulty } from '../core/save/types.js';
 import type { UiSnapshot } from './view.js';
 
-export type { AdviseEnvelope, AdviseStatus, AdvisorPlan, Settings, UiSnapshot, VerdictRow };
+export type {
+  AdviseEnvelope,
+  AdvisePhase,
+  AdviseStatus,
+  AdviseUsage,
+  AdvisorPlan,
+  PlanWarning,
+  Settings,
+  UiSnapshot,
+  VerdictRow,
+};
 export type * from './view.js';
+export type { AdviceMark } from './advice-marks.js';
 
 /**
  * `gdicon://tex/<arc-relative .tex path>`.

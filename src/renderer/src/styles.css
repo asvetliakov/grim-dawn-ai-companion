@@ -715,8 +715,94 @@ h3 {
   color: var(--ink-dim);
 }
 
-.advice-header .run-button {
+.advice-header .run-button,
+.advice-run {
   margin-left: auto;
+}
+
+/*
+ * A run in flight: what is happening, for how long, and a way out.
+ *
+ * No progress bar anywhere in this block, on purpose. The call is one opaque
+ * subprocess of about eight minutes that reports nothing until it returns, so
+ * every percentage would be invented — and a bar that sits at 40% for six
+ * minutes teaches the user to distrust the panel it is in.
+ */
+.advice-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.run-phase {
+  color: var(--accent);
+}
+
+/* Tabular, because it changes every second and a jittering number reads as a
+   glitch rather than as a clock. */
+.run-clock {
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.run-button.cancel:hover:not(:disabled) {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+
+.advice-question {
+  font: inherit;
+  font-size: 13px;
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 5px 8px;
+  color: var(--ink);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+
+.advice-question::placeholder {
+  color: var(--ink-faint);
+}
+
+/* A refused start or a dead run. It is a sentence in the panel, never a blank
+   pane — the failures here are all actionable ("claude not found on PATH"). */
+.advice-error {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--bad);
+  border-left: 3px solid var(--bad);
+  background: rgb(224 122 107 / 8%);
+}
+
+/*
+ * Ids the current save no longer has.
+ *
+ * A document id is only reproducible from identical save + database state, so
+ * playing for ten minutes after a run invalidates some of them. Saying which
+ * ones by name is the whole point: an item quietly missing from the advice looks
+ * exactly like advice that never mentioned it.
+ */
+.advice-stale {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+/* What the run cost. Two calls and four dollars is not something a user should
+   have to open a terminal to find out — and `2 calls` is the only visible sign
+   that the repair loop fired at all. */
+.advice-cost {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
 }
 
 .advice-placeholder,
@@ -1303,6 +1389,35 @@ h3 {
   pointer-events: none;
 }
 
+/*
+ * The glyph, over the flag it sits on.
+ *
+ * The colour alone needs the legend to be read; an arrow pointing up out of the
+ * cell does not, and a clock is a clock. Four colours in a stash of two hundred
+ * items is exactly where a mark stops being self-explanatory, so this is what
+ * carries the meaning and the colour reinforces it.
+ */
+.advice-badge {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  color: var(--bg);
+  background: var(--action);
+  border-bottom-right-radius: 4px;
+  pointer-events: none;
+}
+
+/* The glyph is drawn in the badge's own ink; nothing here restates its colour. */
+.badge-glyph {
+  display: block;
+}
+
 .action-equip {
   --action: var(--good);
 }
@@ -1316,6 +1431,12 @@ h3 {
 /* The extraction spends this item. Red is not decoration here. */
 .action-destroy {
   --action: var(--bad);
+}
+
+/* Also going away, but by choice rather than as the price of a move — so the
+   same warm end of the wheel, dimmer: a sell is never urgent. */
+.action-sell {
+  --action: var(--ink-faint);
 }
 
 .material-row {
@@ -1366,13 +1487,19 @@ h3 {
   gap: 6px;
 }
 
-/* The same shape and colour as the flag on the item, drawn the same way — a
-   legend that does not look like the thing it explains explains nothing. */
+/* The same shape, colour and glyph as the badge on the item — a legend that does
+   not look like the thing it explains explains nothing. It can carry one glyph
+   because each *kind* of action has exactly one: everything a container holds is
+   either put on, kept, spent or sold. */
 .legend-flag {
-  width: 0;
-  height: 0;
-  border-top: 9px solid var(--action);
-  border-right: 9px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  color: var(--bg);
+  background: var(--action);
+  border-bottom-right-radius: 4px;
 }
 
 .legend-count {
@@ -1472,14 +1599,50 @@ h3 {
    opens over — it opens *below* its card, so a sweep along a row is untouched
    and only a sweep downwards meets it, and it gets out of the way a breath
    after the pointer leaves. */
+/*
+ * The layer holds two panels, not one: what the item *is*, and what the plan
+ * says to do about it.
+ *
+ * Side by side rather than stacked, and `align-items: flex-start` so the advice
+ * panel is only as tall as it needs to be beside a stat block that may be forty
+ * lines. `flex-wrap` is the escape hatch at the window's left and right edges,
+ * where floating-ui's `shift` has already run out of room.
+ *
+ * **The layer itself takes no pointer events; the panels do.** Two panels of
+ * different heights make the row's own box as tall as the taller one, so an
+ * `auto` here would put an invisible hit target in the empty space beside the
+ * shorter panel — the pointer would sit in open ground below the advice block
+ * and the tooltip would refuse to close. `none` here with `auto` on each panel
+ * makes the hover region exactly the panels, which is what a reader can see.
+ *
+ * `gap: 0` for the same reason, the other way round: a gap between them is a
+ * strip that belongs to neither panel, and crossing it on the way from one to
+ * the other would hand the pointer to whatever item cell is underneath.
+ */
 .tooltip-layer {
   z-index: 100;
-  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0;
+  pointer-events: none;
 }
 
 .tooltip {
   user-select: text;
+  /* The hover region is the panel, not the row it sits in — see `.tooltip-layer`. */
+  pointer-events: auto;
   max-width: 480px;
+  /*
+   * A legendary two-hander with a component, an augment, granted skills and a
+   * requirement block is taller than the screen. It scrolls inside itself rather
+   * than being clipped by `shift`, and the wheel handler in `tooltip.tsx` hands
+   * the scroll on to the pane underneath once this has nowhere left to go — the
+   * panel takes pointer events, so without that it would be a dead spot.
+   */
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 12px 14px;
   background: rgb(12 10 8 / 97%);
   border: 1px solid var(--line);
@@ -1552,6 +1715,97 @@ h3 {
   font-size: 13px;
   font-style: italic;
   color: var(--ink-dim);
+}
+
+/*
+ * The advice panel beside the item's own.
+ *
+ * Amber-edged so it reads as the tool talking rather than as more of the item:
+ * everything in the panel to its left is a fact about the item that is true
+ * whether or not a run has happened, and everything here is an opinion that a
+ * re-run can replace.
+ */
+.action-tooltip {
+  max-width: 320px;
+  border-left: 3px solid var(--accent);
+  /* Flush against the item's panel, sharing one edge: there is no gap for the
+     pointer to fall through, and the pair reads as the one thing it is. */
+  margin-left: -1px;
+}
+
+.action-block + .action-block {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgb(74 63 46 / 45%);
+}
+
+.action-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.action-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.action-verb {
+  color: var(--accent);
+}
+
+.action-target {
+  color: var(--ink);
+}
+
+/* The slot, last and quiet: the reader is looking at the item, and the slot is
+   context rather than the instruction. */
+.action-slot {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* The threshold that ends a hold, in the colour a threshold is written in
+   everywhere else in this window. */
+.action-until {
+  margin-top: 5px;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.action-delta {
+  margin-top: 5px;
+  font-size: 13px;
+}
+
+.action-delta .gain,
+.action-delta .cost {
+  display: block;
+}
+
+.action-reason {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--ink-dim);
+}
+
+/* Which multi-slot argument this item belongs to. A move is often only worth
+   making together with three others, and that is exactly what a per-item panel
+   would otherwise hide. */
+.action-keymove {
+  margin-top: 5px;
+  font-size: 12px;
+  color: var(--ink-faint);
 }
 
 .tooltip-id {

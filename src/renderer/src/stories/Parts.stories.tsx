@@ -67,6 +67,57 @@ export const Advice: StoryObj = {
   },
 };
 
+/**
+ * An answer about a save that has moved on.
+ *
+ * Document ids are only reproducible from identical save + database state, so ten
+ * minutes of play after a run leaves some of them joining onto nothing. The panel
+ * has to *say which*, by name: an item quietly missing from the advice looks
+ * exactly like advice that never mentioned it, and the reader has no way to tell
+ * the difference from the inside.
+ */
+export const AdviceStale: StoryObj = {
+  name: 'Advice — the save has moved on',
+  render: () => {
+    const snapshot = fixtureSnapshot();
+    const advice = fixtureAdvice(snapshot);
+    const plan = advice.plan!;
+    const gone = 'zz9y';
+    return (
+      <Frame>
+        <AdvicePanel
+          snapshot={snapshot}
+          advice={{
+            ...advice,
+            plan: { ...plan, hold: plan.hold.map((h) => ({ ...h, itemId: gone })) },
+            itemNames: { ...advice.itemNames, [gone]: 'Mythical Ashfallen Visor' },
+          }}
+          onRun={() => {}}
+        />
+      </Frame>
+    );
+  },
+};
+
+/** A run in flight, on its own: phase, clock, and the way out. */
+export const AdviceRunning: StoryObj = {
+  name: 'Advice — a run in flight',
+  render: () => {
+    const snapshot = fixtureSnapshot();
+    return (
+      <Frame>
+        <AdvicePanel
+          snapshot={snapshot}
+          advice={null}
+          run={{ runId: 'story', phase: 'repair', startedAt: Date.now() - 512_000, elapsedMs: 512_000 }}
+          onRun={() => {}}
+          onCancel={() => {}}
+        />
+      </Frame>
+    );
+  },
+};
+
 export const Stats: StoryObj = {
   name: 'Stats — plain',
   render: () => (

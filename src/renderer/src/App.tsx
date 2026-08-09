@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 
+import { adviceMarks } from '../../shared/advice-marks.js';
 import type { AdviseEnvelope, UiSnapshot } from '../../shared/ipc.js';
 import { actionMarks } from './advice.js';
 import { AdvicePanel } from './components/AdvicePanel.js';
@@ -8,12 +9,12 @@ import { Header } from './components/Header.js';
 import { LoadoutPanel } from './components/LoadoutPanel.js';
 import { StatsPanel } from './components/StatsPanel.js';
 import { HighlightProvider, useHighlight } from './highlight.js';
-import { useSession } from './session.js';
+import { useSession, type AdviseRun } from './session.js';
 import { TooltipProvider } from './tooltip.js';
 
 export function App(): React.ReactNode {
   const session = useSession();
-  const { bootstrap, snapshot, advice, loading, progress, error } = session;
+  const { bootstrap, snapshot, advice, run, adviceError, loading, progress, error } = session;
 
   return (
     <Shell>
@@ -22,15 +23,26 @@ export function App(): React.ReactNode {
         {...(snapshot ? { snapshot } : {})}
         loading={loading}
         hasAdvice={advice !== undefined}
+        runningAdvice={run !== null}
         onCharacter={session.setCharacter}
         onDifficulty={(difficulty) => session.updateSettings({ difficultyOverride: difficulty })}
         onRefresh={session.refresh}
+        onRunAdvice={() => session.startAdvice()}
       />
 
       {error && <div className="banner error">{error}</div>}
       {loading && !snapshot && <LoadingBanner progress={progress} />}
 
-      {snapshot && <Workspace snapshot={snapshot} advice={advice ?? null} />}
+      {snapshot && (
+        <Workspace
+          snapshot={snapshot}
+          advice={advice ?? null}
+          run={run}
+          {...(adviceError ? { adviceError } : {})}
+          onRunAdvice={session.startAdvice}
+          onCancelAdvice={session.cancelAdvice}
+        />
+      )}
 
       {snapshot && snapshot.warnings.length > 0 && (
         <div className="banner warn">
@@ -67,23 +79,32 @@ export function LoadingBanner({ progress }: { progress?: string }): React.ReactN
 export function Workspace({
   snapshot,
   advice,
+  run = null,
+  adviceError,
   onRunAdvice,
-  runningAdvice,
+  onCancelAdvice,
 }: {
   snapshot: UiSnapshot;
   advice: AdviseEnvelope | null;
-  onRunAdvice?: () => void;
-  runningAdvice?: boolean;
+  /** The run in flight, if any — the panel's phase label and clock come off it. */
+  run?: AdviseRun | null;
+  adviceError?: string;
+  onRunAdvice?: (question?: string) => void;
+  onCancelAdvice?: () => void;
 }): React.ReactNode {
   const [weaponSet, setWeaponSet] = useState<1 | 2 | null>(null);
   const heldSet: 1 | 2 = snapshot.alternateWeaponSetActive ? 2 : 1;
 
   // Everything the plan asks the player to touch, marked in the containers for
   // as long as the run stands. Derived from the envelope rather than tracked, so
-  // a re-run replaces the marks instead of accumulating them.
-  const { setActions } = useHighlight();
+  // a re-run replaces the marks instead of accumulating them — and derived in
+  // one place, so the corner badge, the tab counts and the action tooltip are
+  // three views of one reading of the plan.
+  const { setActions, setAdvice } = useHighlight();
   const actions = useMemo(() => actionMarks(advice), [advice]);
+  const marks = useMemo(() => adviceMarks(advice?.plan), [advice]);
   useEffect(() => setActions(actions), [actions, setActions]);
+  useEffect(() => setAdvice(marks), [marks, setAdvice]);
 
   return (
     <main className="app-body">
@@ -97,8 +118,10 @@ export function Workspace({
         <AdvicePanel
           snapshot={snapshot}
           advice={advice}
+          run={run}
+          {...(adviceError ? { error: adviceError } : {})}
           {...(onRunAdvice ? { onRun: onRunAdvice } : {})}
-          {...(runningAdvice !== undefined ? { running: runningAdvice } : {})}
+          {...(onCancelAdvice ? { onCancel: onCancelAdvice } : {})}
         />
       </div>
       <div className="pane pane-stats">

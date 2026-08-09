@@ -9,6 +9,7 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, screen, session as electronSession, shell } from 'electron';
 
+import { AdviseRunner } from './advise.js';
 import { createApi, registerHandlers } from './ipc.js';
 import { handleIconProtocol, registerIconScheme } from './protocol.js';
 import { SessionState } from './state.js';
@@ -26,6 +27,12 @@ function broadcast(event: PushEvent): void {
 }
 
 const state = new SessionState(broadcast);
+const advisor = new AdviseRunner({
+  characterSnapshot: () => state.characterSnapshot(),
+  gameVersion: () => state.gameVersion(),
+  currentSettings: () => state.currentSettings(),
+  push: broadcast,
+});
 
 function createWindow(): void {
   // The screen decides how much of the design size actually fits: a 1920×1080
@@ -82,6 +89,10 @@ void app.whenReady().then(() => {
       setActiveCharacter: (name) => state.setActiveCharacter(name),
       updateSettings: (patch) => state.updateSettings(patch),
       refresh: () => state.refresh(),
+      startAdvise: (req) => advisor.start(req),
+      cancelAdvise: (runId) => advisor.cancel(runId),
+      getAdviseStatus: () => advisor.status(),
+      getLastAdvice: (character) => advisor.lastAdvice(character),
     }),
   );
 

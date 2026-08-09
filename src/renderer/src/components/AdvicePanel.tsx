@@ -17,9 +17,11 @@
 
 import { useState } from 'react';
 
+import { adviceMarks, staleIds } from '../../../shared/advice-marks.js';
 import type { AdviseEnvelope, UiItem, UiSnapshot, UiSocketable } from '../../../shared/ipc.js';
 import { adviceBySlot, holds, slotKey, socketMove } from '../advice.js';
 import { useHighlight } from '../highlight.js';
+import type { AdviseRun } from '../session.js';
 import { useTooltip } from '../tooltip.js';
 import { itemsByDocId } from './LoadoutPanel.js';
 import { Markdown } from './Markdown.js';
@@ -27,13 +29,18 @@ import { Markdown } from './Markdown.js';
 export function AdvicePanel({
   snapshot,
   advice,
+  run = null,
+  error,
   onRun,
-  running,
+  onCancel,
 }: {
   snapshot: UiSnapshot;
   advice: AdviseEnvelope | null;
-  onRun?: () => void;
-  running?: boolean;
+  run?: AdviseRun | null;
+  /** A start that was refused, or a run that died. Never a blank pane. */
+  error?: string;
+  onRun?: (question?: string) => void;
+  onCancel?: () => void;
 }): React.ReactNode {
   const highlight = useHighlight();
   const byId = itemsByDocId(snapshot);
@@ -42,27 +49,79 @@ export function AdvicePanel({
   // the one verdict that swaps it.
   const bySlot = adviceBySlot(advice);
   const [tab, setTab] = useState<'plan' | 'answer'>('plan');
+  const [question, setQuestion] = useState('');
+  const running = run !== null;
+
+  /** The run control, in both the empty and the answered states. */
+  const control = running ? (
+    <RunProgress run={run} {...(onCancel ? { onCancel } : {})} />
+  ) : (
+    <button
+      type="button"
+      className="run-button"
+      onClick={() => onRun?.(question.trim() || undefined)}
+      disabled={!onRun}
+      title="Compiles the dossier and asks the model — about eight minutes"
+    >
+      {advice ? 'Re-run' : 'Run advice'}
+    </button>
+  );
+
+  /**
+   * The extra instruction, offered rather than required.
+   *
+   * It is a plain input rather than a dialog because most runs want nothing here
+   * — the dossier already asks the whole question — and the ones that do want one
+   * sentence ("I am rerolling for bleeding", "ignore the two-hander").
+   */
+  const ask = !running && (
+    <input
+      className="advice-question"
+      type="text"
+      value={question}
+      placeholder="Anything to steer the answer? (optional)"
+      onChange={(e) => setQuestion(e.target.value)}
+      disabled={!onRun}
+    />
+  );
 
   if (!advice) {
     return (
       <section className="advice-panel empty">
         <header className="advice-header">
           <h2>Advice</h2>
-          <button type="button" className="run-button" onClick={onRun} disabled={running || !onRun}>
-            {running ? 'Thinking…' : 'Run advice'}
-          </button>
+          {control}
         </header>
-        <p className="advice-placeholder">
-          No run for <b>{snapshot.character}</b> yet. A run compiles the whole reachable loadout —
-          equipped gear, both weapon sets, bags, stashes, blueprints and faction stock — into one
-          dossier and asks the model to rank every slot. It takes several minutes.
-        </p>
+        {/* The same paragraph in two tenses. Saying "no run yet" beside a
+            spinner is the one thing this box may not do: it is the only text on
+            screen, so it has to be about what is actually happening. */}
+        {running ? (
+          <p className="advice-placeholder">
+            Compiling the whole reachable loadout for <b>{snapshot.character}</b> — equipped gear, both weapon
+            sets, bags, stashes, blueprints and faction stock — into one dossier, and asking the model to rank
+            every slot. The run is held in the app itself, so this window can be left alone or reloaded without
+            losing it.
+          </p>
+        ) : (
+          <p className="advice-placeholder">
+            No run for <b>{snapshot.character}</b> yet. A run compiles the whole reachable loadout — equipped
+            gear, both weapon sets, bags, stashes, blueprints and faction stock — into one dossier and asks the
+            model to rank every slot. It takes about eight minutes and costs a few dollars of model time.
+          </p>
+        )}
+        {ask}
+        {error && <p className="advice-error">{error}</p>}
       </section>
     );
   }
 
   const plan = advice.plan;
   const held = holds(advice);
+  // Document ids are only reproducible from identical save + database state, so a
+  // save the game has rewritten since the run yields ids that simply fail to
+  // join. Said out loud, by name: an item silently missing from the advice is
+  // indistinguishable from advice that never mentioned it.
+  const stale = staleIds(adviceMarks(plan), (id) => byId.has(id));
   return (
     <section className="advice-panel">
       <header className="advice-header">
@@ -72,10 +131,11 @@ export function AdvicePanel({
           {advice.revised ? ' · revised once' : ''}
           {advice.warnings.length > 0 ? ` · ${advice.warnings.length} check warning(s)` : ' · checks clean'}
         </span>
-        <button type="button" className="run-button" onClick={onRun} disabled={running || !onRun}>
-          {running ? 'Thinking…' : 'Re-run'}
-        </button>
+        {control}
       </header>
+
+      {ask}
+      {error && <p className="advice-error">{error}</p>}
 
       <div className="tab-strip advice-tabs">
         {TABS.map(([key, label]) => (
@@ -247,6 +307,15 @@ export function AdvicePanel({
         </>
       )}
 
+      {stale.length > 0 && (
+        <p className="advice-stale">
+          {stale.length} item{stale.length === 1 ? '' : 's'} in this answer{' '}
+          {stale.length === 1 ? 'is' : 'are'} no longer present — moved or changed since the run:{' '}
+          {stale.map((id) => advice.itemNames[id] ?? advice.socketableNames[id] ?? `#${id}`).join(', ')}. Re-run to
+          bring the advice back onto the save.
+        </p>
+      )}
+
       {advice.warnings.length > 0 && (
         <ul className="advice-warnings">
           {advice.warnings.map((w, i) => (
@@ -256,9 +325,63 @@ export function AdvicePanel({
           ))}
         </ul>
       )}
+
+      {/* What the run cost, stated. Two calls and four dollars is the kind of
+          fact a user should not have to go to a terminal for — and `calls: 2` is
+          also the only visible sign that the repair loop fired. */}
+      <div className="advice-cost">
+        {advice.calls} call{advice.calls === 1 ? '' : 's'} ·{' '}
+        {advice.usage.inputTokens.toLocaleString()} in · {advice.usage.outputTokens.toLocaleString()} out
+        {advice.usage.costUsd > 0 ? ` · $${advice.usage.costUsd.toFixed(2)}` : ''} ·{' '}
+        {formatDuration(advice.durationMs)}
+        {advice.effort ? ` · effort ${advice.effort}` : ''}
+        {advice.question ? ` · asked: “${advice.question}”` : ''}
+      </div>
     </section>
   );
 }
+
+/** `495s` under a minute-ish, `8m 15s` past it — nobody counts 495 of anything. */
+function formatDuration(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  return seconds < 90 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+/**
+ * A run in flight: which of the three things is happening, how long it has been
+ * happening, and a way out.
+ *
+ * **No progress bar.** The call is one opaque subprocess that takes about eight
+ * minutes and reports nothing until it is finished, so any percentage would be
+ * an invention — and an invented bar that sits at 40% for six minutes is worse
+ * than an honest clock, because it makes the user distrust the whole panel. The
+ * phases are the three things that genuinely happen and the clock is real.
+ */
+function RunProgress({ run, onCancel }: { run: AdviseRun; onCancel?: () => void }): React.ReactNode {
+  return (
+    <span className="advice-run">
+      <span className="spinner" aria-hidden />
+      <span className="run-phase">{PHASE_LABEL[run.phase] ?? 'working'}</span>
+      <span className="run-clock">{formatDuration(run.elapsedMs)}</span>
+      <button type="button" className="run-button cancel" onClick={onCancel} disabled={!onCancel}>
+        Cancel
+      </button>
+    </span>
+  );
+}
+
+/**
+ * The user's words for the three phases.
+ *
+ * `repair` is spelled "revising" because that is what it looks like from
+ * outside: the plan failed a mechanical check and the model is being shown its
+ * own warnings. "Repairing" would suggest something broke.
+ */
+const PHASE_LABEL: Readonly<Record<string, string>> = {
+  context: 'building the dossier',
+  asking: 'asking the model',
+  repair: 'revising the plan',
+};
 
 /**
  * One item's name in the verdict table, with its full tooltip on hover.

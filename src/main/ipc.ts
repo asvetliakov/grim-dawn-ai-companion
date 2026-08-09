@@ -3,9 +3,12 @@
  *
  * `registerHandlers` takes the whole `GdApi` and walks `IPC_CHANNELS`, so a
  * channel added to the contract and forgotten here is a compile error rather
- * than a promise that never resolves. The advise channels are registered now
- * and answer honestly that they are not implemented yet — Stage 7B replaces the
- * implementation, not the wiring.
+ * than a promise that never resolves.
+ *
+ * The advise half is a thin forward to the run manager. It stays thin on
+ * purpose: an IPC handler answers in milliseconds, and the ~500-second run it
+ * starts reports itself through pushes — see `advise.ts` for why the run lives
+ * in main rather than in the renderer.
  */
 
 import { ipcMain } from 'electron';
@@ -20,30 +23,26 @@ export function channelName(method: string): string {
   return `gd:${method}`;
 }
 
-const NOT_YET = 'AI advice arrives in Stage 7B.';
-
-/**
- * The read-only half of the API, over one session. The advise half is stubbed
- * so the contract is complete and the renderer can already render a disabled
- * button rather than pretending the feature does not exist.
- */
+/** The whole API over one session, with the advise run manager behind it. */
 export function createApi(impl: {
   getBootstrap: GdApi['getBootstrap'];
   getSnapshot: (character?: string) => Promise<UiSnapshot>;
   setActiveCharacter: (name: string) => Promise<void>;
   updateSettings: (patch: Partial<Settings>) => Promise<Settings>;
   refresh: () => Promise<UiSnapshot>;
+  startAdvise: (req: { question?: string }) => Promise<{ runId: string }>;
+  cancelAdvise: (runId: string) => void;
+  getAdviseStatus: () => AdviseStatus;
+  getLastAdvice: (character: string) => AdviseEnvelope | null;
 }): Omit<GdApi, 'onPush'> {
   return {
     ...impl,
-    startAdvise: async () => {
-      throw new Error(NOT_YET);
-    },
-    cancelAdvise: async () => {
-      throw new Error(NOT_YET);
-    },
-    getAdviseStatus: async (): Promise<AdviseStatus> => ({ phase: 'idle', message: NOT_YET }),
-    getLastAdvice: async (): Promise<AdviseEnvelope | null> => null,
+    // The three synchronous ones are wrapped rather than declared async in the
+    // runner: reading a file and reading a field are not asynchronous, and
+    // pretending otherwise there would hide that from the run manager's tests.
+    cancelAdvise: async (runId: string) => impl.cancelAdvise(runId),
+    getAdviseStatus: async () => impl.getAdviseStatus(),
+    getLastAdvice: async (character: string) => impl.getLastAdvice(character),
   };
 }
 

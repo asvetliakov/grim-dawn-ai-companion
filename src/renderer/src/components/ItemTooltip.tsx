@@ -11,9 +11,11 @@
  * `statColors.ts` for why that is safe rather than fragile.
  */
 
+import type { AdviceMark } from '../../../shared/advice-marks.js';
 import type { UiItem, UiSocketable } from '../../../shared/ipc.js';
-import { rarityClass } from '../rarity.js';
+import { badgeForMark } from '../badges.js';
 import { statClass } from '../statColors.js';
+import { rarityClass } from '../rarity.js';
 
 export type TooltipSubject =
   | { kind: 'item'; item: UiItem }
@@ -125,6 +127,67 @@ export function SocketableTooltip({
       </div>
       {part.useOn && <div className="tooltip-note">use-on: {part.useOn}</div>}
       {note && <div className="tooltip-why">{note}</div>}
+    </div>
+  );
+}
+
+/**
+ * What the plan says about the item under the pointer — a **second** panel,
+ * beside the item's own rather than inside it.
+ *
+ * Beside, because they answer different questions and have different lifetimes.
+ * The item panel is what the item *is*, and it is true whether or not a run has
+ * ever happened; this is what the last run thinks you should do about it, and it
+ * is gone the moment you re-run. Folding advice into the item's own stat block
+ * would make an opinion look like a property of the item.
+ *
+ * One panel per mark, because an item can be several things at once: the
+ * candidate for one slot and the host an extraction spends for another. Those are
+ * two instructions, and the second is not a footnote to the first.
+ */
+export function ActionTooltip({ marks }: { marks: readonly AdviceMark[] }): React.ReactNode {
+  if (marks.length === 0) return null;
+  return (
+    <div className="tooltip action-tooltip">
+      {marks.map((mark, i) => {
+        const badge = badgeForMark(mark);
+        return (
+          <div className="action-block" key={i}>
+            <div className="action-head">
+              <span className="action-badge">{badge.glyph}</span>
+              {/* Verb and object in one line: "Swap the component → Seal of
+                  Blades" is the whole instruction, and a reader who reads
+                  nothing else has still been told what to do. */}
+              <span className="action-verb">{badge.label}</span>
+              {mark.targetName && <span className="action-target">→ {mark.targetName}</span>}
+              {mark.slot && <span className="action-slot">{mark.slot}</span>}
+            </div>
+            {/* A hold's threshold is the reason it is a hold rather than an
+                equip, so it is not buried in the prose. */}
+            {mark.until && <div className="action-until">until {mark.until}</div>}
+            {(mark.gains.length > 0 || mark.costs.length > 0) && (
+              <div className="action-delta">
+                {mark.gains.map((g) => (
+                  <span className="gain" key={g}>
+                    {g}
+                  </span>
+                ))}
+                {mark.costs.map((c) => (
+                  <span className="cost" key={c}>
+                    {c}
+                  </span>
+                ))}
+              </div>
+            )}
+            {mark.reason && <div className="action-reason">{mark.reason}</div>}
+            {mark.keyMoves.map((title) => (
+              <div className="action-keymove" key={title}>
+                part of: {title}
+              </div>
+            ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
