@@ -36,10 +36,9 @@ import {
   repairEffort,
   saveAdvice,
   totalUsage,
+  providerDefaults,
   wornSlots,
   wornSocketables,
-  DEFAULT_EFFORT,
-  DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
   type AdviceRunRef,
   type AdviseActivityState,
@@ -331,11 +330,17 @@ export class AdviseRunner {
  * `repairEffort` — the corrective call is an edit, not fresh optimisation.
  */
 function configuredProvider(settings: Settings, role: 'primary' | 'repair' = 'primary'): AdvisorProvider {
-  const effort = settings.effort ?? DEFAULT_EFFORT;
+  // Each backend's own defaults — `opus` means something to the claude CLI and
+  // nothing to codex, so the fallback has to be resolved per provider id.
+  const defaults = providerDefaults(settings.provider);
+  const effort = settings.effort ?? defaults.effort;
+  const model = settings.model ?? defaults.model;
   return createProvider(settings.provider, {
-    model: settings.model ?? DEFAULT_MODEL,
+    ...(model !== undefined ? { model } : {}),
     effort: role === 'repair' ? repairEffort(effort) : effort,
     timeoutMs: (settings.advisorTimeoutSeconds ?? 0) * 1000 || DEFAULT_TIMEOUT_MS,
+    // Codex fast mode; other backends ignore it. Absent means on.
+    ...(settings.codexFast !== undefined ? { fast: settings.codexFast } : {}),
   });
 }
 
@@ -357,9 +362,9 @@ export function planCheckInput(scope: { input: ContextInput; doc: ContextDoc }):
 
 /**
  * Ask an unavailable provider to advise on nothing, purely to collect the
- * sentence it throws. The registered stubs and the `claude-cli` provider both
- * explain themselves that way, and repeating those explanations here would be a
- * second place for them to go stale.
+ * sentence it throws. Both CLI providers explain themselves that way — a
+ * missing binary, or codex signed out — and repeating those explanations here
+ * would be a second place for them to go stale.
  */
 async function unavailableMessage(provider: { id: string; advise: (req: { contextDoc: string }) => Promise<unknown> }): Promise<string> {
   try {

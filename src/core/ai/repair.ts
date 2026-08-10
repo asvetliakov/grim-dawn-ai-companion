@@ -41,7 +41,7 @@ export function worthRepairing(warnings: readonly PlanWarning[]): boolean {
  * comes back worse. Tiers at or below medium pass through unchanged.
  */
 export function repairEffort(effort: string): string {
-  return effort === 'high' || effort === 'xhigh' || effort === 'max' ? 'medium' : effort;
+  return effort === 'high' || effort === 'xhigh' || effort === 'max' || effort === 'ultra' ? 'medium' : effort;
 }
 
 export interface RepairOutcome {
@@ -152,7 +152,7 @@ function warningsFor(result: AdvisorResult, check: PlanCheckInput): PlanWarning[
 export function totalUsage(results: readonly AdvisorResult[]): {
   inputTokens: number;
   outputTokens: number;
-  costUsd: number;
+  costUsd?: number;
   thinkingTokens?: number;
 } {
   const sum = results.reduce(
@@ -164,8 +164,14 @@ export function totalUsage(results: readonly AdvisorResult[]): {
     }),
     { inputTokens: 0, outputTokens: 0, costUsd: 0, thinkingTokens: 0 },
   );
-  // Only claimed when some call actually reported it: a zero would read as
-  // "this run did no reasoning" where the truth is "the backend did not say".
-  const { thinkingTokens, ...rest } = sum;
-  return results.some((r) => r.usage?.thinkingTokens !== undefined) ? { ...rest, thinkingTokens } : rest;
+  // Only claimed when some call actually reported them: a zero would read as
+  // "this run did no reasoning" / "this run was free" where the truth is "the
+  // backend did not say" — which for cost is every codex-cli run, billed to the
+  // subscription rather than priced per call.
+  const { thinkingTokens, costUsd, ...rest } = sum;
+  return {
+    ...rest,
+    ...(results.some((r) => r.usage?.costUsd !== undefined) ? { costUsd } : {}),
+    ...(results.some((r) => r.usage?.thinkingTokens !== undefined) ? { thinkingTokens } : {}),
+  };
 }

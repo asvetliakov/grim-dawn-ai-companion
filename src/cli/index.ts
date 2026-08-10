@@ -26,11 +26,10 @@ import {
   createProvider,
   verdictRows,
   normalizeName,
+  providerDefaults,
   providerIds,
   repairEffort,
   totalUsage,
-  DEFAULT_EFFORT,
-  DEFAULT_MODEL,
   DEFAULT_TIMEOUT_MS,
   type AdvisorPlan,
   type PlanWarning,
@@ -1133,6 +1132,7 @@ program
   .option('--dry-run', 'build and report the document without calling the provider')
   .option('--no-repair', 'do not spend a second call correcting a plan that fails the checks')
   .option('--no-stash', 'leave the personal and transfer stash out of the dossier (materials always ship)')
+  .option('--no-fast', 'codex only: skip fast mode (service_tier=fast), trading speed for a lower credit burn')
   .option('--refresh', 'rebuild the database first')
   .action(
     async (opts: {
@@ -1150,23 +1150,31 @@ program
       dryRun?: boolean;
       repair?: boolean;
       stash?: boolean;
+      fast?: boolean;
       refresh?: boolean;
     }) => {
       await withDb({ refresh: opts.refresh, quiet: true }, async (db) => {
         const settings = resolveSettings();
         const providerId = opts.provider ?? settings.provider;
-        const model = opts.model ?? settings.model ?? DEFAULT_MODEL;
-        const effort = opts.effort ?? settings.effort ?? DEFAULT_EFFORT;
+        // Fall back to the *named backend's* defaults — a `--provider codex-cli`
+        // run must not inherit a model that only the claude CLI understands.
+        const defaults = providerDefaults(providerId);
+        const model = opts.model ?? settings.model ?? defaults.model;
+        const effort = opts.effort ?? settings.effort ?? defaults.effort;
         const timeoutMs = opts.timeout
           ? Number(opts.timeout) * 1000
           : (settings.advisorTimeoutSeconds ?? 0) * 1000 || DEFAULT_TIMEOUT_MS;
 
+        // Codex fast mode: the flag wins, then the stored preference, then on.
+        const fast = opts.fast === false ? false : (settings.codexFast ?? true);
+
         let provider;
         let repairProvider;
         try {
-          provider = createProvider(providerId, { model, effort, timeoutMs });
+          const base = { ...(model !== undefined ? { model } : {}), timeoutMs, fast };
+          provider = createProvider(providerId, { ...base, effort });
           // The corrective call is an edit, so it runs at `repairEffort`.
-          repairProvider = createProvider(providerId, { model, effort: repairEffort(effort), timeoutMs });
+          repairProvider = createProvider(providerId, { ...base, effort: repairEffort(effort) });
         } catch (err) {
           console.error(`error: ${(err as Error).message}`);
           process.exit(1);
@@ -1207,7 +1215,7 @@ program
         if (opts.saveContext) writeFileSync(opts.saveContext, doc.markdown);
 
         if (opts.dryRun) {
-          console.error(`dry run — would ask ${providerId} (${model}, effort ${effort})`);
+          console.error(`dry run — would ask ${providerId} (${model ?? 'no model'}, effort ${effort})`);
           return;
         }
 
@@ -1222,7 +1230,7 @@ program
           freeComponentIds: doc.freeComponentIds,
         };
 
-        console.error(`asking ${providerId} (${model}, effort ${effort})…`);
+        console.error(`asking ${providerId} (${model ?? 'no model'}, effort ${effort})…`);
         const started = Date.now();
         let outcome;
         try {
@@ -1310,7 +1318,12 @@ program
           outcome.results.length > 1 ? `${outcome.results.length} calls` : '',
           `${usage.inputTokens.toLocaleString('en-US')} in`,
           `${usage.outputTokens.toLocaleString('en-US')} out`,
-          usage.costUsd ? `$${usage.costUsd.toFixed(4)}` : '',
+          usage.costUsd
+            ? `$${usage.costUsd.toFixed(4)}`
+            : // No figure is the codex CLI billing the subscription, not a free run.
+              usage.costUsd === undefined && providerId === 'codex-cli'
+              ? 'included in the subscription'
+              : '',
           `${((Date.now() - started) / 1000).toFixed(1)}s`,
         ].filter(Boolean);
         console.log(`\n${bits.join(' · ')}`);

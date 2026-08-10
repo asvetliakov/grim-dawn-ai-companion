@@ -99,7 +99,7 @@ export function listAdvice(character: string): AdviceRunRef[] {
       generatedAt: envelope.generatedAt,
       model: envelope.model,
       calls: envelope.calls,
-      costUsd: envelope.usage.costUsd,
+      costUsd: envelope.usage.costUsd ?? 0,
       verdicts: envelope.verdictRows.length,
       warnings: envelope.warnings.length,
       ...(envelope.question ? { question: envelope.question } : {}),

@@ -487,7 +487,14 @@ export function AdvicePanel({
       <div className="advice-cost">
         {advice.calls} call{advice.calls === 1 ? '' : 's'} ·{' '}
         {advice.usage.inputTokens.toLocaleString()} in · {advice.usage.outputTokens.toLocaleString()} out
-        {advice.usage.costUsd > 0 ? ` · $${advice.usage.costUsd.toFixed(2)}` : ''} ·{' '}
+        {(advice.usage.costUsd ?? 0) > 0
+          ? ` · $${advice.usage.costUsd!.toFixed(2)}`
+          : // No figure at all is a codex-cli run billing the ChatGPT
+            // subscription; saying so beats a line that reads as "free".
+            advice.usage.costUsd === undefined && advice.provider === 'codex-cli'
+            ? ' · included in the subscription'
+            : ''}{' '}
+        ·{' '}
         {formatDuration(advice.durationMs)}
         {advice.effort ? ` · effort ${advice.effort}` : ''}
         {advice.question ? ` · asked: “${advice.question}”` : ''}

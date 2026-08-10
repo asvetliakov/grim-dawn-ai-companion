@@ -30,9 +30,19 @@ export const settingsSchema = z.object({
    * be silently incomparable.
    */
   model: z.string().min(1).optional(),
-  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  /** `ultra` exists only on the codex backend; the pane scopes the choices per backend. */
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
   /** Seconds before an advice request is killed. */
   advisorTimeoutSeconds: z.number().int().positive().optional(),
+  /**
+   * Codex fast mode (`service_tier=fast`, the renamed "priority processing").
+   * Absent means **true**: it roughly halves an eight-minute wait and is
+   * included in the ChatGPT subscription — at a 2–2.5× credit burn, which is
+   * why it is a visible switch rather than an always-on detail. Codex only;
+   * the claude CLI's fast mode bills API usage on top of the subscription, so
+   * it is deliberately not offered there.
+   */
+  codexFast: z.boolean().optional(),
   /** Force advice for a difficulty other than the character's current one. */
   difficultyOverride: z.enum(['Normal', 'Elite', 'Ultimate']).optional(),
   /**

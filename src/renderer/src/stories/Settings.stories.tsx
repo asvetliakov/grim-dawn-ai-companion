@@ -74,8 +74,8 @@ const DOCUMENT: ContextDocumentView = {
 };
 
 /** Settings edits, held locally so the story behaves like the real pane. */
-function LiveSettings({ detected }: { detected?: DetectedPaths }): React.ReactNode {
-  const [settings, setSettings] = useState<Settings>(BOOTSTRAP.settings);
+function LiveSettings({ detected, initial }: { detected?: DetectedPaths; initial?: Settings }): React.ReactNode {
+  const [settings, setSettings] = useState<Settings>(initial ?? BOOTSTRAP.settings);
   return (
     <IconUrlProvider resolve={fixtureIconUrl}>
       <Shell>
@@ -100,6 +100,21 @@ type Story = StoryObj;
 /** Every field, with two installs found. */
 export const Pane: Story = {
   render: () => <LiveSettings detected={DETECTED} />,
+};
+
+/**
+ * The other real backend: codex, on the ChatGPT subscription. The model list
+ * and the effort tiers both follow the backend — `ultra` exists here and not
+ * on Claude — and the effort notes are the codex ones, which promise nothing
+ * the A/B has not measured yet.
+ */
+export const PaneCodexBackend: Story = {
+  render: () => (
+    <LiveSettings
+      detected={DETECTED}
+      initial={{ locale: 'en', provider: 'codex-cli', model: 'gpt-5.6-sol', effort: 'ultra' }}
+    />
+  ),
 };
 
 /**

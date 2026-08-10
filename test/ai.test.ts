@@ -22,8 +22,8 @@ import {
   ambiguousStats,
   checkPlan,
   createClaudeCliProvider,
+  createCodexCliProvider,
   createMockProvider,
-  createOpenAiProvider,
   createProvider,
   isReplacement,
   verdictRows,
@@ -33,12 +33,16 @@ import {
   normalizeName,
   normalizeId,
   parseAdvice,
+  providerDefaults,
   providerIds,
   repairEffort,
   slotFlagForClass,
   totalUsage,
   worthRepairing,
-  OPENAI_NOT_CONFIGURED,
+  CODEX_DEFAULT_EFFORT,
+  CODEX_DEFAULT_MODEL,
+  DEFAULT_EFFORT,
+  DEFAULT_MODEL,
   type AdvisorRequest,
   type SpawnFn,
 } from '../src/core/ai/index.js';
@@ -531,16 +535,164 @@ describe('providers', () => {
     expect(result.structured!.verdicts).toHaveLength(2);
   });
 
-  it('openai is registered but says it is not configured', async () => {
-    const openai = createOpenAiProvider();
-    expect(await openai.available()).toBe(false);
-    await expect(openai.advise({ contextDoc: 'x' })).rejects.toThrow(OPENAI_NOT_CONFIGURED);
-    expect(providerIds()).toEqual(expect.arrayContaining(['claude-cli', 'openai', 'mock']));
+  it('registers all three backends', () => {
+    expect(providerIds()).toEqual(expect.arrayContaining(['claude-cli', 'codex-cli', 'mock']));
   });
 
   it('names the valid ids when asked for an unknown one', () => {
     expect(() => createProvider('gpt-9')).toThrow(/unknown advisor provider.*claude-cli/s);
     expect(createProvider('claude-cli').id).toBe('claude-cli');
+  });
+
+  // The old call sites reached for claude's DEFAULT_MODEL regardless of
+  // backend, which would have handed `opus` to a codex subprocess.
+  it('resolves defaults per backend, and no model for the rest', () => {
+    expect(providerDefaults('claude-cli')).toEqual({ model: DEFAULT_MODEL, effort: DEFAULT_EFFORT });
+    expect(providerDefaults('codex-cli')).toEqual({ model: CODEX_DEFAULT_MODEL, effort: CODEX_DEFAULT_EFFORT });
+    expect(providerDefaults('mock')).toEqual({ effort: DEFAULT_EFFORT });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The codex-cli provider — a fake `codex` this time
+// ---------------------------------------------------------------------------
+
+/** One `codex exec --json` stream: reasoning, the answer, then usage. */
+function codexStream(answer: string, over: Record<string, unknown> = {}): string {
+  return `${[
+    JSON.stringify({ type: 'thread.started', thread_id: 't1' }),
+    JSON.stringify({ type: 'turn.started' }),
+    JSON.stringify({ type: 'item.completed', item: { id: 'item_0', type: 'reasoning', text: '**Weighing the rings**' } }),
+    JSON.stringify({ type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: answer } }),
+    JSON.stringify({
+      type: 'turn.completed',
+      usage: { input_tokens: 11_554, cached_input_tokens: 8_064, output_tokens: 654, reasoning_output_tokens: 516 },
+      ...over,
+    }),
+  ].join('\n')}\n`;
+}
+
+/**
+ * The provider probes `codex login status` before every real call; this answers
+ * that probe and hands the exec run to `respond`.
+ */
+function fakeCodex(respond: (run: FakeRun, child: FakeChild) => void, loggedIn = true): FakeSpawn {
+  return fakeSpawn((run, child) => {
+    if (run.args[0] === 'login') {
+      finish(child, loggedIn ? 'Logged in using ChatGPT\n' : 'Not logged in\n', loggedIn ? 0 : 1);
+      return;
+    }
+    respond(run, child);
+  });
+}
+
+describe('codex-cli provider', () => {
+  it('answers, with the reasoning streamed and the usage mapped', async () => {
+    const spawn = fakeCodex((_run, child) => finish(child, codexStream(CANNED_ANSWER)));
+    const provider = createCodexCliProvider({ spawn: spawn.fn });
+    const activity: { kind: string; text: string }[] = [];
+    const result = await provider.advise({ contextDoc: 'doc' }, undefined, (a) => activity.push(a));
+
+    expect(result.provider).toBe('codex-cli');
+    expect(result.text).toBe(CANNED_ANSWER);
+    expect(result.structured?.verdicts.length).toBeGreaterThan(0);
+    // `cached_input_tokens` is a subset of `input_tokens` — no summing, unlike claude.
+    expect(result.usage?.inputTokens).toBe(11_554);
+    expect(result.usage?.outputTokens).toBe(654);
+    expect(result.usage?.thinkingTokens).toBe(516);
+    // A subscription run has no dollar figure — absent, never zero.
+    expect(result.usage?.costUsd).toBeUndefined();
+    // The reasoning reaches the transcript; the answer is never streamed into it.
+    expect(activity).toEqual([{ kind: 'thinking', text: '**Weighing the rings**\n\n' }]);
+  });
+
+  it('pins the invocation and sends the document over stdin', async () => {
+    const spawn = fakeCodex((_run, child) => finish(child, codexStream('ok')));
+    const provider = createCodexCliProvider({ spawn: spawn.fn, model: 'gpt-5.5', effort: 'high' });
+    await provider.advise({ contextDoc: 'DOC', question: 'why?' });
+
+    const exec = spawn.runs.find((r) => r.args[0] === 'exec')!;
+    expect(exec.args).toContain('--json');
+    expect(exec.args).toContain('--ephemeral');
+    expect(exec.args).toContain('--ignore-user-config');
+    expect(exec.args).toContain('--skip-git-repo-check');
+    expect(exec.args).toContain('model_reasoning_summary=detailed');
+    expect(exec.args).toContain('web_search=disabled');
+    expect(exec.args).toContain('gpt-5.5');
+    expect(exec.args).toContain('model_reasoning_effort=high');
+    // Fast mode (`service_tier=fast`) defaults to on — it is included in the
+    // ChatGPT subscription and roughly halves the wait.
+    expect(exec.args).toContain('service_tier=fast');
+    // The system prompt is the prompt argument; the dossier and the question
+    // arrive on stdin, byte-identical to what the claude backend sends.
+    expect(exec.args[exec.args.length - 1]).toBe(ADVISOR_SYSTEM_PROMPT);
+    expect(exec.stdin).toContain('DOC');
+    expect(exec.stdin).toContain('why?');
+  });
+
+  it('fast mode can be declined', async () => {
+    const spawn = fakeCodex((_run, child) => finish(child, codexStream('ok')));
+    const provider = createCodexCliProvider({ spawn: spawn.fn, fast: false });
+    await provider.advise({ contextDoc: 'doc' });
+    const exec = spawn.runs.find((r) => r.args[0] === 'exec')!;
+    expect(exec.args).not.toContain('service_tier=fast');
+  });
+
+  it('defaults to gpt-5.6-terra at medium', async () => {
+    const spawn = fakeCodex((_run, child) => finish(child, codexStream('ok')));
+    const provider = createCodexCliProvider({ spawn: spawn.fn });
+    const result = await provider.advise({ contextDoc: 'doc' });
+    expect(result.model).toBe(CODEX_DEFAULT_MODEL);
+    expect(result.effort).toBe(CODEX_DEFAULT_EFFORT);
+    const exec = spawn.runs.find((r) => r.args[0] === 'exec')!;
+    expect(exec.args).toContain(CODEX_DEFAULT_MODEL);
+    expect(exec.args).toContain(`model_reasoning_effort=${CODEX_DEFAULT_EFFORT}`);
+  });
+
+  it('reports available only when signed in, and says how to fix it', async () => {
+    const signedIn = fakeCodex(() => {});
+    expect(await createCodexCliProvider({ spawn: signedIn.fn }).available()).toBe(true);
+
+    const signedOut = fakeCodex(() => {}, false);
+    const provider = createCodexCliProvider({ spawn: signedOut.fn });
+    expect(await provider.available()).toBe(false);
+    await expect(provider.advise({ contextDoc: 'x' })).rejects.toThrow(/codex login/);
+  });
+
+  it('explains an uninstalled binary', async () => {
+    const enoent: SpawnFn = () => {
+      const err = new Error('spawn codex ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    };
+    const provider = createCodexCliProvider({ spawn: enoent });
+    expect(await provider.available()).toBe(false);
+    await expect(provider.advise({ contextDoc: 'x' })).rejects.toThrow(/install the Codex CLI/);
+  });
+
+  it('surfaces the stream error when the run fails', async () => {
+    const stream = `${JSON.stringify({ type: 'turn.failed', error: { message: 'model overloaded' } })}\n`;
+    const spawn = fakeCodex((_run, child) => finish(child, stream, 1));
+    const provider = createCodexCliProvider({ spawn: spawn.fn });
+    await expect(provider.advise({ contextDoc: 'x' })).rejects.toThrow(/model overloaded/);
+  });
+
+  it('a config warning item does not sink a run that still answered', async () => {
+    const stream = `${[
+      JSON.stringify({ type: 'item.completed', item: { id: 'item_0', type: 'error', message: 'deprecated config key' } }),
+      JSON.stringify({ type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: 'fine' } }),
+      JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, output_tokens: 2 } }),
+    ].join('\n')}\n`;
+    const spawn = fakeCodex((_run, child) => finish(child, stream));
+    const result = await createCodexCliProvider({ spawn: spawn.fn }).advise({ contextDoc: 'x' });
+    expect(result.text).toBe('fine');
+  });
+
+  it('a clean exit with no answer is still an error', async () => {
+    const stream = `${JSON.stringify({ type: 'turn.started' })}\n`;
+    const spawn = fakeCodex((_run, child) => finish(child, stream));
+    const provider = createCodexCliProvider({ spawn: spawn.fn });
+    await expect(provider.advise({ contextDoc: 'x' })).rejects.toThrow(/produced no answer/);
   });
 });
 
@@ -1367,6 +1519,7 @@ describe('adviseWithRepair', () => {
     expect(repairEffort('high')).toBe('medium');
     expect(repairEffort('xhigh')).toBe('medium');
     expect(repairEffort('max')).toBe('medium');
+    expect(repairEffort('ultra')).toBe('medium');
     expect(repairEffort('medium')).toBe('medium');
     expect(repairEffort('low')).toBe('low');
   });
@@ -1407,5 +1560,14 @@ describe('adviseWithRepair', () => {
       { text: '', provider: 'x', usage: { inputTokens: 20, outputTokens: 7, costUsd: 0.5 } },
     ]);
     expect(usage).toEqual({ inputTokens: 30, outputTokens: 12, costUsd: 1.5, thinkingTokens: 4 });
+  });
+
+  it('claims no cost when no call priced itself — a codex run is not free, it is unpriced', () => {
+    const usage = totalUsage([
+      { text: '', provider: 'codex-cli', usage: { inputTokens: 10, outputTokens: 5, thinkingTokens: 4 } },
+      { text: '', provider: 'codex-cli', usage: { inputTokens: 20, outputTokens: 7 } },
+    ]);
+    expect(usage).toEqual({ inputTokens: 30, outputTokens: 12, thinkingTokens: 4 });
+    expect('costUsd' in usage).toBe(false);
   });
 });

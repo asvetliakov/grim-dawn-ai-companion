@@ -519,6 +519,8 @@ export interface ProviderOptions {
   effort?: string;
   timeoutMs?: number;
   systemPrompt?: string;
+  /** Output-speed tier, where the backend has one (codex `service_tier=fast`). Others ignore it. */
+  fast?: boolean;
 }
 
 export type ProviderFactory = (opts: ProviderOptions) => AdvisorProvider;

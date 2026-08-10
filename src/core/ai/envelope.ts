@@ -43,7 +43,13 @@ export const adviseUsageSchema = z.object({
    * the figure, simply do not have it.
    */
   thinkingTokens: z.number().optional(),
-  costUsd: z.number(),
+  /**
+   * Absent when no call reported a dollar figure — a codex-cli run bills the
+   * ChatGPT subscription and the CLI prints no price. Absent is "the backend
+   * did not say", never zero: a stored 0 would render as "this run was free",
+   * which is the one thing an eight-minute model call never is.
+   */
+  costUsd: z.number().optional(),
 });
 
 export type AdviseUsage = z.infer<typeof adviseUsageSchema>;
@@ -206,14 +212,21 @@ export function buildEnvelope(args: BuildEnvelopeArgs): AdviseEnvelope {
   const { outcome } = args;
   const result = outcome.result;
   const plan: AdvisorPlan | null = result.structured ?? null;
+  // Model and effort come from the *first* call — the run's configuration —
+  // not from the winning result: the corrective call runs at `repairEffort`,
+  // so a high run whose revision won would otherwise be stored as a medium
+  // one, and an effort A/B comparing stored runs would be comparing labels
+  // that lie. (This happened: the first codex high run's envelope said
+  // `effort=medium` because its repair's answer was the cleaner one.)
+  const first = outcome.results[0] ?? result;
 
   return {
     character: args.character,
     generatedAt: args.generatedAt ?? new Date().toISOString(),
     gameVersion: args.gameVersion,
     provider: result.provider,
-    model: result.model ?? null,
-    effort: result.effort ?? null,
+    model: first.model ?? null,
+    effort: first.effort ?? null,
     ...(args.question ? { question: args.question } : {}),
     calls: outcome.results.length,
     usage: args.usage,

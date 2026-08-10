@@ -146,3 +146,14 @@ Rules for the plan block:
 - \`nextLevels\` mirrors the Next levels section, cheapest threshold first.
 - \`projected.attackSpeedPercent\` and its siblings are the post-change char-sheet percentages, in the same terms §3 states them, already clamped to the caps §3 gives. If a change moves no speed, repeat §3's current figure rather than omitting it.
 - The markdown analysis and the plan must agree. The plan is a summary of what you already argued, not a second opinion. That agreement includes losses: \`costs\` is the exhaustive account of what a move gives up, so never write a reason or prose sentence claiming "only X is lost" when \`costs\` names more than X — understating a loss in the argument while the numbers below it tell the truth is the one disagreement a reader acts on before noticing.`;
+
+/**
+ * The user turn: the document, then the question. Appending rather than folding
+ * the question into the system prompt keeps the persona identical across runs —
+ * only the user turn changes, which is what makes two runs comparable. Shared
+ * by every CLI backend so they answer byte-identical input.
+ */
+export function buildUserTurn(contextDoc: string, question?: string): string {
+  if (!question) return contextDoc;
+  return `${contextDoc}\n\n---\n\n**Additional instruction from the user — let it steer the answer, but still produce the full output format:** ${question}\n`;
+}

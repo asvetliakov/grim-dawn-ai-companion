@@ -21,14 +21,14 @@ import { DIFFICULTY_CHOICES } from '../../../shared/ipc.js';
 import { Modal } from './Modal.js';
 
 /**
- * The effort tiers, each with a sentence for the person choosing. Medium is the
- * default and says so: an A/B on a live save had it produce the same moves as
- * high, cap every resistance sooner, and finish two minutes faster — high's
- * extra thinking went into a maximum-damage line that left a resistance under
- * cap. The notes state what was measured and claim nothing about the
+ * The Claude effort tiers, each with a sentence for the person choosing. Medium
+ * is the default and says so: an A/B on a live save had it produce the same
+ * moves as high, cap every resistance sooner, and finish two minutes faster —
+ * high's extra thinking went into a maximum-damage line that left a resistance
+ * under cap. The notes state what was measured and claim nothing about the
  * unmeasured tiers.
  */
-const EFFORTS: readonly { id: string; label: string; note: string }[] = [
+const CLAUDE_EFFORTS: readonly { id: string; label: string; note: string }[] = [
   { id: 'low', label: 'low', note: 'Fastest and cheapest, untested for this tool — a quick opinion, not a plan to act on blind.' },
   {
     id: 'medium',
@@ -44,24 +44,58 @@ const EFFORTS: readonly { id: string; label: string; note: string }[] = [
   { id: 'max', label: 'max', note: 'The slowest and most expensive tier, untested for this tool.' },
 ];
 
+/** The Codex tiers. None has been A/B'd for this tool yet, and the notes say so. */
+const CODEX_EFFORTS: readonly { id: string; label: string; note: string }[] = [
+  // The API also takes `none` (skip reasoning entirely); deliberately not
+  // offered — someone would pick it, and an advisory answer with no reasoning
+  // behind it is exactly the plan-you-act-on-blind the low note warns about.
+  { id: 'low', label: 'low (fastest)', note: 'Fast responses with lighter reasoning — a quick opinion, not a plan to act on blind.' },
+  {
+    id: 'medium',
+    label: 'medium (recommended)',
+    note: 'Good and fast enough: side by side with high it made the same equips with the same socket fills, capped every resistance, and finished four minutes sooner on half the reasoning — and its first draft was the cleaner of the two.',
+  },
+  {
+    id: 'high',
+    label: 'high',
+    note: 'In the side-by-side it spent 2.5× the reasoning re-shuffling which of the same augments goes on which slot, for the same capped resistances — and still left one bag item without a verdict on the first pass.',
+  },
+  { id: 'xhigh', label: 'xhigh', note: 'Extended reasoning for the hardest problems, untested for this tool.' },
+  { id: 'max', label: 'max', note: 'Deeper still, untested for this tool. Only the gpt-5.6 models accept it.' },
+  { id: 'ultra', label: 'ultra', note: 'The deepest tier, untested for this tool. Only gpt-5.6-sol and -terra accept it.' },
+];
+
+/** Every tier the schema allows, for a backend set by hand in settings.json. */
+const GENERIC_EFFORTS: readonly { id: string; label: string; note: string }[] = [
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+].map((id) => ({ id, label: id, note: 'Passed to the backend as-is.' }));
+
 /**
  * The backends, and what each will answer to.
  *
  * A pair of selects rather than two text fields, because the two are not
- * independent: `opus` means something to the Claude CLI and nothing to a future
- * OpenAI backend, and a model name typed for the wrong backend fails eight
+ * independent: `opus` means something to the Claude CLI and nothing to the
+ * Codex one, and a model name typed for the wrong backend fails eight
  * minutes into a run rather than at the moment it was typed. The ids are the
  * registry's own (`src/core/ai/provider.ts`); only the labels are for people.
+ * Efforts are scoped the same way — `ultra` exists only on Codex's newest
+ * models, and the tier notes state what was measured on *that* backend.
  *
  * `models` is empty where the backend does not take one — the mock answers from
- * a fixture, and the OpenAI provider is a registered stub whose `available()` is
- * false. An empty list disables the model control and says so.
+ * a fixture. An empty list disables the model control and says so.
  */
 const BACKENDS: readonly {
   id: string;
   label: string;
   note: string;
   models: readonly { id: string; label: string }[];
+  efforts: readonly { id: string; label: string; note: string }[];
+  defaultEffort: string;
 }[] = [
   {
     id: 'claude-cli',
@@ -72,18 +106,33 @@ const BACKENDS: readonly {
       { id: 'opus', label: 'opus (recommended)' },
       { id: 'sonnet', label: 'sonnet' },
     ],
+    efforts: CLAUDE_EFFORTS,
+    defaultEffort: 'medium',
   },
   {
-    id: 'openai',
-    label: 'OpenAI',
-    note: 'Registered but not implemented — a run started on it explains itself and stops.',
-    models: [],
+    id: 'codex-cli',
+    label: 'OpenAI (ChatGPT subscription)',
+    note: 'Runs the `codex` command and bills through the ChatGPT subscription it is signed into — run `codex login` once if it is not.',
+    // gpt-5.6-sol first: it is the provider's default, and the pane's
+    // "Default (…)" line reads the first entry. The 5.4-and-older generations
+    // the CLI still lists are deliberately left out of the picker; a
+    // hand-edited settings.json can still name one and a run honours it.
+    models: [
+      { id: 'gpt-5.6-sol', label: 'gpt-5.6-sol (recommended)' },
+      { id: 'gpt-5.6-terra', label: 'gpt-5.6-terra' },
+      { id: 'gpt-5.6-luna', label: 'gpt-5.6-luna' },
+      { id: 'gpt-5.5', label: 'gpt-5.5' },
+    ],
+    efforts: CODEX_EFFORTS,
+    defaultEffort: 'medium',
   },
   {
     id: 'mock',
     label: 'Mock (no model, no cost)',
     note: 'Answers instantly from a fixture. What the app’s own checks run against.',
     models: [],
+    efforts: [],
+    defaultEffort: 'medium',
   },
 ];
 
@@ -110,6 +159,8 @@ export function SettingsPane({
     label: providerId,
     note: 'A backend set by hand in settings.json.',
     models: [] as readonly { id: string; label: string }[],
+    efforts: GENERIC_EFFORTS,
+    defaultEffort: 'medium',
   };
 
   return (
@@ -205,8 +256,9 @@ export function SettingsPane({
           <select
             value={backend.id}
             // A model belongs to a backend, so switching backend drops it rather
-            // than carrying `opus` somewhere it means nothing.
-            onChange={(e) => onChange({ provider: e.target.value, model: undefined })}
+            // than carrying `opus` somewhere it means nothing. The effort goes
+            // with it: `ultra` means something to codex and nothing to claude.
+            onChange={(e) => onChange({ provider: e.target.value, model: undefined, effort: undefined })}
           >
             {BACKENDS.map((b) => (
               <option key={b.id} value={b.id}>
@@ -244,19 +296,49 @@ export function SettingsPane({
           <span className="settings-label">Reasoning effort</span>
           <select
             value={settings?.effort ?? ''}
+            disabled={backend.efforts.length === 0}
             onChange={(e) => onChange({ effort: (e.target.value || undefined) as Settings['effort'] })}
           >
-            <option value="">Default (medium)</option>
-            {EFFORTS.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.label}
-              </option>
-            ))}
+            {backend.efforts.length === 0 ? (
+              <option value="">not applicable</option>
+            ) : (
+              <>
+                <option value="">Default ({backend.defaultEffort})</option>
+                {backend.efforts.map((e) => (
+                  <option key={e.id} value={e.id}>
+                    {e.label}
+                  </option>
+                ))}
+              </>
+            )}
           </select>
         </label>
-        <p className="settings-hint">
-          {(EFFORTS.find((e) => e.id === (settings?.effort ?? 'medium')) ?? EFFORTS[1]!).note}
-        </p>
+        {backend.efforts.length > 0 && (
+          <p className="settings-hint">
+            {backend.efforts.find((e) => e.id === (settings?.effort ?? backend.defaultEffort))?.note ??
+              'Passed to the backend as-is.'}
+          </p>
+        )}
+        {/* Codex only: the claude CLI's fast mode bills API usage on top of the
+            subscription, so offering it there would be a surprise invoice. */}
+        {backend.id === 'codex-cli' && (
+          <>
+            <label className="settings-check">
+              <input
+                type="checkbox"
+                checked={settings?.codexFast !== false}
+                // Absent means on, so turning it on removes the key rather than
+                // writing `true` — the file stays minimal.
+                onChange={(e) => onChange({ codexFast: e.target.checked ? undefined : false })}
+              />
+              Fast mode — roughly halves the wait
+            </label>
+            <p className="settings-hint">
+              Included in the ChatGPT subscription, but answers spend credits about twice as fast while it is
+              on. Turn it off to stretch a tight monthly allowance.
+            </p>
+          </>
+        )}
         <label className="settings-row">
           <span className="settings-label">Give up after</span>
           <input

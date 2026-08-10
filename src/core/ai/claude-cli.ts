@@ -16,10 +16,7 @@
  * - **Never `--bare`** — it disables exactly the OAuth/keychain auth this depends on.
  */
 
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { tmpdir } from 'node:os';
-
-import { ADVISOR_SYSTEM_PROMPT } from './prompt.js';
+import { ADVISOR_SYSTEM_PROMPT, buildUserTurn } from './prompt.js';
 import {
   parseAdvice,
   type ActivityListener,
@@ -27,6 +24,9 @@ import {
   type AdvisorRequest,
   type AdvisorResult,
 } from './provider.js';
+import { defaultSpawn, runCommand, stderrTail, type RunResult, type SpawnFn } from './subprocess.js';
+
+export type { SpawnFn } from './subprocess.js';
 
 export const CLAUDE_CLI_ID = 'claude-cli';
 
@@ -53,9 +53,6 @@ export const DEFAULT_EFFORT = 'medium';
  * not an expectation, and it should sit well clear of a healthy worst case.
  */
 export const DEFAULT_TIMEOUT_MS = 1_200_000;
-
-/** Injectable so the tests can drive every branch without a real subprocess. */
-export type SpawnFn = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 
 export interface ClaudeCliOptions {
   /** Binary name or absolute path; resolved on PATH when it is a bare name. */
@@ -101,14 +98,22 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
   const effort = opts.effort ?? DEFAULT_EFFORT;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const systemPrompt = opts.systemPrompt ?? ADVISOR_SYSTEM_PROMPT;
-  const spawn = opts.spawn ?? (nodeSpawn as SpawnFn);
+  const spawn = opts.spawn ?? defaultSpawn;
+  const runOpts = {
+    label: 'claude CLI',
+    notFoundMessage:
+      `claude CLI not found (looked for ${JSON.stringify(binary)} on PATH) — install Claude Code, ` +
+      'set the binary in settings, or switch provider',
+  };
+  const run = (args: readonly string[], input: string, timeout: number, signal?: AbortSignal, onStdout?: (chunk: string) => void): Promise<RunResult> =>
+    runCommand(spawn, binary, args, input, timeout, signal, { ...runOpts, ...(onStdout ? { onStdout } : {}) });
 
   return {
     id: CLAUDE_CLI_ID,
 
     async available(): Promise<boolean> {
       try {
-        const probe = await run(spawn, binary, ['--version'], '', 15_000, undefined);
+        const probe = await run(['--version'], '', 15_000);
         return probe.code === 0;
       } catch {
         return false;
@@ -155,9 +160,10 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
         onActivity?.(activity);
       };
 
-      const proc = await run(spawn, binary, args, buildInput(req), timeoutMs, signal, track, (n) => {
+      const readActivity = activityReader(track, (n) => {
         reportedThinking = n;
       });
+      const proc = await run(args, buildUserTurn(req.contextDoc, req.question), timeoutMs, signal, readActivity);
       const thinkingTokens = reportedThinking ?? estimatedThinking;
 
       if (proc.timedOut) {
@@ -166,7 +172,7 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
         );
       }
       if (proc.code !== 0) {
-        throw new Error(`claude CLI exited ${proc.code ?? 'by signal'}${tail(proc.stderr)}`);
+        throw new Error(`claude CLI exited ${proc.code ?? 'by signal'}${stderrTail(proc.stderr)}`);
       }
 
       const envelope = envelopeFrom(proc.stdout);
@@ -177,7 +183,7 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
       }
       if (envelope.is_error || typeof envelope.result !== 'string') {
         const detail = typeof envelope.result === 'string' ? envelope.result : (envelope.subtype ?? 'no result field');
-        throw new Error(`claude CLI reported an error — ${detail}${tail(proc.stderr)}`);
+        throw new Error(`claude CLI reported an error — ${detail}${stderrTail(proc.stderr)}`);
       }
 
       const input = inputTokens(envelope.usage);
@@ -313,148 +319,3 @@ interface StreamLine {
   };
 }
 
-/**
- * The document, then the question. Appending rather than folding the question
- * into the system prompt keeps the persona identical across runs — only the
- * user turn changes, which is what makes two runs comparable.
- */
-function buildInput(req: AdvisorRequest): string {
-  if (!req.question) return req.contextDoc;
-  return `${req.contextDoc}\n\n---\n\n**Additional instruction from the user — let it steer the answer, but still produce the full output format:** ${req.question}\n`;
-}
-
-function tail(stderr: string, limit = 500): string {
-  const text = stderr.trim();
-  if (!text) return '';
-  return `\n${text.length > limit ? `…${text.slice(-limit)}` : text}`;
-}
-
-interface RunResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-}
-
-/**
- * Spawn, feed stdin, collect both pipes.
- *
- * The child gets its own process group (`detached`) so a timeout or an abort
- * can take down anything it started rather than orphaning it — `claude` is a
- * Node program that spawns helpers of its own.
- */
-function run(
-  spawn: SpawnFn,
-  binary: string,
-  args: readonly string[],
-  input: string,
-  timeoutMs: number,
-  signal: AbortSignal | undefined,
-  onActivity?: ActivityListener,
-  onThinkingTokens?: (n: number) => void,
-): Promise<RunResult> {
-  return new Promise<RunResult>((resolve, reject) => {
-    let child: ChildProcess;
-    try {
-      child = spawn(binary, args, {
-        cwd: tmpdir(),
-        detached: true,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: process.env,
-      });
-    } catch (err) {
-      reject(notFound(err, binary));
-      return;
-    }
-
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let settled = false;
-
-    const stop = (): void => {
-      clearTimeout(timer);
-      signal?.removeEventListener('abort', onAbort);
-      process.removeListener('SIGINT', onAbort);
-      process.removeListener('SIGTERM', onAbort);
-    };
-    const kill = (): void => {
-      // Negative pid = the whole group. Falls back to the child alone on the
-      // platforms/mocks where the group is not addressable.
-      try {
-        if (child.pid) process.kill(-child.pid, 'SIGTERM');
-        else child.kill('SIGTERM');
-      } catch {
-        child.kill('SIGKILL');
-      }
-    };
-    const onAbort = (): void => {
-      kill();
-    };
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      kill();
-    }, timeoutMs);
-    // The timer must not hold the process open once everything else is done.
-    timer.unref?.();
-    signal?.addEventListener('abort', onAbort, { once: true });
-    // Its own process group means the child does *not* get the terminal's
-    // Ctrl-C, so an interrupted CLI would otherwise leave a model call running.
-    process.once('SIGINT', onAbort);
-    process.once('SIGTERM', onAbort);
-
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    // Still accumulated in full: the result envelope is the last line, and the
-    // error paths quote the beginning of stdout. The reader is a second pass over
-    // the same bytes, and the whole stream is a few hundred kB.
-    const readActivity = onActivity ? activityReader(onActivity, onThinkingTokens) : undefined;
-    child.stdout?.on('data', (chunk: string) => {
-      stdout += chunk;
-      // A listener that throws is the consumer's problem, not the run's — this is
-      // a progress report on a call that has already been paid for.
-      try {
-        readActivity?.(chunk);
-      } catch {
-        /* ignore */
-      }
-    });
-    child.stderr?.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-
-    child.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      stop();
-      reject(notFound(err, binary));
-    });
-    child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      stop();
-      if (signal?.aborted && !timedOut) {
-        reject(new Error('advice request was cancelled'));
-        return;
-      }
-      resolve({ code, stdout, stderr, timedOut });
-    });
-
-    // EPIPE here means the child died before reading; the close handler has the
-    // real story, so swallow it rather than racing two rejections.
-    child.stdin?.on('error', () => {});
-    child.stdin?.end(input);
-  });
-}
-
-function notFound(err: unknown, binary: string): Error {
-  const code = (err as NodeJS.ErrnoException).code;
-  if (code === 'ENOENT') {
-    return new Error(
-      `claude CLI not found (looked for ${JSON.stringify(binary)} on PATH) — install Claude Code, ` +
-        'set the binary in settings, or switch provider',
-    );
-  }
-  return new Error(`could not run the claude CLI — ${(err as Error).message}`);
-}
