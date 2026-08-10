@@ -20,7 +20,7 @@
  * qualified-stat rule exists to kill.
  */
 
-import type { AdviseEnvelope, UiStats } from '../../../shared/ipc.js';
+import type { AdviseEnvelope, PlanProjection, UiStats } from '../../../shared/ipc.js';
 import { projectedResistances } from '../advice.js';
 import { statClass } from '../statColors.js';
 
@@ -36,6 +36,9 @@ export function StatsPanel({
 }): React.ReactNode {
   const projected = projectedResistances(advice);
   const projectedSpeed = advice?.plan?.projected;
+  // The tool-computed projection, when the stored run carries one. It wins over
+  // the model-authored figures everywhere both exist.
+  const projection = advice?.projection;
   const hasProjection = projected.size > 0;
 
   return (
@@ -58,21 +61,31 @@ export function StatsPanel({
 
       <section className="stats-section">
         <h3>Attributes</h3>
-        {stats.attributes.map((attr) => (
-          <Row
-            key={attr.key}
-            label={attr.label}
-            labelClass="stat-attribute"
-            value={round(attr.total)}
-            detail={[
-              `${round(attr.base)} base`,
-              attr.flat ? `${signed(attr.flat)} gear/skills` : '',
-              attr.percent ? `${signed(attr.percent)}%` : '',
-            ]
-              .filter(Boolean)
-              .join(', ')}
-          />
-        ))}
+        {stats.attributes.map((attr) => {
+          // The computed projection knows the attribute totals — outgoing gear
+          // takes its `+Attribute` with it, which is what the models were
+          // hand-computing in prose notes before the defense block existed.
+          const projectedAttr = projection?.defense?.attributes[attr.key];
+          const attrDelta = projectedAttr ? projectedAttr.after - attr.total : 0;
+          return (
+            <Row
+              key={attr.key}
+              label={attr.label}
+              labelClass="stat-attribute"
+              value={round(attr.total)}
+              detail={[
+                `${round(attr.base)} base`,
+                attr.flat ? `${signed(attr.flat)} gear/skills` : '',
+                attr.percent ? `${signed(attr.percent)}%` : '',
+              ]
+                .filter(Boolean)
+                .join(', ')}
+              {...(projectedAttr
+                ? { after: `${round(projectedAttr.after)} (${signed(attrDelta)})`, afterClass: deltaClass(attrDelta) }
+                : {})}
+            />
+          );
+        })}
         <Row label="Health" labelClass="stat-health" value={round(stats.health)} detail={bonus(stats.healthBonus)} />
         <Row label="Energy" labelClass="stat-energy" value={round(stats.energy)} />
         <Row
@@ -110,6 +123,14 @@ export function StatsPanel({
             {stats.resistances.map((row) => {
               const after = projected.get(row.label.toLowerCase());
               const delta = after === undefined ? 0 : after - row.effective;
+              // Where the computed projection knows both bands and they differ,
+              // the split is worth a hover: "80, of which 30 is maintainable
+              // buffs" is a different fact from a permanent 80.
+              const computed = projection?.resistances.find(
+                (r) => r.label.toLowerCase() === row.label.toLowerCase(),
+              );
+              const maintainablePart =
+                computed?.afterPermanent === undefined ? 0 : computed.after - computed.afterPermanent;
               return (
                 <tr key={row.key} className={row.effective < row.cap ? 'short' : ''}>
                   {/* The same colour the tooltips give this type, so a row here
@@ -124,7 +145,14 @@ export function StatsPanel({
                   <td className="effective">{round(row.effective)}</td>
                   <td>{round(row.cap)}</td>
                   {hasProjection && (
-                    <td className={`projected-col ${deltaClass(delta)}`}>
+                    <td
+                      className={`projected-col ${deltaClass(delta)}`}
+                      {...(maintainablePart !== 0 && computed
+                        ? {
+                            title: `of which ${signed(maintainablePart)} is maintainable buffs — permanent-band ${round(computed.afterPermanent ?? 0)}`,
+                          }
+                        : {})}
+                    >
                       {after === undefined ? '—' : `${round(after)} (${signed(delta)})`}
                     </td>
                   )}
@@ -163,6 +191,7 @@ export function StatsPanel({
           labelClass="stat-armor"
           value={round(stats.armorAverage)}
           detail={`hit-weighted${stats.armorClasses.length ? ` · ${stats.armorClasses.join('/')} armour` : ''}`}
+          {...afterProp(projection?.defense?.armorMean, stats.armorAverage)}
         />
         <Row
           label="Absorption"
@@ -171,6 +200,7 @@ export function StatsPanel({
           // Absorption is a share of the damage the rating above meets, and it
           // is multiplicative on its own base — flat +Armor never touches it.
           detail={`of what a part stops · ${stats.absorptionBase}% base, multiplicative`}
+          {...afterProp(projection?.defense?.absorption, stats.absorption, (v) => `${v.toFixed(1)}%`)}
         />
         {stats.block && (
           <Row label="Block" value={`${round(stats.block.chance)}%`} detail={`${round(stats.block.amount)} absorbed`} />
@@ -180,7 +210,7 @@ export function StatsPanel({
       <section className="stats-section">
         <h3>Speed</h3>
         {stats.speeds.map((line) => {
-          const after = projectedSpeedFor(line.label, projectedSpeed);
+          const after = computedSpeedFor(line.label, projection) ?? projectedSpeedFor(line.label, projectedSpeed);
           const delta = after === undefined ? 0 : after - line.percent;
           return (
             <Row
@@ -204,10 +234,12 @@ export function StatsPanel({
             />
           );
         })}
-        {projectedSpeed && projectedSpeed.notDerivable.length > 0 && (
+        {!projection && projectedSpeed && projectedSpeed.notDerivable.length > 0 && (
           <div className="stats-note">not projected: {projectedSpeed.notDerivable.join('; ')}</div>
         )}
       </section>
+
+      <DamageSection stats={stats} projection={projection} />
 
       <details className="stats-exclusions">
         <summary>What these numbers leave out ({stats.exclusions.length})</summary>
@@ -219,6 +251,148 @@ export function StatsPanel({
       </details>
     </div>
   );
+}
+
+/**
+ * The build's damage profile — the same vocabulary as the dossier's §4: per-type
+ * `+%` and post-conversion flat pools, never a DPS number. With a stored run
+ * whose projection is computed, each row gains "after" columns, and the skill
+ * ranks the plan moves are stated underneath, because they are what explains
+ * the deltas.
+ */
+function DamageSection({
+  stats,
+  projection,
+}: {
+  stats: UiStats;
+  projection: PlanProjection | undefined;
+}): React.ReactNode {
+  const d = stats.damage;
+  const after = new Map((projection?.damage ?? []).map((row) => [row.key, row]));
+  const hasAfter = after.size > 0;
+
+  // Union: a type the plan's conversions create is absent from the before-side.
+  const rows = d.entries.map((e) => ({ ...e, projected: after.get(e.key) }));
+  const known = new Set(d.entries.map((e) => e.key));
+  for (const row of projection?.damage ?? []) {
+    if (!known.has(row.key) && (row.percentAfter || row.flatAfter)) {
+      rows.push({
+        key: row.key,
+        label: row.label,
+        overTime: row.overTime,
+        percent: row.percentBefore,
+        flat: row.flatBefore,
+        projected: row,
+      });
+    }
+  }
+  if (!rows.length) return null;
+
+  const notes: string[] = [];
+  if (projection) {
+    for (const s of projection.skipped) notes.push(`not projected: ${s.slot} ${s.verdict} — ${s.reason}`);
+    notes.push(...projection.notes);
+  }
+
+  return (
+    <section className="stats-section">
+      <h3 title="Per-type +% modifiers and post-conversion flat pools, as the dossier ranks them — fit, not DPS.">
+        Damage
+      </h3>
+      <table className="resist-table damage-table">
+        <thead>
+          <tr>
+            <th />
+            <th>+%</th>
+            <th>flat</th>
+            {hasAfter && <th className="projected-col">+% after</th>}
+            {hasAfter && <th>flat after</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => {
+            const p = row.projected;
+            const percentDelta = p ? p.percentAfter - row.percent : 0;
+            const flatDelta = p ? p.flatAfter - row.flat : 0;
+            return (
+              <tr key={row.key}>
+                <th scope="row" className={statClass(`${row.label} Damage`)}>
+                  {row.label}
+                </th>
+                <td>{row.percent ? `${signed(row.percent)}%` : '—'}</td>
+                <td>{row.flat ? round(row.flat) : '—'}</td>
+                {hasAfter && (
+                  <td className={`projected-col ${deltaClass(percentDelta)}`}>
+                    {p ? `${signed(p.percentAfter)}% (${signed(percentDelta)})` : '—'}
+                  </td>
+                )}
+                {hasAfter && (
+                  <td className={deltaClass(flatDelta)}>
+                    {p ? `${round(p.flatAfter)} (${signed(flatDelta)})` : '—'}
+                  </td>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {(d.totalPercent !== 0 || d.mainAttack || d.composition.length > 0) && (
+        <div className="stats-note">
+          {[
+            d.totalPercent ? `${signed(d.totalPercent)}% Total Damage` : '',
+            d.mainAttack ? `main attack: ${d.mainAttack}` : '',
+            d.composition.length
+              ? `weapon attack: ${d.composition.map((c) => `${c.share}% ${c.label}`).join(' · ')}`
+              : '',
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+        </div>
+      )}
+      {projection?.payload && (
+        <div className={`stats-note payload-note ${deltaClass(projection.payload.after - projection.payload.before)}`}>
+          payload index {payloadFmt(projection.payload.before)} → {payloadFmt(projection.payload.after)} (
+          {payloadDelta(projection.payload)}) — flat pools × their +% columns; an index, not DPS
+        </div>
+      )}
+      {projection && projection.skillRanks.length > 0 && (
+        <div className="stats-note">
+          after plan: {projection.skillRanks.map((r) => `${r.skill} ${r.before} → ${r.after}`).join(' · ')}
+        </div>
+      )}
+      {notes.map((note, i) => (
+        <div key={i} className="stats-note">
+          {note}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/** `41200` → `41.2k`: the index is compared, not read to the unit. */
+function payloadFmt(v: number): string {
+  return Math.abs(v) >= 10_000 ? `${(v / 1000).toFixed(1)}k` : round(v);
+}
+
+/** The relative cost/gain — the way the tolerance rule states it. */
+function payloadDelta(pair: { before: number; after: number }): string {
+  if (!pair.before) return signed(pair.after - pair.before);
+  const pct = ((pair.after - pair.before) / pair.before) * 100;
+  return `${pct < 0 ? '−' : '+'}${Math.abs(pct).toFixed(1)}%`;
+}
+
+/** The computed projection's speed for a sheet line, matched by channel. */
+function computedSpeedFor(label: string, projection: PlanProjection | undefined): number | undefined {
+  if (!projection) return undefined;
+  const key = label.toLowerCase();
+  const channel = key.startsWith('attack')
+    ? 'attack'
+    : key.startsWith('cast')
+      ? 'cast'
+      : key.startsWith('move')
+        ? 'movement'
+        : undefined;
+  return projection.speeds.find((s) => s.key === channel)?.after;
 }
 
 /** Speed lines are labelled by the aggregate; the plan names them by channel. */
@@ -236,6 +410,17 @@ function projectedSpeedFor(
 
 function deltaClass(delta: number): string {
   return delta > 0 ? 'better' : delta < 0 ? 'worse' : 'same';
+}
+
+/** `after`/`afterClass` for a Row, from a projected before/after pair. */
+function afterProp(
+  pair: { before: number; after: number } | undefined,
+  current: number,
+  fmt: (v: number) => string = round,
+): { after: string; afterClass: string } | Record<string, never> {
+  if (!pair) return {};
+  const delta = pair.after - current;
+  return { after: `${fmt(pair.after)} (${signed(delta)})`, afterClass: deltaClass(delta) };
 }
 
 function Row({

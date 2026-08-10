@@ -501,6 +501,22 @@ function buildStats(snap: CharacterSnapshot, db: GameDb): UiStats {
       speedLine(agg.speed.cast, 'casts/s'),
       speedLine(agg.speed.movement, '× base'),
     ],
+    damage: {
+      entries: agg.damage.ranked.map((e) => ({
+        key: e.key,
+        label: e.label,
+        percent: e.percent,
+        flat: e.flat,
+        overTime: e.overTime,
+      })),
+      totalPercent: agg.damage.totalDamagePercent,
+      ...(agg.damage.weaponAttack.mainAttack ? { mainAttack: agg.damage.weaponAttack.mainAttack } : {}),
+      composition: agg.damage.weaponAttack.composition.map((c) => ({
+        label: c.label,
+        share: c.share,
+        overTime: c.overTime,
+      })),
+    },
     exclusions: agg.exclusions,
   };
   // Block numbers mean nothing without a shield, so they are absent rather than

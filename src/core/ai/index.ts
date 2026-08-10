@@ -35,6 +35,7 @@ export function providerDefaults(id: string): { model?: string; effort: string }
 
 export * from './provider.js';
 export * from './envelope.js';
+export * from './project.js';
 export * from './advice-store.js';
 export * from './verify.js';
 export * from './repair.js';

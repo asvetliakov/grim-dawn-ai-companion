@@ -86,9 +86,9 @@ export function LoadoutPanel({
   weaponSet: 1 | 2;
   onWeaponSet: (set: 1 | 2) => void;
 }): React.ReactNode {
-  const bySlot = adviceBySlot(advice);
-  const byId = itemsByDocId(snapshot);
   const heldSet: 1 | 2 = snapshot.alternateWeaponSetActive ? 2 : 1;
+  const bySlot = adviceBySlot(advice, heldSet);
+  const byId = itemsByDocId(snapshot);
   const weapons = snapshot.weaponSets[weaponSet - 1] ?? [];
 
   const currentFor = (slot: string): UiItem | null => {
@@ -108,7 +108,7 @@ export function LoadoutPanel({
   // Where the live loadout has moved away from the one the run was written for.
   // Two states per slot, and they are opposites: `applied` is the plan being
   // carried out, anything else is the plan being overtaken.
-  const drift = loadoutDrift(advice, currentWorn(snapshot));
+  const drift = loadoutDrift(advice, currentWorn(snapshot), heldSet);
   const stateBySlot = new Map(drift.map((d) => [slotKey(d.slot), d.applied ? 'done' : 'changed'] as const));
   const stateFor = (slot: string): 'done' | 'changed' | undefined =>
     stateBySlot.get(slotKey(slot === 'main' || slot === 'off' ? `Weapon set ${weaponSet} ${slot}` : slot));

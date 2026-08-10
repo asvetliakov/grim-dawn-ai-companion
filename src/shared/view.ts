@@ -133,6 +133,32 @@ export interface UiSpeedLine {
   unit: string;
 }
 
+/** One damage type the build invests in — §4's table row, for the sheet. */
+export interface UiDamageEntry {
+  key: string;
+  label: string;
+  /** Summed `+%` modifiers of the type. */
+  percent: number;
+  /** Post-conversion flat pool (min–max midpoints). */
+  flat: number;
+  overTime: boolean;
+}
+
+/**
+ * The build's damage profile, in §4's own vocabulary — per-type `+%` and
+ * post-conversion flat pools, never a DPS number. This existed on the aggregate
+ * since Stage 5A.5 and was dropped by `buildStats` until Stage 8.
+ */
+export interface UiDamage {
+  entries: UiDamageEntry[];
+  /** `+% Total Damage` — scales every type at once, so it ranks none. */
+  totalPercent: number;
+  /** The invested default-attack replacer, when there is one. */
+  mainAttack?: string;
+  /** Post-conversion shares of the weapon attack's flat pools. */
+  composition: { label: string; share: number; overTime: boolean }[];
+}
+
 export interface UiStats {
   level: number;
   className: string;
@@ -160,6 +186,7 @@ export interface UiStats {
   absorptionBase: number;
   block?: { chance: number; amount: number };
   speeds: UiSpeedLine[];
+  damage: UiDamage;
   /** What the numbers above leave out, carried through rather than implied. */
   exclusions: string[];
 }

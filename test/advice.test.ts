@@ -36,6 +36,7 @@ import { documentSocketables } from '../src/core/context/builder.js';
 import { loadSnapshot } from '../src/core/session.js';
 import { resolveSettings } from '../src/core/settings.js';
 import { loadoutDrift, type WornSlot } from '../src/renderer/src/advice.js';
+import { verdictSlotKey, weaponSlotRef } from '../src/shared/slots.js';
 import { adviceMarks, staleIds } from '../src/shared/advice-marks.js';
 import { answerProse } from '../src/shared/answer.js';
 import type { AdvisorPlan } from '../src/core/ai/provider.js';
@@ -392,6 +393,21 @@ describe('loadoutDrift', () => {
     ]);
   });
 
+  it('joins a verdict written as `Main hand` onto the active set’s weapon slot', () => {
+    // The opus alias, on the drift side of the same join: the envelope's worn
+    // map speaks the document's labels, the verdict speaks the model's.
+    const env = stored({ 'Weapon set 1 main': 'old1' }, [{ slot: 'Main hand', nextId: 'new1' }]);
+    expect(loadoutDrift(env, now({ 'Weapon set 1 main': { itemId: 'new1' } }), 1)[0]).toMatchObject({
+      applied: true,
+      changed: 'item',
+    });
+    // Resolved against the *active* set: with set 2 held, the same verdict
+    // names a different slot and this move no longer counts as carried out.
+    expect(loadoutDrift(env, now({ 'Weapon set 1 main': { itemId: 'new1' } }), 2)[0]).toMatchObject({
+      applied: false,
+    });
+  });
+
   it('reports a slot holding something the plan never mentioned as not applied', () => {
     const env = stored({ Neck: 'old1' }, [{ slot: 'Neck', nextId: 'new1' }]);
     expect(loadoutDrift(env, now({ Neck: { itemId: 'other' } }))[0]).toMatchObject({
@@ -675,6 +691,29 @@ describe('staleIds', () => {
     );
     const live = new Set(['here']);
     expect(staleIds(marks, (id) => live.has(id)).sort()).toEqual(['alsogone', 'gone']);
+  });
+});
+
+describe('slot label matcher', () => {
+  it('resolves hand-only aliases against the active set, set-numbered forms as written', () => {
+    expect(verdictSlotKey('Main hand', 1)).toBe('weaponset1main');
+    expect(verdictSlotKey('Main hand', 2)).toBe('weaponset2main');
+    expect(verdictSlotKey('Off-hand', 1)).toBe('weaponset1off');
+    expect(verdictSlotKey('mainhand', 1)).toBe('weaponset1main');
+    expect(verdictSlotKey('off hand weapon', 1)).toBe('weaponset1off');
+    // A set-numbered form names its set whatever is held.
+    expect(verdictSlotKey('weapon 2 off', 1)).toBe('weaponset2off');
+    expect(verdictSlotKey('Weapon set 1 main', 2)).toBe('weaponset1main');
+    expect(verdictSlotKey('Weapon set 1 main hand', 1)).toBe('weaponset1main');
+  });
+
+  it('leaves everything that is not a weapon alias to the plain key', () => {
+    expect(verdictSlotKey('Ring 1', 1)).toBe('ring1');
+    expect(verdictSlotKey('Shoulders', 2)).toBe('shoulders');
+    // One word is not a slot label — `main` alone stays unresolved on purpose.
+    expect(weaponSlotRef('Main', 1)).toBeUndefined();
+    expect(weaponSlotRef('off', 1)).toBeUndefined();
+    expect(weaponSlotRef('Medal', 1)).toBeUndefined();
   });
 });
 

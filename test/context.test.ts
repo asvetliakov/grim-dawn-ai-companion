@@ -177,6 +177,40 @@ describe('formatStats', () => {
     expect(formatStats({ defensiveCold: -28 }, { db })).toContain('-28% Enemy Cold Resistance');
   });
 
+  it('applies the same sign rule to all-resistance, elemental and secondary lines', () => {
+    // The hardcoded `+` once printed `+-25% to All Resistances` on 58 skills.
+    expect(formatStats({ defensiveAllResistance: -25 }, { db })).toEqual(['-25% to All Enemy Resistances']);
+    expect(formatStats({ defensiveAllResistance: 25 }, { db })).toEqual(['+25% to All Resistances']);
+    expect(formatStats({ defensiveElementalResistance: -32 }, { db })).toEqual([
+      '-32% Enemy Fire, Cold and Lightning Resistances',
+    ]);
+    expect(formatStats({ defensiveSlowLifeLeach: -8 }, { db })).toEqual(['-8% Enemy Life Leech Resistance']);
+  });
+
+  it('folds every resistance-reduction family with its qualifiers, never a raw fallback', () => {
+    expect(
+      formatStats(
+        {
+          offensiveElementalResistanceReductionPercentMin: 32,
+          offensiveElementalResistanceReductionPercentDurationMin: 5,
+        },
+        { db },
+      ),
+    ).toEqual(['-32% Enemy Fire, Cold and Lightning Resistances (for 5s)']);
+    expect(
+      formatStats(
+        {
+          offensiveTotalResistanceReductionAbsoluteMin: 22,
+          offensiveTotalResistanceReductionAbsoluteDurationMin: 3,
+        },
+        { db },
+      ),
+    ).toEqual(['-22 to All Enemy Resistances (for 3s)']);
+    expect(formatStats({ offensivePhysicalResistanceReductionAbsoluteMin: 12 }, { db })).toEqual([
+      '-12 Enemy Physical Resistance',
+    ]);
+  });
+
   /**
    * Absorption and its qualifier flags are one fact. Maiven's Lens grants a
    * flat `damageAbsorption: 525` scoped by `physicalDamageQualifier: 1`, and
@@ -381,9 +415,12 @@ const skipReason = !haveSaves()
  * The plan's original ceiling. It is no longer the default — the document is
  * bounded by the candidate level window rather than by a budget — but the
  * builder must still be able to hit it on demand, because a tighter budget is
- * exactly what a smaller-context provider would ask for.
+ * exactly what a smaller-context provider would ask for. Raised from 30k when
+ * Stage 8 grew §4's untrimmable core (the RR categories, the build-focus
+ * magnitudes and the projection guidance); the trim ladder's floor sits just
+ * above the old number even with the rank tables dropped.
  */
-const PLAN_TOKEN_BUDGET = 30_000;
+const PLAN_TOKEN_BUDGET = 32_000;
 
 async function context(character: string, difficulty?: 'Normal' | 'Elite' | 'Ultimate'): Promise<ContextInput> {
   const db = await gameDb();
@@ -464,6 +501,36 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     for (let n = 2; n <= 12; n++) {
       expect(doc.markdown, `section ${n}`).toContain(`\n## ${n}. `);
     }
+  });
+
+  it('tabulates attack, RR and moving-stat buff skills rank by rank, and states the build focus by magnitude', async () => {
+    const doc = buildContextDoc(await context('_Suchka'));
+    expect(doc.markdown).toContain('### Attack, resistance-reduction and moving-stat buff skills, rank by rank');
+    // At least one table with a weapon-damage row and a bolded effective-rank column.
+    expect(doc.markdown).toMatch(/\| % Weapon Damage \|/);
+    expect(doc.markdown).toMatch(/\| \*\*\d+\*\* \|/);
+    // The Bloodfrenzy gap: a permanent buff whose per-rank stats move gets a
+    // table, its rows labelled as global — never "(this skill only)".
+    const tables = doc.markdown.slice(doc.markdown.indexOf('### Attack, resistance-reduction'));
+    const rankTables = tables.slice(0, tables.indexOf('\n## '));
+    expect(rankTables).toContain('**Bloodfrenzy**');
+    expect(rankTables).toContain('rows are global character modifiers');
+    const bloodfrenzy = rankTables.slice(rankTables.indexOf('**Bloodfrenzy**'));
+    const bloodfrenzyTable = bloodfrenzy.slice(0, bloodfrenzy.indexOf('\n\n'));
+    expect(bloodfrenzyTable).toContain('+% Attack Speed');
+    expect(bloodfrenzyTable).not.toContain('(this skill only)');
+    // The RR list groups by stacking category and states the convention.
+    expect(doc.markdown).toContain('stacks from every source');
+    expect(doc.markdown).toContain('kept at or near max rank');
+    // Focus is weighted, fully qualified, and separates the minor lines.
+    expect(doc.markdown).toMatch(/Build focus: .+ Damage \(\+\d+% modifiers\)/);
+    // The payload index line: the one comparable "total damage" scalar, framed
+    // as an index with its exclusions named, never DPS.
+    expect(doc.markdown).toMatch(/\*\*Weapon payload index: [\d,.]+\*\*/);
+    expect(doc.markdown).toContain('**not DPS**');
+    // Devotion is declared static, and no sign glitch survives anywhere.
+    expect(doc.markdown).toContain('no gear change moves them');
+    expect(doc.markdown).not.toMatch(/\+-\d/);
   });
 
   it('renders the resistance matrix with exactly the aggregate’s numbers', async () => {

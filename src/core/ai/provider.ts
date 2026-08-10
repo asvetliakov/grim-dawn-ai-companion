@@ -161,6 +161,16 @@ export const PLAN_WARNING_KINDS = [
    * find. A threshold's unlocks are what the reader will put on when it is met.
    */
   'uncommitted-next-level',
+  /**
+   * A resistance the plan's own tally claims at or over cap while the computed
+   * projection — the verdicts applied to the save and re-aggregated — lands it
+   * more than two points *under* cap. This is the one projection disagreement
+   * that is a plan error rather than a reporting choice: two consecutive live
+   * gpt-5.6 runs listed `-28% Acid Resistance` in a verdict's `costs` and then
+   * dropped it from `projectedResistances`, telling the reader a broken
+   * resistance was capped. Band choices stay notes; this buys a repair call.
+   */
+  'overstated-cap',
 ] as const;
 
 export type PlanWarningKind = (typeof PLAN_WARNING_KINDS)[number];

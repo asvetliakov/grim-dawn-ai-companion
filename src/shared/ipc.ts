@@ -19,6 +19,7 @@ import type {
   AdviseStatus,
   AdviseEnvelope,
   AdviseUsage,
+  PlanProjection,
 } from '../core/ai/envelope.js';
 import type { AdvisorPlan, PlanWarning, VerdictRow } from '../core/ai/provider.js';
 import type { Settings } from '../core/settings-schema.js';
@@ -33,6 +34,7 @@ export type {
   AdviseStatus,
   AdviseUsage,
   AdvisorPlan,
+  PlanProjection,
   PlanWarning,
   Settings,
   UiSnapshot,

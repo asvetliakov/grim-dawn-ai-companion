@@ -36,6 +36,7 @@ import {
   repairEffort,
   saveAdvice,
   totalUsage,
+  projectPlan,
   providerDefaults,
   wornSlots,
   wornSocketables,
@@ -45,6 +46,7 @@ import {
   type AdviseEnvelope,
   type AdviseStatus,
   type AdvisorActivity,
+  type AdvisorPlan,
   type AdvisorProvider,
   type PlanCheckInput,
   type PlanWarning,
@@ -217,7 +219,21 @@ export class AdviseRunner {
     question: string | undefined,
   ): Promise<void> {
     try {
-      const check = planCheckInput(scope);
+      // The projection input serves twice: the checks project each candidate
+      // plan through it (`overstated-cap` must run inside the repair loop),
+      // and the winning plan's projection lands on the envelope below.
+      const projectionInput = {
+        save: snapshot.save,
+        account: snapshot.account,
+        db: scope.input.db,
+        difficulty: snapshot.difficulty,
+        itemsById: scope.doc.itemsById,
+        socketablesById: scope.doc.socketablesById,
+      };
+      const check = {
+        ...planCheckInput(scope),
+        project: (p: AdvisorPlan) => projectPlan(p, projectionInput),
+      };
       this.advance(run, 'asking');
 
       const outcome = await adviseWithRepair(
@@ -232,11 +248,19 @@ export class AdviseRunner {
         },
       );
 
+      // The computed before→after: the plan applied to a copy of the save this
+      // run saw, re-aggregated and diffed. Computed here because the envelope
+      // module may not import the resolver or the database.
+      const projection = outcome.result.structured
+        ? projectPlan(outcome.result.structured, projectionInput)
+        : undefined;
+
       const envelope = buildEnvelope({
         character: run.character,
         gameVersion,
         ...(question ? { question } : {}),
         outcome,
+        ...(projection ? { projection } : {}),
         usage: totalUsage(outcome.results),
         durationMs: Date.now() - run.startedAt,
         itemNames: Object.fromEntries([...scope.doc.itemsById].map(([id, item]) => [id, item.display])),

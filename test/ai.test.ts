@@ -1143,6 +1143,70 @@ describe('checkPlan', () => {
 });
 
 // ---------------------------------------------------------------------------
+// The tally vs the computed projection
+// ---------------------------------------------------------------------------
+
+describe('checkPlan — overstated caps', () => {
+  /** A projection with just the resistance rows the case needs. */
+  const projection = (rows: { label: string; after: number; capAfter: number }[]) => ({
+    resistances: rows.map((r) => ({ before: 0, afterPermanent: r.after, ...r })),
+    speeds: [],
+    damage: [],
+    totalDamagePercent: { before: 0, after: 0 },
+    skillRanks: [],
+    skipped: [],
+    notes: [],
+  });
+  const w = (rows: { label: string; after: number; capAfter: number }[]) => ({
+    ...world(),
+    project: () => projection(rows),
+  });
+  const acidPlan = { verdicts: [], hold: [], sell: [], projectedResistances: { Acid: 100 } };
+
+  it('fires when the tally claims capped and the computed figure is under cap — and buys a repair', () => {
+    // The live case, twice over: `-28% Acid Resistance` in a verdict's costs,
+    // dropped from the tally, Acid reported capped while it ends 8 short.
+    const warnings = checkPlan(acidPlan, w([{ label: 'Acid', after: 72, capAfter: 80 }]));
+    expect(warnings.map((x) => x.kind)).toEqual(['overstated-cap']);
+    expect(warnings[0]!.message).toContain('Acid Resistance at 100');
+    expect(warnings[0]!.message).toContain('72 effective, 8 short');
+    // Unlike a wording warning, this one is structure: it justifies the call.
+    expect(worthRepairing(warnings)).toBe(true);
+  });
+
+  it('stays silent for an honest under-cap figure — that is a decision, not a slip', () => {
+    const honest = { verdicts: [], hold: [], sell: [], projectedResistances: { Acid: 72 } };
+    expect(checkPlan(honest, w([{ label: 'Acid', after: 72, capAfter: 80 }]))).toEqual([]);
+  });
+
+  it('stays silent at cap, within the ±2 rounding band, and case-insensitively matches labels', () => {
+    const capped = { verdicts: [], hold: [], sell: [], projectedResistances: { fire: 110 } };
+    expect(checkPlan(capped, w([{ label: 'Fire', after: 110, capAfter: 80 }]))).toEqual([]);
+    const rounding = { verdicts: [], hold: [], sell: [], projectedResistances: { Cold: 80 } };
+    expect(checkPlan(rounding, w([{ label: 'Cold', after: 79, capAfter: 80 }]))).toEqual([]);
+  });
+
+  it('checks nothing without a tally, a projector, or a projection', () => {
+    expect(checkPlan({ verdicts: [], hold: [], sell: [] }, w([{ label: 'Acid', after: 72, capAfter: 80 }]))).toEqual([]);
+    expect(checkPlan(acidPlan, world())).toEqual([]);
+    expect(checkPlan(acidPlan, { ...world(), project: () => undefined })).toEqual([]);
+  });
+
+  it('stands down when the projection itself skipped a verdict — a partial figure indicts nothing', () => {
+    // A CRAFT or an unknown id leaves the computed figure missing gains the
+    // model legitimately counted; the unknown id warns on its own already.
+    const partial = {
+      ...world(),
+      project: () => ({
+        ...projection([{ label: 'Acid', after: 72, capAfter: 80 }]),
+        skipped: [{ slot: 'Chest', verdict: 'CRAFT', reason: 'the item is transformed; the result is not projectable' }],
+      }),
+    };
+    expect(checkPlan(acidPlan, partial)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Stat clarity
 // ---------------------------------------------------------------------------
 
@@ -1184,6 +1248,21 @@ describe('ambiguous stat references', () => {
     // And the list tolerance is same-line only: a stat that ends its line is
     // still bare whatever the next line opens with.
     expect(ambiguousStats('gains +35 Acid\n90 more to cap')).toEqual(['+35 Acid']);
+  });
+
+  it('accepts the shapes §4 now renders, so an answer echoing them is not flagged', () => {
+    // The RR wording, the rank tables' row labels and the weighted focus line
+    // are all fully qualified on purpose — a model quoting any of them back
+    // must not buy a repair call.
+    expect(ambiguousStats('-32% Enemy Fire, Cold and Lightning Resistances (for 5s)')).toEqual([]);
+    expect(ambiguousStats('-22 to All Enemy Resistances')).toEqual([]);
+    expect(ambiguousStats('| Fire Damage (flat, midpoint) | 120 | 130 |')).toEqual([]);
+    expect(ambiguousStats('| -N% Enemy Cold Resistance | 23 | 25 |')).toEqual([]);
+    expect(ambiguousStats('Build focus: Pierce Damage (+1556% modifiers) + Bleeding Damage (+1203% modifiers)')).toEqual([]);
+    // The payload index is not a damage-type name; an answer stating its delta
+    // ("costs 4.1% of the payload") must not buy a repair call either.
+    expect(ambiguousStats('payload index 41,200 → 39,500 (−4.1%)')).toEqual([]);
+    expect(ambiguousStats('Weapon payload index: 7739 — this plan costs 3% of it')).toEqual([]);
   });
 
   it('reports it against the plan, in reasons and in gains/costs', () => {

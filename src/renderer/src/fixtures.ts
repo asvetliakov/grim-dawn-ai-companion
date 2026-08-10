@@ -477,6 +477,23 @@ const stats: UiStats = {
       unit: '× base',
     },
   ],
+  damage: {
+    entries: [
+      { key: 'pierce', label: 'Pierce', percent: 1556, flat: 1207, overTime: false },
+      { key: 'bleeding', label: 'Bleeding', percent: 1203, flat: 693, overTime: true },
+      { key: 'chaos', label: 'Chaos', percent: 293, flat: 0, overTime: false },
+      { key: 'cold', label: 'Cold', percent: 150, flat: 129, overTime: false },
+      { key: 'physical', label: 'Physical', percent: 0, flat: 84, overTime: false },
+    ],
+    totalPercent: 24,
+    mainAttack: 'Onslaught',
+    composition: [
+      { label: 'Pierce', share: 57, overTime: false },
+      { label: 'Bleeding', share: 33, overTime: true },
+      { label: 'Cold', share: 6, overTime: false },
+      { label: 'Physical', share: 4, overTime: false },
+    ],
+  },
   exclusions: [
     'item-granted skills and procs are named, not summed',
     'pet bonuses and pet skill trees are out of scope',
@@ -731,6 +748,68 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
     // one here, which is the ordinary case — a stored run and the save it
     // describes. The drifted and already-applied cases get their own stories.
     ...storedLoadout(snapshot),
+    // The tool-computed before→after — what a live run stores since Stage 8.
+    // Deliberately different from the model-authored `projectedResistances`
+    // above in a couple of cells (Pierce, Aether), so the sheet's preference
+    // for the computed figures is visible in a story rather than a comment.
+    projection: {
+      // `afterPermanent` on the three elemental rows: the fixture build holds
+      // its elemental line up with a +30 maintainable buff, which is exactly
+      // the band split the cross-check accepts and the after cell's hover states.
+      resistances: [
+        { label: 'Physical', before: 10, after: 10, afterPermanent: 10, capAfter: 80 },
+        { label: 'Pierce', before: 87, after: 129, afterPermanent: 129, capAfter: 80 },
+        { label: 'Fire', before: 74, after: 80, afterPermanent: 50, capAfter: 80 },
+        { label: 'Cold', before: 74, after: 80, afterPermanent: 50, capAfter: 80 },
+        { label: 'Lightning', before: 74, after: 80, afterPermanent: 50, capAfter: 80 },
+        { label: 'Acid', before: 100, after: 100, afterPermanent: 100, capAfter: 80 },
+        { label: 'Vitality', before: 94, after: 94, afterPermanent: 94, capAfter: 80 },
+        { label: 'Aether', before: 154, after: 109, afterPermanent: 109, capAfter: 80 },
+        { label: 'Chaos', before: 64, after: 82, afterPermanent: 82, capAfter: 80 },
+        { label: 'Bleeding', before: 38, after: 78, afterPermanent: 78, capAfter: 80 },
+      ],
+      speeds: [
+        { key: 'attack', label: 'Attack', before: 177, after: 182 },
+        { key: 'cast', label: 'Casting', before: 126, after: 126 },
+        { key: 'movement', label: 'Movement', before: 138, after: 138 },
+      ],
+      damage: [
+        { key: 'pierce', label: 'Pierce', overTime: false, percentBefore: 1556, percentAfter: 1620, flatBefore: 1207, flatAfter: 1245 },
+        { key: 'bleeding', label: 'Bleeding', overTime: true, percentBefore: 1203, percentAfter: 1233, flatBefore: 693, flatAfter: 737 },
+        { key: 'chaos', label: 'Chaos', overTime: false, percentBefore: 293, percentAfter: 293, flatBefore: 0, flatAfter: 0 },
+        { key: 'cold', label: 'Cold', overTime: false, percentBefore: 150, percentAfter: 150, flatBefore: 129, flatAfter: 129 },
+        { key: 'physical', label: 'Physical', overTime: false, percentBefore: 0, percentAfter: 0, flatBefore: 84, flatAfter: 60 },
+      ],
+      totalDamagePercent: { before: 24, after: 24 },
+      // The plan trades a little payload for the resistance moves above —
+      // small against the index, which is the argument the note exists to show.
+      payload: { before: 41200, after: 39500 },
+      defense: {
+        weakestPart: { slotBefore: 'Hands', slotAfter: 'Hands', before: 945, after: 1159 },
+        armorMean: { before: 1381, after: 1415 },
+        absorption: { before: 89.6, after: 89.6 },
+        offensiveAbility: {
+          flat: { before: 590, after: 590 },
+          percent: { before: 9, after: 9 },
+        },
+        defensiveAbility: {
+          flat: { before: 207, after: 219 },
+          percent: { before: 0, after: 0 },
+        },
+        health: {
+          flat: { before: 4320, after: 4720 },
+          percent: { before: 18, after: 18 },
+        },
+        attributes: {
+          physique: { before: 593, after: 593 },
+          cunning: { before: 1384, after: 1402 },
+          spirit: { before: 299, after: 299 },
+        },
+      },
+      skillRanks: [{ skill: 'Onslaught', before: 20, after: 22 }],
+      skipped: [],
+      notes: ['freshly installed components are projected without a rolled completion bonus — a slight understatement'],
+    },
     verdictRows: [
       {
         slot: 'Head',

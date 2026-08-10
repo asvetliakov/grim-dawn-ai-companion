@@ -11,6 +11,9 @@
 
 import { adviceMarks } from '../../shared/advice-marks.js';
 import type { AdviseEnvelope, AdvisorPlan, VerdictRow } from '../../shared/ipc.js';
+import { slotKey, verdictSlotKey } from '../../shared/slots.js';
+
+export { slotKey } from '../../shared/slots.js';
 
 /** One entry of the plan's own verdict array, before it became a table row. */
 export type PlanVerdict = AdvisorPlan['verdicts'][number];
@@ -24,11 +27,6 @@ export type PlanVerdict = AdvisorPlan['verdicts'][number];
  * fail loudly if it grew a fifth.
  */
 const SOCKET_VERDICTS = new Set(['RE-AUGMENT', 'ADD-COMPONENT', 'SWAP-COMPONENT', 'BUY-AUGMENT']);
-
-/** `Weapon set 1 main` → `weaponset1main`. */
-export function slotKey(slot: string): string {
-  return slot.toLowerCase().replace(/[^a-z0-9]/g, '');
-}
 
 export interface SlotAdvice {
   row: VerdictRow;
@@ -122,13 +120,15 @@ export type SocketFit = NonNullable<PlanVerdict['fits']>[number];
  * advice about the same non-replacement, and a row that showed both as blank
  * would be actively misleading.
  */
-export function adviceBySlot(envelope: AdviseEnvelope | null): Map<string, SlotAdvice> {
+export function adviceBySlot(envelope: AdviseEnvelope | null, activeSet: 1 | 2 = 1): Map<string, SlotAdvice> {
   const verdicts = new Map<string, PlanVerdict>();
-  for (const v of envelope?.plan?.verdicts ?? []) verdicts.set(slotKey(v.slot), v);
+  // The plan's slot strings are model text, so they go through the alias-aware
+  // key — `Main hand` joins the active set's main-hand row instead of nothing.
+  for (const v of envelope?.plan?.verdicts ?? []) verdicts.set(verdictSlotKey(v.slot, activeSet), v);
 
   const out = new Map<string, SlotAdvice>();
   for (const row of envelope?.verdictRows ?? []) {
-    const key = slotKey(row.slot);
+    const key = verdictSlotKey(row.slot, activeSet);
     const plan = verdicts.get(key);
     out.set(key, {
       row,
@@ -277,17 +277,19 @@ export interface SlotDrift {
 export function loadoutDrift(
   envelope: AdviseEnvelope | null,
   worn: Record<string, WornSlot>,
+  activeSet: 1 | 2 = 1,
 ): SlotDrift[] {
   const before = envelope?.worn;
   if (!before) return [];
   const socketsBefore = envelope.wornSockets ?? {};
 
   // The item each slot was told to end up holding, by the same slot key the
-  // verdict table joins on. Only a replacement changes the item, so everything
+  // verdict table joins on — alias-aware on the verdict side, because the slot
+  // strings are model text. Only a replacement changes the item, so everything
   // else expects to find what it started with.
   const equipTo = new Map<string, string>();
   for (const row of envelope.verdictRows) {
-    if (row.replaces && row.nextId) equipTo.set(slotKey(row.slot), row.nextId);
+    if (row.replaces && row.nextId) equipTo.set(verdictSlotKey(row.slot, activeSet), row.nextId);
   }
 
   // Every socketable the plan asked a slot to end up carrying: the one its verdict
@@ -299,7 +301,7 @@ export function loadoutDrift(
     const wanted = new Set<string>();
     if (SOCKET_VERDICTS.has(v.verdict) && v.targetId) wanted.add(v.targetId);
     for (const fit of v.fits ?? []) wanted.add(fit.id);
-    if (wanted.size > 0) socketTo.set(slotKey(v.slot), wanted);
+    if (wanted.size > 0) socketTo.set(verdictSlotKey(v.slot, activeSet), wanted);
   }
 
   const slots = new Set([...Object.keys(before), ...Object.keys(worn)]);
@@ -341,7 +343,12 @@ export function loadoutDrift(
 }
 
 /**
- * The projected resistance for a column label, if the plan gave one.
+ * The projected resistance for a column label.
+ *
+ * The tool-computed projection wins when the envelope carries one — it is the
+ * plan applied to the actual save and re-aggregated, where the model's own
+ * `projectedResistances` is arithmetic it did in its head. The model's figures
+ * remain the fallback for runs stored before the projection existed.
  *
  * Keyed by the §3 column labels (`Fire`, `Aether`, …) because that is what the
  * document showed the model; the lookup is case-insensitive for the same
@@ -349,6 +356,11 @@ export function loadoutDrift(
  */
 export function projectedResistances(envelope: AdviseEnvelope | null): Map<string, number> {
   const out = new Map<string, number>();
+  const computed = envelope?.projection?.resistances;
+  if (computed?.length) {
+    for (const row of computed) out.set(row.label.toLowerCase(), row.after);
+    return out;
+  }
   for (const [label, value] of Object.entries(envelope?.plan?.projectedResistances ?? {})) {
     out.set(label.toLowerCase(), value);
   }

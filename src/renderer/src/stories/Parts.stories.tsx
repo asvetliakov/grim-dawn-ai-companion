@@ -198,6 +198,23 @@ export const StatsProjected: StoryObj = {
   },
 };
 
+export const StatsModelProjected: StoryObj = {
+  name: 'Stats — model-authored projection only',
+  render: () => {
+    // A run stored before the computed projection existed: the after-columns
+    // fall back to the model's own `projectedResistances`/`projected` figures,
+    // and the damage table has no after-columns at all.
+    const snapshot = fixtureSnapshot();
+    const advice = fixtureAdvice(snapshot);
+    delete advice.projection;
+    return (
+      <Frame width={620}>
+        <StatsPanel stats={snapshot.stats} advice={advice} />
+      </Frame>
+    );
+  },
+};
+
 export const Containers: StoryObj = {
   name: 'Containers',
   render: () => (

@@ -205,6 +205,25 @@ check(
   stored.worn && Object.keys(stored.worn).length > 0,
   `${Object.keys(stored.worn ?? {}).length} slot(s)`,
 );
+// The computed projection crossed the pipeline: against a real save the mock's
+// canned ids mostly do not resolve, so this exercises the *degrade* path —
+// before ≈ after, with the unresolvable verdicts named in `skipped` rather
+// than silently dropped. The positive path (numbers moving) is owned by
+// test/project.test.ts and the stories.
+check(
+  'and a computed projection with the degrade path said out loud',
+  Array.isArray(stored.projection?.resistances) && stored.projection.resistances.length === 10,
+  `${stored.projection?.resistances?.length ?? 0} resistance row(s), ${stored.projection?.skipped?.length ?? 0} skipped verdict(s)`,
+);
+// Stage 8B widened the projection: both resistance bands per row, the payload
+// index and the defense block all cross IPC and land in the stored file.
+check(
+  'and the projection carries the 8B bands, payload and defense block',
+  stored.projection?.payload !== undefined &&
+    stored.projection?.defense !== undefined &&
+    stored.projection?.resistances?.every((r) => typeof r.afterPermanent === 'number'),
+  `payload ${JSON.stringify(stored.projection?.payload)}, defense ${stored.projection?.defense ? 'present' : 'missing'}`,
+);
 
 // ---------------------------------------------------------------------------
 // New run: a fresh session that keeps the answer

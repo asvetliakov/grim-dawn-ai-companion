@@ -716,9 +716,61 @@ await clearTip();
 // The sheet's rows and the tooltips are about the same things, so they are
 // coloured by the same rule.
 const resistColours = await page
-  .locator('.resist-table tbody th')
+  .locator('.resist-table:not(.damage-table) tbody th')
   .evaluateAll((els) => new Set(els.map((e) => getComputedStyle(e).color)).size);
 check('resistance rows are coloured by type', resistColours >= 8, `${resistColours} distinct colours`);
+
+// The damage table follows the same colour rule — its rows are §4's vocabulary
+// (per-type +% pools and post-conversion flats), never a DPS number.
+const damageColours = await page
+  .locator('.damage-table tbody th')
+  .evaluateAll((els) => new Set(els.map((e) => getComputedStyle(e).color)).size);
+check('damage rows are coloured by type', damageColours >= 4, `${damageColours} distinct colours`);
+
+// The after-columns prefer the tool-computed projection over the model's own
+// figures: the fixture's model-authored Pierce projection says 95, the
+// computed one says 129, and 129 is what must render.
+const pierceRow = await page
+  .locator('.resist-table:not(.damage-table) tbody tr', { hasText: 'Pierce' })
+  .first()
+  .innerText();
+check('the resistance after-column prefers the computed projection', pierceRow.includes('129'), pierceRow);
+
+// Stage 8B: where the effective and permanent bands differ, the split is on
+// the after cell's hover — 80 effective of which 30 is maintainable buffs.
+const fireAfterTitle = await page
+  .locator('.resist-table:not(.damage-table) tbody tr', { hasText: 'Fire' })
+  .first()
+  .locator('.projected-col')
+  .getAttribute('title');
+check(
+  'the after cell states the maintainable share where the bands differ',
+  /permanent-band 50/.test(fireAfterTitle ?? ''),
+  fireAfterTitle ?? '(no title)',
+);
+
+// The payload note: the index delta as a percentage, framed as an index.
+const payloadNote = await page.locator('.payload-note').first().innerText();
+check('the payload note states the index delta', /payload index 41\.2k → 39\.5k/.test(payloadNote), payloadNote);
+check('and frames it as an index, not DPS', /not DPS/.test(payloadNote));
+
+// The defense block reaches the sheet: attribute and armour rows carry afters.
+const cunningRow = await page.locator('.stat-row', { hasText: 'Cunning' }).first().innerText();
+check('attribute rows carry the projected after value', cunningRow.includes('1402'), cunningRow);
+const meanRow = await page.locator('.stat-row', { hasText: 'Mean' }).first().innerText();
+check('the armour mean row carries its after value', meanRow.includes('1415'), meanRow);
+
+// Moved skill ranks render under the damage table — they explain the deltas.
+const damageSection = await page
+  .locator('.stats-section')
+  .filter({ has: page.locator('h3', { hasText: 'Damage' }) })
+  .first()
+  .innerText();
+check(
+  'moved skill ranks are stated with the damage they explain',
+  /after plan: .*20 → 22/.test(damageSection),
+  damageSection.split('\n').at(-1),
+);
 
 // Armour is localized: six alternatives, and the weakest is the finding.
 check('the weakest body part is called out', (await page.locator('.stat-tag').innerText()).includes('weakest'));

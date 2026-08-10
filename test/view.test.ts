@@ -277,6 +277,20 @@ describe.skipIf(skipSaves)('buildUiSnapshot', () => {
       expect(ui.stats.armor).toHaveLength(6);
       expect(ui.stats.speeds).toHaveLength(3);
 
+      // The damage profile crosses IPC faithfully — the exact rows the
+      // aggregate ranked, in its order, none dropped and none invented.
+      expect(ui.stats.damage.entries).toEqual(
+        snap.aggregate.damage.ranked.map((e) => ({
+          key: e.key,
+          label: e.label,
+          percent: e.percent,
+          flat: e.flat,
+          overTime: e.overTime,
+        })),
+      );
+      expect(ui.stats.damage.totalPercent).toBe(snap.aggregate.damage.totalDamagePercent);
+      expect(ui.stats.damage.composition.length).toBe(snap.aggregate.damage.weaponAttack.composition.length);
+
       // Nothing crossing IPC may be a Map, a class instance or a function.
       expect(() => structuredClone(ui)).not.toThrow();
 

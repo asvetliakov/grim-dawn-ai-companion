@@ -240,11 +240,6 @@ const TEMPLATES: Readonly<Record<string, string>> = {
   retaliationTotalDamageModifier: '{v}% Total Retaliation Damage',
   projectilePiercingChance: '{u}% Chance to Pass Through Enemies',
   projectileLaunchNumber: 'fires {u} projectiles',
-  // Enemy-facing effects with no Chance/Duration qualifier of their own.
-  offensiveTotalResistanceReductionAbsoluteMin: '-{u} to All Enemy Resistances',
-  offensiveSlowDefensiveReductionMin: '-{u}% Reduced Target Resistances',
-  offensivePhysicalResistanceReductionPercentMin: '-{u}% Enemy Physical Resistance',
-  offensiveFumbleMin: '{u}% Chance of Enemy Fumble',
   // Skill payloads worth seeing on a skill row
   weaponDamagePct: '{u}% Weapon Damage',
   skillLifePercent: 'heals {u}% of Health',
@@ -410,12 +405,19 @@ export function formatStats(stats: Record<string, StatValue>, ctx: StatContext):
       else if (v > 0) add(Bucket.Resistance, `+${num(v)}% ${resist} Resistance`);
       continue;
     }
+    // Same sign rule as the per-type resistances above: written negative these
+    // are enemy resistance reduction, and a hardcoded `+` once printed
+    // `+-25% to All Resistances`.
     if (field === 'defensiveElementalResistance') {
-      add(Bucket.Resistance, `+${num(read(raw))}% Fire, Cold and Lightning Resistance`);
+      const v = read(raw);
+      if (v < 0) add(Bucket.Damage, `-${num(-v)}% Enemy Fire, Cold and Lightning Resistances`);
+      else if (v > 0) add(Bucket.Resistance, `+${num(v)}% Fire, Cold and Lightning Resistance`);
       continue;
     }
     if (field === 'defensiveAllResistance') {
-      add(Bucket.Resistance, `+${num(read(raw))}% to All Resistances`);
+      const v = read(raw);
+      if (v < 0) add(Bucket.Damage, `-${num(-v)}% to All Enemy Resistances`);
+      else if (v > 0) add(Bucket.Resistance, `+${num(v)}% to All Resistances`);
       continue;
     }
     if (field === 'defensiveAllMaxResist') {
@@ -433,7 +435,11 @@ export function formatStats(stats: Record<string, StatValue>, ctx: StatContext):
     const secondary = SECONDARY_RESIST_FIELDS[field];
     if (secondary) {
       const suffix = /Duration$/.test(field) ? 'Duration Reduction' : 'Resistance';
-      add(Bucket.Resistance, `+${num(read(raw))}% ${secondary} ${suffix}`);
+      const v = read(raw);
+      // Same sign rule as the damage resistances: negative on an enemy-facing
+      // record reduces the *enemy's* resistance.
+      if (v < 0) add(Bucket.Damage, `-${num(-v)}% Enemy ${secondary} ${suffix}`);
+      else if (v > 0) add(Bucket.Resistance, `+${num(v)}% ${secondary} ${suffix}`);
       continue;
     }
 
@@ -606,7 +612,18 @@ const QUALIFIED_EFFECTS: readonly { min: string; text: string }[] = [
   { min: 'offensiveSlowDefensiveAbilityMin', text: '-{r} Enemy Defensive Ability' },
   { min: 'offensiveSlowAttackSpeedMin', text: '-{r}% Enemy Attack Speed' },
   { min: 'offensiveSlowRunSpeedMin', text: '-{r}% Enemy Movement Speed' },
+  // The resistance-reduction families, each with its Duration/Chance siblings
+  // claimed so no half of the fact prints as a raw fallback line. The wording
+  // matches `collectResistReduction` so §4's list and a skill's own stat block
+  // spell the same fact the same way.
   { min: 'offensiveTotalResistanceReductionPercentMin', text: '-{r}% to All Enemy Resistances' },
+  { min: 'offensiveTotalResistanceReductionAbsoluteMin', text: '-{r} to All Enemy Resistances' },
+  { min: 'offensiveElementalResistanceReductionPercentMin', text: '-{r}% Enemy Fire, Cold and Lightning Resistances' },
+  { min: 'offensiveElementalResistanceReductionAbsoluteMin', text: '-{r} Enemy Fire, Cold and Lightning Resistances' },
+  { min: 'offensivePhysicalResistanceReductionPercentMin', text: '-{r}% Enemy Physical Resistance' },
+  { min: 'offensivePhysicalResistanceReductionAbsoluteMin', text: '-{r} Enemy Physical Resistance' },
+  { min: 'offensiveSlowDefensiveReductionMin', text: '-{r}% Reduced Target Resistances' },
+  { min: 'offensiveFumbleMin', text: '{r}% Chance of Enemy Fumble' },
   { min: 'offensiveTotalDamageReductionPercentMin', text: '-{r}% Enemy Damage' },
   { min: 'offensiveStunMin', text: '{r}s Stun' },
   { min: 'offensiveKnockdownMin', text: '{r}s Knockdown' },

@@ -54,6 +54,115 @@ export const adviseUsageSchema = z.object({
 
 export type AdviseUsage = z.infer<typeof adviseUsageSchema>;
 
+/**
+ * The tool-computed before→after of the plan: the save the run saw, with the
+ * plan's swaps applied to a copy, re-aggregated and diffed. This is the honest
+ * version of the numbers the model was previously asked to project by hand —
+ * a live gpt-5.6 run rightly refused to project attack speed because gear
+ * `+skills` move skill ranks, which is arithmetic over per-rank arrays only
+ * the tool can do.
+ *
+ * The vocabulary is deliberately §3/§4's: effective post-penalty resistances,
+ * char-sheet speed percentages, per-type `+%` and post-conversion flat pools.
+ * Never a DPS number — the profile answers fit, not DPS.
+ *
+ * Computed once when the run finishes and stored in the envelope, because it
+ * is a fact about (plan × the save the run saw): the save drifts afterwards,
+ * and recomputing later would project the plan onto a loadout it was not
+ * written for.
+ */
+export const planProjectionSchema = z.object({
+  /**
+   * §3 labels; effective (post-penalty) percentages. Cap after, since maxResist
+   * can move. `afterPermanent` is the permanent band plus the same penalty —
+   * carried because a model may deliberately report that band ("maintainable
+   * buffs as pure overcap buffer"), and the cross-check must be able to tell a
+   * band choice from a disagreement. Optional: projections stored before it
+   * existed do not have it.
+   */
+  resistances: z
+    .object({
+      label: z.string(),
+      before: z.number(),
+      after: z.number(),
+      afterPermanent: z.number().optional(),
+      capAfter: z.number(),
+    })
+    .array(),
+  /** Char-sheet percentages, permanent band — the figure the stats panel's main value shows. */
+  speeds: z
+    .object({
+      key: z.enum(['attack', 'cast', 'movement']),
+      label: z.string(),
+      before: z.number(),
+      after: z.number(),
+    })
+    .array(),
+  /** Union of damage types ranked before or after; `+%` pool and post-conversion flat midpoints. */
+  damage: z
+    .object({
+      key: z.string(),
+      label: z.string(),
+      overTime: z.boolean(),
+      percentBefore: z.number(),
+      percentAfter: z.number(),
+      flatBefore: z.number(),
+      flatAfter: z.number(),
+    })
+    .array(),
+  totalDamagePercent: z.object({ before: z.number(), after: z.number() }),
+  /**
+   * §4's weapon payload index — the post-conversion flat pools × their own
+   * `+%` columns. An index in arbitrary units, not DPS; what "this plan costs
+   * 4% of the payload" is measured against. Optional: older runs.
+   */
+  payload: z.object({ before: z.number(), after: z.number() }).optional(),
+  /**
+   * The defence and attribute block, straight off the two aggregates — what
+   * the models were hand-computing in prose notes. Contributions only where
+   * §3 models contributions only (OA/DA/health; the engine's level- and
+   * attribute-derived base stays unmodelled and disclosed). Optional: older runs.
+   */
+  defense: z
+    .object({
+      /** The weakest body part's effective armour — the part can change hands. */
+      weakestPart: z.object({
+        slotBefore: z.string(),
+        slotAfter: z.string(),
+        before: z.number(),
+        after: z.number(),
+      }),
+      armorMean: z.object({ before: z.number(), after: z.number() }),
+      absorption: z.object({ before: z.number(), after: z.number() }),
+      offensiveAbility: z.object({
+        flat: z.object({ before: z.number(), after: z.number() }),
+        percent: z.object({ before: z.number(), after: z.number() }),
+      }),
+      defensiveAbility: z.object({
+        flat: z.object({ before: z.number(), after: z.number() }),
+        percent: z.object({ before: z.number(), after: z.number() }),
+      }),
+      health: z.object({
+        flat: z.object({ before: z.number(), after: z.number() }),
+        percent: z.object({ before: z.number(), after: z.number() }),
+      }),
+      /** Attribute totals — base + gear/skill flats, × (1 + %). */
+      attributes: z.object({
+        physique: z.object({ before: z.number(), after: z.number() }),
+        cunning: z.object({ before: z.number(), after: z.number() }),
+        spirit: z.object({ before: z.number(), after: z.number() }),
+      }),
+    })
+    .optional(),
+  /** Only the ranks that moved: `Blade Arc 16 → 18`. */
+  skillRanks: z.object({ skill: z.string(), before: z.number(), after: z.number() }).array(),
+  /** Verdicts the projection could not apply — the degrade path, said out loud. */
+  skipped: z.object({ slot: z.string(), verdict: z.string(), reason: z.string() }).array(),
+  notes: z.string().array(),
+});
+
+export type PlanProjection = z.infer<typeof planProjectionSchema>;
+
 export const adviseEnvelopeSchema = z.object({
   character: z.string(),
   /** ISO timestamp — when the run finished. */
@@ -144,6 +253,12 @@ export const adviseEnvelopeSchema = z.object({
    * included the stash, and a reader may treat `undefined` as `true`.
    */
   stashIncluded: z.boolean().optional(),
+  /**
+   * The computed before→after, when the run produced a parseable plan and the
+   * projection succeeded. Optional twice over: runs stored before it existed,
+   * and runs whose projection degraded to nothing, simply do not carry it.
+   */
+  projection: planProjectionSchema.optional(),
 });
 
 export type AdviseEnvelope = z.infer<typeof adviseEnvelopeSchema>;
@@ -194,6 +309,12 @@ export interface BuildEnvelopeArgs {
   wornSockets?: Record<string, { component?: string; augment?: string }>;
   /** Whether the dossier included the stashes. See the schema field. */
   stashIncluded?: boolean;
+  /**
+   * The computed before→after, from `projectPlan`. Computed by the caller —
+   * this module may not import the resolver or the database — and passed
+   * through verbatim, exactly like `worn`/`wornSockets`.
+   */
+  projection?: PlanProjection | undefined;
 }
 
 /**
@@ -243,6 +364,7 @@ export function buildEnvelope(args: BuildEnvelopeArgs): AdviseEnvelope {
     ...(args.worn ? { worn: args.worn } : {}),
     ...(args.wornSockets ? { wornSockets: args.wornSockets } : {}),
     ...(args.stashIncluded !== undefined ? { stashIncluded: args.stashIncluded } : {}),
+    ...(args.projection ? { projection: args.projection } : {}),
   };
 }
 

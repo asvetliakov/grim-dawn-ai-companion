@@ -15,6 +15,7 @@
 import { acceptsComponent } from '../context/builder.js';
 import type { DbItem } from '../db/types.js';
 import type { ResolvedItem } from '../resolve.js';
+import type { PlanProjection } from './envelope.js';
 import {
   SOCKET_VERDICTS,
   type AdvisorPlan,
@@ -62,6 +63,16 @@ export interface PlanCheckInput {
    * oversight.
    */
   freeComponentIds?: ReadonlySet<string>;
+  /**
+   * Compute the plan's projection — the verdicts applied to the save the run
+   * saw, re-aggregated. Supplied as a callback because the projection needs the
+   * save, the account files and the database, which the check otherwise has no
+   * business holding; and because it has to run **inside the repair loop**, on
+   * each candidate plan, for `overstated-cap` to be repairable at all. The
+   * check runs only when this is given, and a projection that degrades to
+   * `undefined` checks nothing — same posture as every other optional input.
+   */
+  project?: (plan: AdvisorPlan) => PlanProjection | undefined;
 }
 
 /**
@@ -386,8 +397,54 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
   }
 
   checkEmptySockets(plan, input, warn);
+  checkOverstatedCaps(plan, input, warn);
   checkStatClarity(plan, opts.answer, warn);
   return warnings;
+}
+
+/**
+ * A resistance the tally claims capped that the computed projection proves is
+ * not.
+ *
+ * Deliberately the *narrowest* reading of a projection disagreement. A model
+ * reporting the permanent band, or an honest under-cap figure it argued for,
+ * is making a call the notes can carry; a tally that says "capped" while the
+ * plan's own verdicts take the resistance under cap is an arithmetic slip the
+ * reader acts on — both live gpt-5.6 runs dropped the same `-28% Acid
+ * Resistance` cost this way, on the same medal. The claim threshold is the
+ * computed cap (`capAfter`, which follows any `+% Maximum Resistance` moves)
+ * and the shortfall threshold is the cross-check's own ±2, so rounding can
+ * never buy a paid repair call.
+ */
+function checkOverstatedCaps(
+  plan: AdvisorPlan,
+  input: PlanCheckInput,
+  warn: (kind: PlanWarningKind, message: string) => void,
+): void {
+  const tally = plan.projectedResistances;
+  if (!tally || !input.project) return;
+  const projection = input.project(plan);
+  if (!projection) return;
+  // A partial projection cannot indict the tally: a skipped verdict (a CRAFT,
+  // an id that already warned as unknown) means the computed figure is missing
+  // gains the model legitimately counted, and firing here would spend repair
+  // calls on the projection's own gaps. The live slip this check exists for
+  // projected cleanly — zero skips — and only that case is decidable.
+  if (projection.skipped.length > 0) return;
+
+  for (const row of projection.resistances) {
+    const claimed = Object.entries(tally).find(([label]) => label.toLowerCase() === row.label.toLowerCase())?.[1];
+    if (claimed === undefined) continue;
+    const shortfall = row.capAfter - row.after;
+    if (claimed >= row.capAfter && shortfall > 2) {
+      warn(
+        'overstated-cap',
+        `the tally claims ${row.label} Resistance at ${claimed} — at or over the ${row.capAfter} cap — but applying ` +
+          `the plan's own verdicts computes ${row.after} effective, ${Math.round(shortfall)} short of cap; a listed ` +
+          `cost was dropped from the arithmetic — re-add it, then either cover the gap or state the shortfall as a decision`,
+      );
+    }
+  }
 }
 
 /**

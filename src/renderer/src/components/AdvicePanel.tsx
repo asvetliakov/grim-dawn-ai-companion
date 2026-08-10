@@ -28,6 +28,7 @@ import type {
   UiSocketable,
 } from '../../../shared/ipc.js';
 import { adviceBySlot, holds, loadoutDrift, slotKey, socketMove } from '../advice.js';
+import { verdictSlotKey } from '../../../shared/slots.js';
 import { useHighlight } from '../highlight.js';
 import type { AdviseRun, RunActivity } from '../session.js';
 import { useTooltip } from '../tooltip.js';
@@ -65,7 +66,8 @@ export function AdvicePanel({
   // The row's Action cell names a component or an augment; the plan is where its
   // id lives, because a socket move keeps the item and `nextId` is reserved for
   // the one verdict that swaps it.
-  const bySlot = adviceBySlot(advice);
+  const heldSet: 1 | 2 = snapshot.alternateWeaponSetActive ? 2 : 1;
+  const bySlot = adviceBySlot(advice, heldSet);
   const [tab, setTab] = useState<'plan' | 'answer'>('plan');
   const [question, setQuestion] = useState('');
   const running = run !== null;
@@ -175,7 +177,7 @@ export function AdvicePanel({
   // top of the loadout, next to the gear they are about — see `DriftNotice`; here
   // it is only needed to strike the finished rows through.
   const doneSlots = new Set(
-    loadoutDrift(advice, currentWorn(snapshot))
+    loadoutDrift(advice, currentWorn(snapshot), heldSet)
       .filter((d) => d.applied)
       .map((d) => slotKey(d.slot)),
   );
@@ -311,7 +313,7 @@ export function AdvicePanel({
                   // through rather than removed: the reader wants to see that it
                   // was on the list, and the argument for it is still the reason
                   // the rest of the plan hangs together.
-                  className={`${row.replaces ? 'replaces' : ''} ${doneSlots.has(slotKey(row.slot)) ? 'done' : ''}`}
+                  className={`${row.replaces ? 'replaces' : ''} ${doneSlots.has(verdictSlotKey(row.slot, heldSet)) ? 'done' : ''}`}
                   // Both halves of the move: what comes off and what goes on. The
                   // reader is comparing two items, so lighting one is half an answer.
                   onMouseEnter={() => highlight.highlight([row.currentId, row.nextId], { spotlight: true })}
@@ -335,7 +337,7 @@ export function AdvicePanel({
                     <ItemCellText id={row.nextId} name={row.replaces ? row.nextName : ''} byId={byId} />
                     <ActionCell
                       action={row.action}
-                      socketable={socketableFor(bySlot, snapshot, row.slot)}
+                      socketable={socketableFor(bySlot, snapshot, row.slot, heldSet)}
                       why={row.why}
                     />
                   </tr>
@@ -706,8 +708,9 @@ function socketableFor(
   bySlot: ReturnType<typeof adviceBySlot>,
   snapshot: UiSnapshot,
   slot: string,
+  heldSet: 1 | 2,
 ): { part: UiSocketable; kind: string } | undefined {
-  const move = socketMove(bySlot.get(slotKey(slot)));
+  const move = socketMove(bySlot.get(verdictSlotKey(slot, heldSet)));
   const part = move ? snapshot.socketables[move.id] : undefined;
   // The verdict says which socket it goes in, so the panel is labelled with the
   // one the reader is about to fill rather than a guess.

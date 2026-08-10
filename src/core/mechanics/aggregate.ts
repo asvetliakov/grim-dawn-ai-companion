@@ -44,11 +44,12 @@ import {
   RESIST_COLUMNS,
   RESIST_HARD_CAP,
   resistContributions,
-  RR_FIELDS,
+  collectResistReduction,
   SECONDARY_RESIST_FIELDS,
   vectorIsEmpty,
   type AttrKey,
   type Conversion,
+  type ResistReductionRow,
   type DamageContribution,
   type DamageKey,
   type DefenseFields,
@@ -152,11 +153,21 @@ export interface ScopedConversion extends Conversion {
 /** What one invested attack skill actually deals. */
 export interface SkillDamage {
   skill: string;
+  /** The parent skill's record path — the handle for re-reading at another rank. */
+  record: string;
   rank: number;
   /** `% Weapon Damage` at that rank — how much of the weapon's payload it inherits. */
   weaponDamagePct?: number;
   /** The skill's own flat damage at that rank (midpoint), before conversion. */
   flat: { key: DamageKey; label: string; amount: number; overTime: boolean }[];
+  /**
+   * The skill's own `+% damage` at that rank, scoped to this skill alone. Never
+   * folded into the global pools — that would misstate every other skill's
+   * scaling — which is exactly why it needs its own field to exist at all.
+   */
+  ownPercent: { key: DamageKey; label: string; percent: number; overTime: boolean }[];
+  /** The skill's own `+% Total Damage` (transmuters often write it negative). */
+  ownTotalPercent?: number;
   /** Conversions scoped to this skill: its own record plus its modifier/transmuter nodes. */
   conversions: Conversion[];
   /** True for a default-attack replacer (`Skill_WeaponPool_*`). */
@@ -183,11 +194,23 @@ export interface DamageProfile {
   ranked: DamageEntry[];
   /** `+% Total Damage` — a multiplier over everything, so it ranks nothing. */
   totalDamagePercent: number;
+  /**
+   * The **weapon payload index**: Σ over types of
+   * `flat × (1 + (percent + totalDamagePercent) / 100)` — the post-conversion
+   * flat pools each scaled by their own `+%` column. One comparable scalar for
+   * "what does this plan cost overall", in arbitrary units, and explicitly an
+   * index rather than DPS: attack speed, crit, skill `% Weapon Damage`
+   * multipliers and the attribute damage bonus are all excluded. The per-skill
+   * DPS non-goal stands; this exists so a trade-off can be stated as "−4% of
+   * the payload" instead of one type at a time.
+   */
+  payloadIndex: number;
   conversions: ScopedConversion[];
   weaponAttack: WeaponAttackSummary;
   /** Per-skill damage typing for the invested attack skills, biggest sink first. */
   skillDamage: SkillDamage[];
-  resistReduction: { source: string; effect: string; value: number }[];
+  /** Everything the build takes off enemy resistances, grouped by stacking category. */
+  resistReduction: ResistReductionRow[];
   /** Where the skill points went, biggest sink first. */
   skillPoints: EffectiveRank[];
   /**
@@ -671,7 +694,7 @@ export function aggregateCharacter(
   const armorPieces = new Map<string, number>();
   const damage = emptyDamage();
   const conversionRows: ScopedConversion[] = [];
-  const rrRows: { source: string; effect: string; value: number }[] = [];
+  const rrRows: ResistReductionRow[] = [];
   const excludedReasons = new Set<string>();
   const attrSums = emptyAttributes();
   const reductions = emptyReductions();
@@ -685,6 +708,7 @@ export function aggregateCharacter(
     resolve: (value: StatValue) => number,
     note: string | undefined,
     armorPart?: string,
+    rrMeta?: { rank?: number; record?: string },
   ): void => {
     const values = resistContributions(stats, resolve);
     if (!vectorIsEmpty(values)) {
@@ -718,10 +742,12 @@ export function aggregateCharacter(
         scope: band === 'maintainable' ? 'global (maintainable)' : 'global',
       });
     }
-    for (const [field, effect] of Object.entries(RR_FIELDS)) {
-      const value = stats[field] === undefined ? 0 : resolve(stats[field]!);
-      if (value) rrRows.push({ source: label, effect, value });
-    }
+    // Negative `defensive*` reads as enemy RR only off skill and devotion
+    // records; on gear it is the item's own drawback and stays out of this list.
+    collectResistReduction(stats, resolve, label, rrRows, {
+      negativeDefensiveIsRR: kind === 'skill' || kind === 'devotion',
+      ...rrMeta,
+    });
   };
 
   for (const c of gear) {
@@ -750,8 +776,10 @@ export function aggregateCharacter(
     }
     if (band === 'attack') {
       // Attack damage still depends on what is being hit and stays out of the
-      // global pools — but the skill's *types* are knowable, so type it.
-      collectAttackDamage(skill, db, ranks, entry, attackRows);
+      // global pools — but the skill's *types* are knowable, so type it. The
+      // same records carry on-hit RR, which the band routing would otherwise
+      // silently lose (attack skills never reach the fold above).
+      collectAttackDamage(skill, db, ranks, entry, attackRows, rrRows);
       continue;
     }
     if (band === 'excluded') {
@@ -762,7 +790,10 @@ export function aggregateCharacter(
     const stats = statRecord(skill, db);
     const rank = ranks.get(entry.record)?.effective ?? entry.level;
     const name = skillLabel(skill, db);
-    fold('Skill', name, 'skill', band, stats.stats, atRank(rank), `rank ${rank}`);
+    fold('Skill', name, 'skill', band, stats.stats, atRank(rank), `rank ${rank}`, undefined, {
+      rank,
+      record: entry.record,
+    });
     // Only the buff itself goes on the "you must keep this up" list. Its
     // modifier nodes inherit the maintainable band — that is what puts their
     // resistances in the right total — but they are not separately castable.
@@ -901,31 +932,27 @@ function collectRR(
   db: GameDb,
   ranks: Map<string, EffectiveRank>,
   record: string,
-  into: { source: string; effect: string; value: number }[],
+  into: ResistReductionRow[],
 ): void {
   const stats = statRecord(skill, db);
   const rank = ranks.get(record)?.effective ?? 1;
-  const read = atRank(rank);
-  const source = skillLabel(skill, db);
-  for (const column of RESIST_COLUMNS) {
-    const raw = stats.stats[column.field];
-    const value = raw === undefined ? 0 : read(raw);
-    if (value < 0) into.push({ source, effect: `reduced ${column.label} resistance`, value: -value });
-  }
-  for (const [field, effect] of Object.entries(RR_FIELDS)) {
-    const raw = stats.stats[field];
-    const value = raw === undefined ? 0 : read(raw);
-    if (value) into.push({ source, effect, value });
-  }
+  collectResistReduction(stats.stats, atRank(rank), skillLabel(skill, db), into, {
+    rank,
+    record,
+    negativeDefensiveIsRR: true,
+  });
 }
 
 /** Interim per-attack-skill accumulator; finalized into `SkillDamage` rows. */
 interface AttackRow {
   label: string;
+  record: string;
   rank: number;
   invested: number;
   weaponDamagePct: number;
   flat: Partial<Record<DamageKey, number>>;
+  ownPercent: Partial<Record<DamageKey, number>>;
+  ownTotalPercent: number;
   conversions: Conversion[];
   isDefaultAttack: boolean;
 }
@@ -943,6 +970,7 @@ function collectAttackDamage(
   ranks: Map<string, EffectiveRank>,
   entry: { record: string; level: number },
   into: Map<string, AttackRow>,
+  rrRows: ResistReductionRow[],
 ): void {
   const stats = statRecord(skill, db);
   const rank = ranks.get(entry.record)?.effective ?? entry.level;
@@ -962,10 +990,13 @@ function collectAttackDamage(
 
   const row = into.get(key) ?? {
     label,
+    record: key,
     rank: 0,
     invested: 0,
     weaponDamagePct: 0,
     flat: {},
+    ownPercent: {},
+    ownTotalPercent: 0,
     conversions: [],
     isDefaultAttack: false,
   };
@@ -980,7 +1011,20 @@ function collectAttackDamage(
   for (const [dmgKey, amount] of Object.entries(own.flat) as [DamageKey, number][]) {
     if (amount) row.flat[dmgKey] = (row.flat[dmgKey] ?? 0) + amount;
   }
+  // The skill's own `+%` scales this skill alone; it lands on the row, never in
+  // the global pools.
+  for (const [dmgKey, amount] of Object.entries(own.percent) as [DamageKey, number][]) {
+    if (amount) row.ownPercent[dmgKey] = (row.ownPercent[dmgKey] ?? 0) + amount;
+  }
+  row.ownTotalPercent += own.totalPercent;
   row.conversions.push(...conversions(stats.stats, read));
+  // On-hit RR carried on the attack skill's record (or its modifier node) —
+  // this branch is its only reader, since attack skills never reach the fold.
+  collectResistReduction(stats.stats, read, label, rrRows, {
+    rank,
+    record: entry.record,
+    negativeDefensiveIsRR: true,
+  });
   into.set(key, row);
 }
 
@@ -990,7 +1034,7 @@ function damageProfile(
   damage: DamageContribution,
   conversionRows: ScopedConversion[],
   attackRows: Map<string, AttackRow>,
-  rrRows: { source: string; effect: string; value: number }[],
+  rrRows: ResistReductionRow[],
   ranks: Map<string, EffectiveRank>,
   save: CharacterSave,
   db: GameDb,
@@ -1038,6 +1082,7 @@ function damageProfile(
     .sort((a, b) => b.invested - a.invested)
     .map((row) => ({
       skill: row.label,
+      record: row.record,
       rank: row.rank || 1,
       ...(row.weaponDamagePct ? { weaponDamagePct: Math.round(row.weaponDamagePct) } : {}),
       flat: (Object.entries(row.flat) as [DamageKey, number][])
@@ -1049,6 +1094,16 @@ function damageProfile(
         }))
         .filter((f) => f.amount > 0)
         .sort((a, b) => b.amount - a.amount),
+      ownPercent: (Object.entries(row.ownPercent) as [DamageKey, number][])
+        .map(([dmgKey, percent]) => ({
+          key: dmgKey,
+          label: DAMAGE_TYPE_BY_KEY.get(dmgKey)?.label ?? dmgKey,
+          percent: Math.round(percent),
+          overTime: DAMAGE_TYPE_BY_KEY.get(dmgKey)?.overTime ?? false,
+        }))
+        .filter((f) => f.percent !== 0)
+        .sort((a, b) => b.percent - a.percent),
+      ...(Math.round(row.ownTotalPercent) ? { ownTotalPercent: Math.round(row.ownTotalPercent) } : {}),
       conversions: row.conversions,
       isDefaultAttack: row.isDefaultAttack,
     }));
@@ -1061,13 +1116,29 @@ function damageProfile(
     weaponRestrictions.push({ skill: skillLabel(skill, db), weapons: skill.weapons });
   }
 
+  // Category order mirrors the stacking story: what stacks first, then the
+  // two only-strongest-applies groups, then the adjacent debuffs.
+  const categoryOrder: Record<string, number> = { percent: 0, flat: 1, percentReduced: 2, other: 3 };
+  const resistReduction = [...rrRows].sort(
+    (a, b) => (categoryOrder[a.category] ?? 9) - (categoryOrder[b.category] ?? 9) || b.value - a.value,
+  );
+
+  // The payload index, off the unrounded pools. Kept to one decision: every
+  // positive post-conversion flat pool times its own accumulated `+%` column
+  // (plus the `+% Total Damage` that scales all of them).
+  let payloadIndex = 0;
+  for (const [dmgKey, amount] of Object.entries(flat) as [DamageKey, number][]) {
+    if (amount > 0) payloadIndex += amount * (1 + ((damage.percent[dmgKey] ?? 0) + damage.totalPercent) / 100);
+  }
+
   return {
     ranked,
     totalDamagePercent: Math.round(damage.totalPercent),
+    payloadIndex: Math.round(payloadIndex),
     conversions: conversionRows,
     weaponAttack,
     skillDamage,
-    resistReduction: rrRows,
+    resistReduction,
     skillPoints: [...ranks.values()].filter((r) => r.invested > 0).sort((a, b) => b.invested - a.invested),
     weaponRestrictions,
   };

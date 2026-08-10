@@ -18,17 +18,24 @@ import type { DbItem, DbRecipe, DbSet, DbSkill, GameDb, RepTier, StatValue } fro
 import { REP_TIERS } from '../db/types.js';
 import type { CharacterAggregate, DualWieldEnabler, MatrixRow } from '../mechanics/aggregate.js';
 import type { CharacterStanding, RequirementCheck, RequirementGap } from '../mechanics/requirements.js';
-import { atRank, modifierParent, skillLabel, statRecord, type EffectiveRank } from '../mechanics/skills.js';
+import { atRank, classify, modifierParent, skillLabel, statRecord, type EffectiveRank } from '../mechanics/skills.js';
 import {
+  addAttributes,
   addDamage,
+  addSpeed,
   ATTR_KEYS,
+  collectResistReduction,
   DAMAGE_TYPES,
+  emptyAttributes,
   emptyDamage,
+  emptySpeed,
   ARMOR_PARTS,
+  resistContributions,
   RESIST_COLUMNS,
   type AttrKey,
   type DamageKey,
   type ResistKey,
+  type ResistReductionRow,
   type ResistVector,
 } from '../mechanics/stats.js';
 import { shortHash, type ResolvedCharacter, type ResolvedItem } from '../resolve.js';
@@ -141,6 +148,13 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
     })),
     { perGroup: tightest, compressRecipes: true, note: 'blueprint section compressed to counts' },
     { perGroup: tightest, compressRecipes: true, compressCensus: true, note: 'component census compressed to counts' },
+    {
+      perGroup: tightest,
+      compressRecipes: true,
+      compressCensus: true,
+      dropRankTables: true,
+      note: 'rank-by-rank skill tables omitted',
+    },
   ];
 
   const trimmed: string[] = [];
@@ -177,6 +191,8 @@ interface Trim {
   perGroup: number;
   compressRecipes?: boolean;
   compressCensus?: boolean;
+  /** Last resort: §4's rank-by-rank skill tables go, with a line saying so. */
+  dropRankTables?: boolean;
   /** What this step gives up, for the caller to report. */
   note: string;
 }
@@ -262,7 +278,7 @@ function render(
   header(out, ctx);
   gameRules(out, ctx);
   attributesAndDefenses(out, ctx);
-  buildProfile(out, ctx);
+  buildProfile(out, ctx, trim);
   equippedSection(out, ctx);
   const selection = candidateSelection(ctx, trim.perGroup);
   const fodder = bagFodder(ctx, selection);
@@ -787,7 +803,7 @@ function resistanceMatrix(out: Writer, ctx: RenderContext): void {
 /** How many stat lines a skill row shows before it is cut off. */
 const SKILL_STAT_LINES = 6;
 
-function buildProfile(out: Writer, ctx: RenderContext): void {
+function buildProfile(out: Writer, ctx: RenderContext, trim: Trim): void {
   const { save, aggregate, db } = ctx;
   out.h(2, '4. Skills, devotion and build profile');
 
@@ -843,6 +859,12 @@ function buildProfile(out: Writer, ctx: RenderContext): void {
 
   devotionSection(out, ctx);
   damageSection(out, ctx);
+  if (trim.dropRankTables) {
+    out.line();
+    out.line('*(Rank-by-rank skill tables omitted to fit the token budget; skill stats above are at the current effective rank only.)*');
+  } else {
+    skillRankTables(out, ctx);
+  }
 }
 
 function skillStatLine(skill: DbSkill, rank: number, ctx: RenderContext): string {
@@ -891,6 +913,10 @@ function devotionSection(out: Writer, ctx: RenderContext): void {
     out.line(`- **${name}** (${group.stars} star${group.stars === 1 ? '' : 's'})${shown ? ` — ${shown}` : ''}`);
     for (const power of group.powers) out.line(`  - celestial power: ${power}`);
   }
+  out.line();
+  out.line(
+    'Devotion contributions are already inside the resistance matrix and the damage profile below, and they are **static** — no gear change moves them. Only the gear and skill share of any total is in play in this document.',
+  );
 }
 
 function damageSection(out: Writer, ctx: RenderContext): void {
@@ -916,6 +942,13 @@ function damageSection(out: Writer, ctx: RenderContext): void {
   }
   if (d.totalDamagePercent) out.line(`\`+${num(d.totalDamagePercent)}% Total Damage\` scales every type at once and so ranks none of them.`);
 
+  if (d.payloadIndex) {
+    out.line();
+    out.line(
+      `**Weapon payload index: ${num(d.payloadIndex)}** — the post-conversion flat pools above, each scaled by its own \`+%\` column (incl. \`+% Total Damage\`), summed. An index in arbitrary units for comparing this loadout against a proposed one — **not DPS**: attack speed (§3 carries the rate), crit, skill \`% Weapon Damage\` multipliers and §3's attribute damage bonus are all excluded. State a plan's overall damage cost as a delta against this index.`,
+    );
+  }
+
   if (d.conversions.length) {
     out.line();
     out.line('**Global conversions** (already applied to the flat figures above):');
@@ -932,12 +965,14 @@ function damageSection(out: Writer, ctx: RenderContext): void {
 
   if (d.skillDamage.length) {
     out.line();
-    out.line('**Per-skill damage typing** (a conversion here belongs to that skill only, never to the character):');
+    out.line('**Per-skill damage typing** (a conversion or `+%` here belongs to that skill only, never to the character):');
     out.bullets(
       d.skillDamage.map((s) => {
         const parts = [
           ...(s.weaponDamagePct ? [`${s.weaponDamagePct}% weapon damage`] : []),
           ...s.flat.map((f) => `${signed(f.amount)} ${f.label} Damage${f.overTime ? ' over time' : ''}`),
+          ...s.ownPercent.map((p) => `${signed(p.percent)}% ${p.label} Damage *(this skill only)*`),
+          ...(s.ownTotalPercent ? [`${signed(s.ownTotalPercent)}% Total Damage *(this skill only)*`] : []),
           ...s.conversions.map((c) => `converts ${num(c.percent)}% ${c.from} → ${c.to} *(this skill only)*`),
         ];
         return `**${s.skill}** rank ${s.rank}${s.isDefaultAttack ? ' *(default attack replacer)*' : ''}: ${parts.join(' · ') || 'no damage of its own'}`;
@@ -947,8 +982,45 @@ function damageSection(out: Writer, ctx: RenderContext): void {
 
   if (d.resistReduction.length) {
     out.line();
-    out.line('**Resistance reduction the build applies to enemies** (offence — it does not raise the character\'s own resistances):');
-    out.bullets(d.resistReduction.map((rr) => `${rr.source}: ${rr.effect} ${num(rr.value)}`));
+    out.line(
+      "**Resistance reduction the build applies to enemies** — offence, and a damage multiplier the `+%` columns above do not show. The stacking categories are community-established mechanics, not game data: `-X% Resistance` stacks from every source, while within each of the other two categories only the single strongest source applies.",
+    );
+    const groups: { category: ResistReductionRow['category']; label: string }[] = [
+      { category: 'percent', label: 'stacks from every source (`-X% Resistance`)' },
+      { category: 'flat', label: "flat `Reduced target's Resistances` — only the strongest applies" },
+      { category: 'percentReduced', label: "`% Reduced target's Resistances` — only the strongest applies" },
+      { category: 'other', label: 'adjacent enemy debuffs (no stacking claim)' },
+    ];
+    out.bullets(
+      groups
+        .map(({ category, label }) => {
+          const rows = d.resistReduction.filter((rr) => rr.category === category);
+          if (!rows.length) return '';
+          const rendered = rows.map((rr) => {
+            const qualifiers = [
+              rr.rank ? `rank ${rr.rank}` : '',
+              rr.durationSeconds ? `for ${num(rr.durationSeconds)}s` : '',
+              rr.chance ? `${num(rr.chance)}% chance` : '',
+            ].filter(Boolean);
+            return `${rr.source} ${rr.effect}${qualifiers.length ? ` (${qualifiers.join(', ')})` : ''}`;
+          });
+          return `${label}: ${rendered.join('; ')}`;
+        })
+        .filter(Boolean),
+    );
+    out.line(
+      "RR skills are conventionally kept at or near max rank — a candidate's `+N` to a skill listed here is a damage multiplier. RR on excluded procs (celestial powers, item procs) is not counted; see the exclusions in §3.",
+    );
+  }
+
+  if (d.ranked.length) {
+    const ridesAttack = d.weaponAttack.composition.length > 0 || d.skillDamage.some((s) => s.weaponDamagePct);
+    out.line();
+    out.line(
+      ridesAttack
+        ? "The build's damage cadence rides §3's **attack speed** line — the flat pools land through weapon attacks, so a swap that moves attack speed scales everything above."
+        : "The build's damage cadence rides §3's **casting speed** line — the damage arrives through cast skills, so a swap that moves casting speed scales everything above.",
+    );
   }
 
   wieldingLines(out, ctx);
@@ -959,9 +1031,313 @@ function damageSection(out: Writer, ctx: RenderContext): void {
     out.bullets(d.weaponRestrictions.map((r) => `${r.skill}: ${r.weapons.join(', ')}`));
   }
 
-  const top = d.ranked.slice(0, 2).map((e) => e.label);
+  // Focus by magnitude, not by membership of a top-two list: +1043% Pierce
+  // beside +150% Cold is one specialization and a minor line, not two paths.
+  const top = d.ranked[0];
   out.line();
-  out.line(`**Build focus: ${top.join(' + ') || 'undetermined'}** — this is the post-conversion path every candidate's damage stats are judged against.`);
+  if (!top) {
+    out.line('**Build focus: undetermined** — no damage type has any investment yet.');
+  } else {
+    const focusLabel = (e: (typeof d.ranked)[number]): string => `${e.label} Damage (${signed(e.percent)}% modifiers)`;
+    const secondaries = d.ranked.slice(1).filter((e) => e.percent > 0 && e.percent >= top.percent * 0.4);
+    const minor = d.ranked.slice(1).find((e) => e.percent > 0 && e.percent < top.percent * 0.4);
+    out.line(
+      `**Build focus: ${[top, ...secondaries].map(focusLabel).join(' + ')}** — the post-conversion path every candidate's damage stats are judged against, weighted by these magnitudes.${
+        minor
+          ? ` ${focusLabel(minor)} and below are minor lines, not further specializations — a candidate serving only a minor line is off-focus.`
+          : ''
+      }`,
+    );
+    out.line();
+    out.line(
+      'An invested skill outside this focus can still earn its gear support for what it *does* — resistance reduction, crowd control, mobility, a defensive proc — judged by that role rather than by its damage type.',
+    );
+  }
+}
+
+/** Rank-by-rank tables: how many skills qualify before the rest are named in a note. */
+const RANK_TABLE_CAP = 12;
+/** Ranks shown below and above the effective rank (clamped to [1, ceiling]). */
+const RANK_WINDOW_DOWN = 4;
+const RANK_WINDOW_UP = 5;
+
+/** Which vocabulary a rank table's rows use — see `skillRankTable`. */
+type RankTableBand = 'attack' | 'buff';
+
+/**
+ * The per-skill rank tables: every attack and resistance-reduction skill's own
+ * moving stats, tabulated over the ranks `+skills` gear can plausibly reach —
+ * plus every permanent or maintainable **buff** whose per-rank stats move.
+ *
+ * This exists because a candidate carrying `+2 to <skill>` changes numbers that
+ * are otherwise stated only at the current effective rank — the model was
+ * honestly refusing to project them, and it was right to: the per-rank arrays
+ * are in no other section. The buff extension closes the same gap from the
+ * other side (the Bloodfrenzy case both live A/B models hit: a permanent
+ * buff's per-rank `+% Attack Speed` appeared nowhere, so "attack speed after
+ * Bloodfrenzy moves from 13 to 10" was honestly notDerivable — the computed
+ * projection covers the consequence, these rows let the model read the cause).
+ * These are the skills' *own* stats at rank, never a DPS figure. A modifier or
+ * transmuter node has its own independent rank axis, so it gets its own table
+ * rather than columns merged into its parent's.
+ */
+function skillRankTables(out: Writer, ctx: RenderContext): void {
+  const { aggregate, db } = ctx;
+  const d = aggregate.damage;
+  const rrRecords = new Set(d.resistReduction.map((rr) => rr.record).filter((r): r is string => !!r));
+  const attackRecords = new Set(d.skillDamage.map((s) => s.record));
+
+  const attackTargets = aggregate.ranks.filter((rank) => {
+    if (rank.invested < 1) return false;
+    const skill = db.getSkill(rank.record);
+    if (!skill) return false;
+    if (attackRecords.has(rank.record) || rrRecords.has(rank.record)) return true;
+    return ['attack', 'rr'].includes(classify(skill, db).band);
+  });
+  const attackSet = new Set(attackTargets.map((r) => r.record));
+
+  // Buffs join after the attack/RR tables (those answer damage questions
+  // first), and only where a qualifying per-rank array actually moves inside
+  // the window — a buff whose stats are flat across every reachable rank has
+  // nothing to tabulate. Ordered by gear-granted rank first, then investment:
+  // a buff at rank 13 on 1 invested point (Bloodfrenzy, the case both live A/B
+  // models hit) is the one most exposed to a gear swap, which is exactly the
+  // question these tables answer — sorting by invested points alone dropped it
+  // below the cap while its rank was the most movable of all.
+  const buffTargets = aggregate.ranks
+    .filter((rank) => {
+      if (rank.invested < 1 || attackSet.has(rank.record)) return false;
+      const skill = db.getSkill(rank.record);
+      if (!skill) return false;
+      const band = classify(skill, db).band;
+      return (band === 'permanent' || band === 'maintainable') && buffStatsMove(ctx, rank);
+    })
+    .sort((a, b) => b.bonus - a.bonus || b.invested - a.invested);
+
+  const targets: { rank: EffectiveRank; band: RankTableBand }[] = [
+    ...attackTargets.map((rank) => ({ rank, band: 'attack' as const })),
+    ...buffTargets.map((rank) => ({ rank, band: 'buff' as const })),
+  ];
+  if (!targets.length) return;
+
+  out.line();
+  out.h(3, 'Attack, resistance-reduction and moving-stat buff skills, rank by rank');
+  out.line(
+    "Read a candidate's `+N to <skill>` — or a rank lost with removed gear — against these columns; ranks right of the **bold** column are reachable only through more `+skills`. These are the skills' own stats at each rank, not DPS and not the character totals above. On a **buff**'s table the rows are global character modifiers while the buff is up; on an attack's they are marked *(this skill only)* where they are.",
+  );
+  out.line();
+
+  const shown = targets.slice(0, RANK_TABLE_CAP);
+  for (const target of shown) skillRankTable(out, ctx, target.rank, target.band);
+  if (targets.length > shown.length) {
+    out.line(
+      `*(${targets.length - shown.length} more qualifying skill(s) omitted for space, smallest investments: ${targets
+        .slice(RANK_TABLE_CAP)
+        .map((t) => t.rank.name)
+        .join(', ')})*`,
+    );
+  }
+}
+
+/** The stat families a buff's rank table rows come from. */
+const BUFF_SPEED_ROWS: readonly { field: string; label: string }[] = [
+  { field: 'characterAttackSpeedModifier', label: '+% Attack Speed' },
+  { field: 'characterSpellCastSpeedModifier', label: '+% Casting Speed' },
+  { field: 'characterRunSpeedModifier', label: '+% Movement Speed' },
+  { field: 'characterTotalSpeedModifier', label: '+% Total Speed' },
+];
+const BUFF_ABILITY_ROWS: readonly { field: string; label: string }[] = [
+  { field: 'characterOffensiveAbility', label: '+ Offensive Ability' },
+  { field: 'characterOffensiveAbilityModifier', label: '+% Offensive Ability' },
+  { field: 'characterDefensiveAbility', label: '+ Defensive Ability' },
+  { field: 'characterDefensiveAbilityModifier', label: '+% Defensive Ability' },
+];
+
+/**
+ * Whether a buff has anything to tabulate: a per-rank array among the families
+ * the table rows — damage, speeds, OA/DA, resistances — whose values differ
+ * inside the shown rank window.
+ */
+function buffStatsMove(ctx: RenderContext, rank: EffectiveRank): boolean {
+  const { db } = ctx;
+  const skill = db.getSkill(rank.record);
+  if (!skill) return false;
+  const stats = statRecord(skill, db);
+  const { lo, hi } = rankWindow(stats, skill, rank);
+  if (hi <= lo) return false;
+
+  const sample = (r: number): string => {
+    const read = atRank(r);
+    const own = addDamage(emptyDamage(), stats.stats, read);
+    const speed = addSpeed(emptySpeed(), stats.stats, read);
+    const attrs = addAttributes(emptyAttributes(), stats.stats, read);
+    const resists = resistContributions(stats.stats, read);
+    return JSON.stringify([own.flat, own.percent, own.totalPercent, speed, attrs.oaFlat, attrs.oaPercent, attrs.daFlat, attrs.daPercent, resists]);
+  };
+  const first = sample(lo);
+  for (let r = lo + 1; r <= hi; r++) if (sample(r) !== first) return true;
+  return false;
+}
+
+/** The rank window a table shows, clamped to [1, ceiling]. */
+function rankWindow(
+  stats: DbSkill,
+  skill: DbSkill,
+  rank: EffectiveRank,
+): { lo: number; hi: number; ceiling: number | undefined } {
+  const ceiling = stats.ultimateLevel ?? stats.maxLevel ?? skill.ultimateLevel ?? skill.maxLevel;
+  const lo = Math.max(1, rank.effective - RANK_WINDOW_DOWN);
+  const hi = Math.min(ceiling ?? rank.effective + RANK_WINDOW_UP, rank.effective + RANK_WINDOW_UP);
+  return { lo, hi, ceiling };
+}
+
+function skillRankTable(out: Writer, ctx: RenderContext, rank: EffectiveRank, band: RankTableBand): void {
+  const { db } = ctx;
+  const skill = db.getSkill(rank.record);
+  if (!skill) return;
+  const stats = statRecord(skill, db);
+  const { lo, hi, ceiling } = rankWindow(stats, skill, rank);
+  // A single-rank skill (devotion-style maxLevel 1) has no rank axis to show.
+  if (hi <= lo) return;
+  const window: number[] = [];
+  for (let r = lo; r <= hi; r++) window.push(r);
+
+  interface RankSample {
+    weaponDamage: number;
+    flat: Partial<Record<DamageKey, number>>;
+    percent: Partial<Record<DamageKey, number>>;
+    totalPercent: number;
+    speed: ReturnType<typeof emptySpeed>;
+    oaFlat: number;
+    oaPercent: number;
+    daFlat: number;
+    daPercent: number;
+    resists: ResistVector;
+    rr: Map<string, number>;
+    mana: number;
+  }
+  const samples: RankSample[] = window.map((r) => {
+    const read = atRank(r);
+    const own = addDamage(emptyDamage(), stats.stats, read);
+    const attrs = addAttributes(emptyAttributes(), stats.stats, read);
+    const rrRows: ResistReductionRow[] = [];
+    collectResistReduction(stats.stats, read, rank.name, rrRows, { negativeDefensiveIsRR: true });
+    const rr = new Map<string, number>();
+    // The effect with its number replaced by `N` doubles as a row label that
+    // stays constant while the value moves: `-N% Enemy Cold Resistance`.
+    for (const row of rrRows) rr.set(row.effect.replace(/[\d.]+/, 'N'), row.value);
+    const wd = stats.stats['weaponDamagePct'];
+    const mana = stats.stats['skillManaCost'];
+    return {
+      weaponDamage: wd === undefined ? 0 : read(wd),
+      flat: own.flat,
+      percent: own.percent,
+      totalPercent: own.totalPercent,
+      speed: addSpeed(emptySpeed(), stats.stats, read),
+      oaFlat: attrs.oaFlat,
+      oaPercent: attrs.oaPercent,
+      daFlat: attrs.daFlat,
+      daPercent: attrs.daPercent,
+      resists: resistContributions(stats.stats, read),
+      rr,
+      mana: mana === undefined ? 0 : read(mana),
+    };
+  });
+
+  const rows: string[][] = [];
+  const cell = (n: number): string => (n ? num(n) : '·');
+  if (samples.some((s) => s.weaponDamage)) {
+    rows.push(['% Weapon Damage', ...samples.map((s) => cell(Math.round(s.weaponDamage)))]);
+  }
+  for (const type of DAMAGE_TYPES) {
+    if (samples.some((s) => s.flat[type.key])) {
+      rows.push([
+        `${type.label} Damage (flat, midpoint)`,
+        ...samples.map((s) => cell(Math.round(s.flat[type.key] ?? 0))),
+      ]);
+    }
+  }
+  // The same field means two different scopes by band: on an attack skill the
+  // `+%` scales that skill alone, on a permanent/maintainable buff it is a
+  // global character modifier — so the buff rows are labelled plainly, and
+  // printing "(this skill only)" on them would be wrong, not merely noisy.
+  const scope = band === 'attack' ? ' (this skill only)' : '';
+  for (const type of DAMAGE_TYPES) {
+    if (samples.some((s) => s.percent[type.key])) {
+      rows.push([
+        `+% ${type.label} Damage${scope}`,
+        ...samples.map((s) => cell(Math.round(s.percent[type.key] ?? 0))),
+      ]);
+    }
+  }
+  if (samples.some((s) => s.totalPercent)) {
+    rows.push([`+% Total Damage${scope}`, ...samples.map((s) => cell(Math.round(s.totalPercent)))]);
+  }
+  if (band === 'buff') {
+    // The rows the Bloodfrenzy gap was about: character-wide speeds, OA/DA and
+    // resistances whose per-rank arrays appear in no other section.
+    for (const { field, label } of BUFF_SPEED_ROWS) {
+      if (samples.some((s) => speedField(s.speed, field))) {
+        rows.push([label, ...samples.map((s) => cell(Math.round(speedField(s.speed, field))))]);
+      }
+    }
+    const abilityValue = (s: RankSample, field: string): number =>
+      field === 'characterOffensiveAbility'
+        ? s.oaFlat
+        : field === 'characterOffensiveAbilityModifier'
+          ? s.oaPercent
+          : field === 'characterDefensiveAbility'
+            ? s.daFlat
+            : s.daPercent;
+    for (const { field, label } of BUFF_ABILITY_ROWS) {
+      if (samples.some((s) => abilityValue(s, field))) {
+        rows.push([label, ...samples.map((s) => cell(Math.round(abilityValue(s, field))))]);
+      }
+    }
+    for (const column of RESIST_COLUMNS) {
+      if (samples.some((s) => s.resists[column.key])) {
+        rows.push([
+          `+% ${column.label} Resistance`,
+          ...samples.map((s) => cell(Math.round(s.resists[column.key] ?? 0))),
+        ]);
+      }
+    }
+  }
+  const rrLabels = new Set<string>();
+  for (const s of samples) for (const label of s.rr.keys()) rrLabels.add(label);
+  for (const label of rrLabels) {
+    rows.push([label, ...samples.map((s) => cell(s.rr.get(label) ?? 0))]);
+  }
+  const manaValues = samples.map((s) => s.mana);
+  if (Math.max(...manaValues) !== Math.min(...manaValues)) {
+    rows.push(['Energy Cost per cast', ...manaValues.map((v) => cell(Math.round(v)))]);
+  }
+  if (!rows.length) return;
+
+  const rankText = `rank ${rank.invested}${rank.bonus ? ` +${rank.bonus} from gear` : ' invested'} = **${rank.effective}**${ceiling ? ` of ${ceiling}` : ''}`;
+  const bandNote = band === 'buff' ? ' *(buff — rows are global character modifiers while it is up)*' : '';
+  out.line(`**${rank.name}** — ${rankText}${rank.capped ? ' (capped)' : ''}${bandNote}:`);
+  out.table(
+    ['stat at rank →', ...window.map((r) => (r === rank.effective ? `**${r}**` : String(r)))],
+    rows,
+  );
+  out.line();
+}
+
+/** A `SpeedFields` value by its DBR field name — the row list speaks DBR. */
+function speedField(speed: ReturnType<typeof emptySpeed>, field: string): number {
+  switch (field) {
+    case 'characterAttackSpeedModifier':
+      return speed.attackPercent;
+    case 'characterSpellCastSpeedModifier':
+      return speed.castPercent;
+    case 'characterRunSpeedModifier':
+      return speed.runPercent;
+    case 'characterTotalSpeedModifier':
+      return speed.totalPercent;
+    default:
+      return 0;
+  }
 }
 
 /**
@@ -1980,17 +2356,20 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line('Finally, a **projected "after" summary** — the same numbers §3, §4 and §5 report now, restated for the recommended loadout, so the cost of every gain is visible:');
   out.bullets([
-    'the **resistance table**, in the same columns as §3, with over/under cap per resistance at this difficulty',
+    'the **resistances** — tally the post-change figures in the JSON `projectedResistances` and state the cap outcomes in prose sentences; do **not** write a prose resistance table, the tool computes the real before→after from your verdicts and renders it. `projectedResistances` and any figure you call **effective** mean §3\'s definition — with maintainable buffs, after the difficulty penalty. A permanent-only reading ("the buff is pure overcap buffer") is an argument to make in `projected.notes`, stated as such, never a silent relabel of the effective row',
     'the **armour** figure for the weakest body part and the hit-weighted mean, since a swap moves one part at a time',
     '**health**, **Offensive Ability** and **Defensive Ability** deltas (as contributions — the engine base is not modelled)',
     '**Physique / Cunning / Spirit** totals, and a confirmation that every item in the projected loadout still meets its requirements *after* the outgoing items\' `+Attribute` and `-% Requirement` bonuses are gone',
-    'the **damage profile**: the top two post-conversion types and roughly what happens to their `+%` totals and flat pools, plus any change to the weapon-attack composition',
-    '**skill ranks that move** — a swap that changes `+N to <skill>` shifts every stat read at that rank, including resistances already counted above',
+    'the **damage profile**, qualitatively: what happens to the build-focus types\' `+%` totals and flat pools, and to the weapon-attack composition. Do **not** recompute per-skill damage figures — §4 states them rank by rank; read a moved skill off those columns',
+    'the **enemy resistance-reduction list** restated when a change adds, removes or re-ranks an RR source — RR multiplies on-type damage, and within the flat and percent-reduced categories only the strongest source counts',
+    '**skill ranks that move** — a swap that changes `+N to <skill>` shifts every stat read at that rank, including resistances already counted above; attack skills, RR skills and moving-stat buffs have their moved stats in §4\'s rank-by-rank tables, so read them there rather than estimating',
     '**attack, casting and movement speed** restated against their caps, using §3\'s figures and headroom — attack speed multiplies all damage throughput, so a swap that moves it has a damage consequence that the §4 profile does not show',
     'anything pushed **past a cap** — speed past the §3 ceilings, or a resistance past its cap (both are wasted stats, not gains)',
   ]);
   out.line();
   out.line('Give the projection as concrete numbers where §3–§5 gave numbers, and say plainly when a figure cannot be derived from this document instead of estimating it silently.');
+  out.line();
+  out.line('Trading some damage for a capped resistance is normal; a plan that costs on the order of a third of the build\'s primary `+%` damage pool is not, unless the resistances it buys are otherwise broken. §4\'s **weapon payload index** is the yardstick: state the plan\'s index delta as a percentage — low single digits spent on a genuinely under-cap resistance is normal, tens of percent needs the resistance case spelled out.');
   out.line();
   out.line('Then a **Next levels** section, ordered cheapest-first, from the costed thresholds in §12 — but **only those worth committing to**: what to spend and which held items it buys, dismissing a competing rung in a clause rather than a row of its own. Attribute points and farming targets are in scope; skill and devotion trees are not.');
   out.line();

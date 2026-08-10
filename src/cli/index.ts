@@ -24,6 +24,7 @@ import {
   wornSlots,
   wornSocketables,
   createProvider,
+  projectPlan,
   verdictRows,
   normalizeName,
   providerDefaults,
@@ -32,6 +33,7 @@ import {
   totalUsage,
   DEFAULT_TIMEOUT_MS,
   type AdvisorPlan,
+  type PlanProjection,
   type PlanWarning,
 } from '../core/ai/index.js';
 import { findGameDirs } from '../core/db/gamefiles.js';
@@ -55,6 +57,7 @@ import {
   readSave as coreReadSave,
   requireDifficulty,
   SessionError,
+  type CharacterSnapshot,
 } from '../core/session.js';
 import { findSaveDirs, listCharacters, resolveSettings } from '../core/settings.js';
 import { createSaveWatcher } from '../core/watcher.js';
@@ -869,7 +872,16 @@ function printAggregate(agg: CharacterAggregate, caps: SpeedCaps): void {
   }
   if (dmg.resistReduction.length) {
     console.log('\nResistance reduction (applies to enemies, not to the totals above)');
-    for (const rr of dmg.resistReduction) console.log(`  ${rr.source}: ${rr.effect} ${Math.round(rr.value)}`);
+    for (const rr of dmg.resistReduction) {
+      const qualifiers = [
+        rr.durationSeconds ? `for ${rr.durationSeconds}s` : '',
+        rr.chance ? `${rr.chance}% chance` : '',
+        rr.rank ? `rank ${rr.rank}` : '',
+      ].filter(Boolean);
+      console.log(
+        `  [${rr.category}] ${rr.source}: ${rr.effect}${qualifiers.length ? ` (${qualifiers.join(', ')})` : ''}`,
+      );
+    }
   }
   if (dmg.weaponRestrictions.length) {
     console.log('\nWeapon-restricted skills');
@@ -973,6 +985,7 @@ function contextFor(
   doc: ContextDoc;
   worn: Record<string, string>;
   wornSockets: Record<string, { component?: string; augment?: string }>;
+  snapshot: CharacterSnapshot;
 } {
   const snap = orExit(() =>
     loadSnapshot(db, resolveSettings(), {
@@ -993,6 +1006,7 @@ function contextFor(
     doc: scope.doc,
     worn: wornSlots(snap.resolved.items),
     wornSockets: wornSocketables(snap.resolved.items, shortHash),
+    snapshot: snap,
   };
 }
 
@@ -1115,6 +1129,57 @@ function verdictTableLines(plan: AdvisorPlan, itemsById: ReadonlyMap<string, Res
   return out;
 }
 
+/**
+ * The computed before→after, rendered — the same move as the verdict table:
+ * the prose no longer carries a projected resistance table (the model states
+ * cap outcomes in sentences and tallies in JSON), so a saved answer has to
+ * carry the rendered projection or the file stands alone without its numbers.
+ */
+function projectionTableLines(projection: PlanProjection): string[] {
+  const vsCap = (r: { after: number; capAfter: number }): string =>
+    r.after > r.capAfter
+      ? `+${Math.round(r.after - r.capAfter)} over`
+      : r.after === r.capAfter
+        ? 'at cap'
+        : `${Math.round(r.capAfter - r.after)} short`;
+  const rows = projection.resistances.map((r) => [
+    r.label,
+    String(r.before),
+    String(r.after),
+    // The permanent band under the same penalty, where it differs — the same
+    // split the cross-check accepts as a reporting-band choice.
+    r.afterPermanent !== undefined && r.afterPermanent !== r.after ? String(r.afterPermanent) : '·',
+    String(r.capAfter),
+    vsCap(r),
+  ]);
+
+  const headers = ['Resistance', 'before', 'after', 'permanent', 'cap', 'vs cap'];
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => (r[i] ?? '').length)));
+  const line = (cells: readonly string[]): string =>
+    `| ${cells.map((c, i) => c.padEnd(widths[i] ?? 0)).join(' | ')} |`;
+
+  const out = [
+    '',
+    'Computed projection (the plan applied to the save and re-aggregated — effective, post-penalty):',
+    line(headers),
+    `|${widths.map((w) => '-'.repeat(w + 2)).join('|')}|`,
+    ...rows.map(line),
+  ];
+
+  if (projection.payload) {
+    const { before, after } = projection.payload;
+    const pct = before ? ` (${(((after - before) / before) * 100).toFixed(1)}%)` : '';
+    out.push('', `payload index ${before.toLocaleString('en-US')} → ${after.toLocaleString('en-US')}${pct} — flat pools × their +% columns; an index, not DPS`);
+  }
+  const speeds = projection.speeds.filter((s) => s.before !== s.after);
+  if (speeds.length) {
+    out.push('', `speeds: ${speeds.map((s) => `${s.label} ${s.before}% → ${s.after}%`).join(' · ')}`);
+  }
+  for (const s of projection.skipped) out.push(`~ not projected: ${s.slot} ${s.verdict} — ${s.reason}`);
+  for (const n of projection.notes) out.push(`· ${n}`);
+  return out;
+}
+
 program
   .command('advise')
   .description('compile the context document and ask an AI for equip/replace/hold recommendations')
@@ -1197,7 +1262,7 @@ program
         // The flag wins; without it the window's stored preference applies, so
         // a CLI run and a window run on the same save read the same dossier.
         const includeStash = opts.stash === false ? false : (settings.includeStashInAdvice ?? true);
-        const { name, input, doc, worn, wornSockets } = contextFor(
+        const { name, input, doc, worn, wornSockets, snapshot } = contextFor(
           db,
           {
             char: opts.char,
@@ -1222,12 +1287,24 @@ program
         const socketables = new Map(
           documentSocketables(input).map((item) => [normalizeName(item.name), item]),
         );
+        // Also what the checks project *each candidate plan* through — the
+        // `overstated-cap` check has to run inside the repair loop, or a tally
+        // claiming a broken resistance is capped could never buy its repair.
+        const projectionInput = {
+          save: snapshot.save,
+          account: snapshot.account,
+          db,
+          difficulty: snapshot.difficulty,
+          itemsById: doc.itemsById,
+          socketablesById: doc.socketablesById,
+        };
         const check = {
           itemsById: doc.itemsById,
           socketables,
           socketablesById: doc.socketablesById,
           candidateIds: doc.candidateIds,
           freeComponentIds: doc.freeComponentIds,
+          project: (p: AdvisorPlan) => projectPlan(p, projectionInput),
         };
 
         console.error(`asking ${providerId} (${model ?? 'no model'}, effort ${effort})…`);
@@ -1258,9 +1335,17 @@ program
         // file read on its own is missing the verdicts it argues about.
         const table = result.structured ? verdictTableLines(result.structured, doc.itemsById) : [];
 
+        // The computed before→after: the plan applied to a copy of the save the
+        // run saw, re-aggregated and diffed. Computed before the `--out` write,
+        // because the prose no longer carries a projected resistance table
+        // either — the rendered computed one is what keeps a saved answer whole.
+        const projection = result.structured ? projectPlan(result.structured, projectionInput) : undefined;
+        const projectionTable = projection ? projectionTableLines(projection) : [];
+
         console.log(result.text);
         if (opts.out) {
-          writeFileSync(opts.out, table.length ? `${result.text}\n${table.join('\n')}\n` : result.text);
+          const appendix = [...table, ...projectionTable];
+          writeFileSync(opts.out, appendix.length ? `${result.text}\n${appendix.join('\n')}\n` : result.text);
           console.error(`\nanswer written to ${opts.out}`);
         }
 
@@ -1293,6 +1378,22 @@ program
         // answer is shown — the second call is spent whether or not it wins.
         const usage = totalUsage(outcome.results);
 
+        if (projection) {
+          const moved = projection.skillRanks.map((r) => `${r.skill} ${r.before}→${r.after}`).join(', ');
+          console.log(
+            `\ncomputed projection: ${projection.damage.length} damage type(s), ` +
+              `${projection.skillRanks.length} skill rank move(s)${moved ? ` (${moved})` : ''}, ` +
+              `${projection.skipped.length} verdict(s) not projectable`,
+          );
+          if (projection.payload) {
+            const { before, after } = projection.payload;
+            const pct = before ? ` (${(((after - before) / before) * 100).toFixed(1)}%)` : '';
+            console.log(`  payload index ${before.toLocaleString('en-US')} → ${after.toLocaleString('en-US')}${pct}`);
+          }
+          for (const s of projection.skipped) console.log(`  ~ ${s.slot} ${s.verdict}: ${s.reason}`);
+          for (const n of projection.notes) console.log(`  · ${n}`);
+        }
+
         // One envelope, so Stage 7 consumes a file rather than re-parsing prose.
         // The markdown stays the model's own: it is where the reasoning happens
         // and it is the human product, so the JSON sits beside it, not over it.
@@ -1309,6 +1410,7 @@ program
             worn,
             wornSockets,
             stashIncluded: includeStash,
+            ...(projection ? { projection } : {}),
           });
           writeFileSync(opts.json, `${JSON.stringify(envelope, null, 2)}\n`);
           console.error(`structured output written to ${opts.json}`);

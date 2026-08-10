@@ -537,18 +537,146 @@ export function addDamage(
 }
 
 /**
- * Resistance-reduction fields, which is offence wearing defence's clothes: they
- * lower the *enemy's* resistances. Listing them keeps a reader from mistaking a
- * negative `defensive*` on a debuff for a hole in the character's own defence.
+ * Resistance reduction — offence wearing defence's clothes: these lower the
+ * *enemy's* resistances. The game has three stacking categories, and they are
+ * community-established mechanics rather than data: `percent` ("-X%
+ * Resistance", the negative-`defensive*` spelling) stacks from every source,
+ * while within `flat` ("X Reduced target's Resistances") and `percentReduced`
+ * ("X% Reduced target's Resistances") only the single strongest source
+ * applies. `other` is the adjacent enemy debuffs (fumble, DA reduction) that
+ * ride the same records but make no stacking claim.
  */
-export const RR_FIELDS: Readonly<Record<string, string>> = {
-  offensiveTotalResistanceReductionAbsoluteMin: 'flat reduction to all resistances',
-  offensiveTotalResistanceReductionPercentMin: '% reduction to all resistances',
-  offensiveSlowDefensiveReductionMin: 'reduced target resistances',
-  offensivePhysicalResistanceReductionPercentMin: '% reduction to physical resistance',
-  offensiveSlowDefensiveAbilityMin: 'reduced defensive ability',
-  offensiveFumbleMin: 'chance to fumble attacks',
-};
+export type RRCategory = 'percent' | 'flat' | 'percentReduced' | 'other';
+
+export interface ResistReductionRow {
+  source: string;
+  /** The full enemy-facing clause: `-28% Enemy Cold Resistance`. */
+  effect: string;
+  /** Magnitude, always positive — the sign lives in `effect`. */
+  value: number;
+  category: RRCategory;
+  /** `all` | `elemental` | a `RESIST_COLUMNS` label | `defensive ability` | `fumble`. */
+  scope: string;
+  durationSeconds?: number;
+  chance?: number;
+  /** Skills only: the rank the value was read at. */
+  rank?: number;
+  /** Skills only: lets a projection re-read the value at another rank. */
+  record?: string;
+}
+
+export interface CollectRROptions {
+  rank?: number;
+  record?: string;
+  /**
+   * Read negative `defensive<Type>` as enemy resistance reduction. True for
+   * skill and devotion stat blocks (verified across every player passive and
+   * modifier: negative means RR, always). False for gear, where a negative
+   * resistance is the item's own drawback (Voidheart's -25% Aether), not a
+   * debuff it applies.
+   */
+  negativeDefensiveIsRR?: boolean;
+}
+
+const RR_SCOPES = [
+  { token: 'Total', target: 'All Enemy Resistances', scope: 'all', absolutePrefix: 'to ' },
+  { token: 'Elemental', target: 'Enemy Fire, Cold and Lightning Resistances', scope: 'elemental', absolutePrefix: '' },
+  { token: 'Physical', target: 'Enemy Physical Resistance', scope: 'Physical', absolutePrefix: '' },
+] as const;
+
+/**
+ * Every resistance-reduction form a stat block can carry, in one pass: the
+ * `offensive<Scope>ResistanceReduction<Kind>Min` families with their
+ * `DurationMin`/`Chance` siblings, the "reduced target's resistances" and
+ * fumble/DA debuffs, and — where `negativeDefensiveIsRR` — negative
+ * `defensive<Type>`/`Elemental`/`All` values.
+ */
+export function collectResistReduction(
+  stats: Record<string, StatValue>,
+  resolve: (value: StatValue) => number,
+  source: string,
+  into: ResistReductionRow[],
+  opts: CollectRROptions = {},
+): void {
+  const read = (field: string): number => {
+    const raw = stats[field];
+    return raw === undefined ? 0 : resolve(raw);
+  };
+  const fmt = (n: number): string => String(Math.round(n * 10) / 10);
+  const meta = {
+    ...(opts.rank !== undefined ? { rank: opts.rank } : {}),
+    ...(opts.record !== undefined ? { record: opts.record } : {}),
+  };
+  const push = (
+    effect: string,
+    value: number,
+    category: RRCategory,
+    scope: string,
+    duration?: number,
+    chance?: number,
+  ): void => {
+    into.push({
+      source,
+      effect,
+      value,
+      category,
+      scope,
+      ...(duration ? { durationSeconds: duration } : {}),
+      ...(chance ? { chance } : {}),
+      ...meta,
+    });
+  };
+
+  for (const { token, target, scope, absolutePrefix } of RR_SCOPES) {
+    for (const kind of ['Absolute', 'Percent'] as const) {
+      const stem = `offensive${token}ResistanceReduction${kind}`;
+      const value = read(`${stem}Min`);
+      if (!value) continue;
+      const effect =
+        kind === 'Percent' ? `-${fmt(value)}% ${absolutePrefix}${target}` : `-${fmt(value)} ${absolutePrefix}${target}`;
+      push(effect, value, kind === 'Percent' ? 'percentReduced' : 'flat', scope, read(`${stem}DurationMin`), read(`${stem}Chance`));
+    }
+  }
+
+  const reduced = read('offensiveSlowDefensiveReductionMin');
+  if (reduced) {
+    push(
+      `-${fmt(reduced)}% Reduced Target Resistances`,
+      reduced,
+      'percentReduced',
+      'all',
+      read('offensiveSlowDefensiveReductionDurationMin'),
+      read('offensiveSlowDefensiveReductionChance'),
+    );
+  }
+  const daSlow = read('offensiveSlowDefensiveAbilityMin');
+  if (daSlow) {
+    push(
+      `-${fmt(daSlow)} Enemy Defensive Ability`,
+      daSlow,
+      'other',
+      'defensive ability',
+      read('offensiveSlowDefensiveAbilityDurationMin'),
+      read('offensiveSlowDefensiveAbilityChance'),
+    );
+  }
+  const fumble = read('offensiveFumbleMin');
+  if (fumble) {
+    push(`${fmt(fumble)}% Chance of Enemy Fumble`, fumble, 'other', 'fumble', read('offensiveFumbleDurationMin'));
+  }
+
+  if (!opts.negativeDefensiveIsRR) return;
+  for (const column of RESIST_COLUMNS) {
+    const value = read(column.field);
+    if (value < 0) push(`-${fmt(-value)}% Enemy ${column.label} Resistance`, -value, 'percent', column.label);
+  }
+  const elemental = read('defensiveElementalResistance');
+  if (elemental < 0) {
+    push(`-${fmt(-elemental)}% Enemy Fire, Cold and Lightning Resistances`, -elemental, 'percent', 'elemental');
+  }
+  const all = read('defensiveAllResistance');
+  if (all < 0) push(`-${fmt(-all)}% to All Enemy Resistances`, -all, 'percent', 'all');
+}
 
 /**
  * Damage conversion, which redefines what a build actually deals. A profile that

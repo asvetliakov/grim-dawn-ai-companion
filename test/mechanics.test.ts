@@ -760,6 +760,33 @@ describe('resistanceMatrix', () => {
   });
 });
 
+describe('weapon payload index', () => {
+  const SWORD = 'records/items/gearweapons/sword.dbr';
+  const RING = 'records/items/gearaccessories/ring.dbr';
+  const db = stubDb({
+    items: {
+      [SWORD]: item(SWORD, {
+        name: 'Sword',
+        stats: { offensivePhysicalMin: 100, offensivePhysicalMax: 200, offensivePierceMin: 50 },
+      }),
+      [RING]: item(RING, { name: 'Ring', stats: { offensivePhysicalModifier: 50, offensiveTotalDamageModifier: 10 } }),
+    },
+  });
+
+  it('scales each flat pool by its own +% column plus the total-damage term', () => {
+    const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    equipment[6] = instance({ baseName: RING });
+    const aggregate = aggregateCharacter(
+      save({ equipment, weaponSet1: [instance({ baseName: SWORD }), null] }),
+      db,
+    );
+    // physical: midpoint 150 × (1 + (50 + 10)/100) = 240; pierce: 50 × 1.10 = 55.
+    // Attack speed, crit and % Weapon Damage are deliberately absent from the
+    // arithmetic — the index compares loadouts, it does not claim DPS.
+    expect(aggregate.damage.payloadIndex).toBe(295);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Against the installed game
 // ---------------------------------------------------------------------------
@@ -1109,9 +1136,11 @@ describe('damage-type path: piercing, conversion scope and per-skill typing', ()
     expect(agg.damage.skillDamage).toEqual([
       {
         skill: 'Test Strike',
+        record: STRIKE,
         rank: 2,
         weaponDamagePct: 120,
         flat: [{ key: 'bleeding', label: 'Bleeding', amount: 80, overTime: true }],
+        ownPercent: [],
         conversions: [
           { from: 'Physical', to: 'Aether', percent: 100, fromKeys: ['physical'], toKeys: ['aether'] },
         ],
@@ -1143,6 +1172,117 @@ describe('damage-type path: piercing, conversion scope and per-skill typing', ()
     // The replacer is an attack skill: its own cold stays on its row, out of the pools.
     expect(agg.damage.skillDamage[0]?.skill).toBe('Test Onslaught');
     expect(agg.damage.skillDamage[0]?.isDefaultAttack).toBe(true);
+  });
+});
+
+describe('resistance reduction collection', () => {
+  const AURA = 'records/skills/playerclass10/frostaura1.dbr';
+  const AURA_BUFF = 'records/skills/playerclass10/frostaura1_buff.dbr';
+  // `frostaura2` resolves to `frostaura1` by the stem-numbering convention, so
+  // this is the Night's Chill shape: a modifier of a *permanent* toggled aura,
+  // whose negative resistance reaches the aggregate through the fold.
+  const CHILL = 'records/skills/playerclass10/frostaura2.dbr';
+  const CURSE = 'records/skills/playerclass10/curse1.dbr';
+  const RR_STRIKE = 'records/skills/playerclass10/rrstrike1.dbr';
+
+  const db = stubDb({
+    skills: {
+      [AURA]: skill(AURA, { name: 'Test Aura', class: 'Skill_BuffRadiusToggled', buffRecord: AURA_BUFF }),
+      [AURA_BUFF]: skill(AURA_BUFF, { class: 'SkillBuff_Passive' }),
+      [CHILL]: skill(CHILL, {
+        name: 'Test Chill',
+        class: 'Skill_Modifier',
+        stats: { defensiveCold: [-20, -24, -28] },
+      }),
+      [CURSE]: skill(CURSE, {
+        name: 'Test Curse',
+        class: 'SkillBuff_Debuf',
+        stats: {
+          defensiveAllResistance: [-10, -12, -15],
+          offensiveElementalResistanceReductionPercentMin: [18, 20, 22],
+          offensiveElementalResistanceReductionPercentDurationMin: [3, 3, 3],
+        },
+      }),
+      [RR_STRIKE]: skill(RR_STRIKE, {
+        name: 'Test Rend',
+        class: 'Skill_AttackRadius',
+        stats: {
+          weaponDamagePct: [100, 110, 120],
+          offensiveTotalResistanceReductionAbsoluteMin: [10, 14, 18],
+          offensiveSlowFireModifier: [40, 60, 80],
+          offensivePhysicalMin: [5, 10, 15],
+        },
+      }),
+    },
+  });
+
+  it('reads an rr skill’s negative resistances as categorized RR rows, once, and keeps them out of the matrix', () => {
+    const agg = aggregateCharacter(save({ skills: [characterSkill(CURSE, 2)] }), db);
+    expect(agg.damage.resistReduction).toEqual([
+      {
+        source: 'Test Curse',
+        effect: '-12% to All Enemy Resistances',
+        value: 12,
+        category: 'percent',
+        scope: 'all',
+        rank: 2,
+        record: CURSE,
+      },
+      {
+        source: 'Test Curse',
+        effect: '-20% Enemy Fire, Cold and Lightning Resistances',
+        value: 20,
+        category: 'percentReduced',
+        scope: 'elemental',
+        durationSeconds: 3,
+        rank: 2,
+        record: CURSE,
+      },
+    ]);
+    // The debuff's numbers belong to the enemy — nothing lands in the matrix.
+    expect(agg.resistances.rows).toEqual([]);
+  });
+
+  it('captures on-hit RR and own +% from an attack skill without touching the global pools', () => {
+    const agg = aggregateCharacter(save({ skills: [characterSkill(RR_STRIKE, 3)] }), db);
+    expect(agg.damage.resistReduction).toEqual([
+      {
+        source: 'Test Rend',
+        effect: '-18 to All Enemy Resistances',
+        value: 18,
+        category: 'flat',
+        scope: 'all',
+        rank: 3,
+        record: RR_STRIKE,
+      },
+    ]);
+    const row = agg.damage.skillDamage[0]!;
+    expect(row.record).toBe(RR_STRIKE);
+    expect(row.flat).toEqual([{ key: 'physical', label: 'Physical', amount: 15, overTime: false }]);
+    expect(row.ownPercent).toEqual([{ key: 'burn', label: 'Burn', percent: 80, overTime: true }]);
+    // The skill's own flat and +% scale that skill alone: the character's
+    // ranked profile stays empty with no gear and no global sources.
+    expect(agg.damage.ranked).toEqual([]);
+  });
+
+  it('collects a permanent aura modifier’s negative resistance as RR through the fold', () => {
+    const agg = aggregateCharacter(
+      save({ skills: [characterSkill(AURA, 1), characterSkill(CHILL, 3)] }),
+      db,
+    );
+    expect(agg.damage.resistReduction).toEqual([
+      {
+        source: 'Test Chill',
+        effect: '-28% Enemy Cold Resistance',
+        value: 28,
+        category: 'percent',
+        scope: 'Cold',
+        rank: 3,
+        record: CHILL,
+      },
+    ]);
+    // …and never as a hole in the player's own matrix.
+    expect(agg.resistances.rows).toEqual([]);
   });
 });
 

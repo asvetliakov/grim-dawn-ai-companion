@@ -105,7 +105,12 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     // Persisted, and reachable by the two channels the renderer actually calls:
     // the window opens on the empty state and gets to an answer by picking it out
     // of the history, so `history` → `advice` is the whole path in.
-    expect(loadLastAdvice('_Suchka')?.answer).toBe(answer);
+    const persisted = loadLastAdvice('_Suchka');
+    expect(persisted?.answer).toBe(answer);
+    // The computed projection rode along: an all-KEEP plan projects to the
+    // loadout it started from, with every resistance row present.
+    expect(persisted?.projection?.resistances).toHaveLength(10);
+    expect(persisted?.projection?.skillRanks).toEqual([]);
     const stored = runs.history('_Suchka');
     expect(stored).toHaveLength(1);
     expect(runs.advice('_Suchka', stored[0]!.id)?.answer).toBe(answer);

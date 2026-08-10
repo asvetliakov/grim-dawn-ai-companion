@@ -1,7 +1,7 @@
 {
   "name": "gd-companion",
   "productName": "Grim Dawn AI Companion",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "macOS-native companion tool for Grim Dawn: save parsing, item DB, AI gear advice",
