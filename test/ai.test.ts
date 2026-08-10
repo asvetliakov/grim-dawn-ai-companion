@@ -222,6 +222,37 @@ describe('parseAdvice', () => {
     expect(parseAdvice('```json\n{"verdicts": "all of them"}\n```')).toBeUndefined();
   });
 
+  /**
+   * `null` is JSON's `undefined`, and an optional field is where a model reaches
+   * for it. A live gpt-5.6 run wrote `"attackSpeedPercent": null` for two speeds
+   * it had honestly listed in `notDerivable`, and lost its entire plan — 22k
+   * words of analysis — to two type errors on fields the schema calls optional.
+   */
+  it('reads an explicit null on an optional field as an omission', () => {
+    const plan = parseAdvice(
+      '```json\n' +
+        JSON.stringify({
+          verdicts: [{ slot: 'Head', itemId: 'a', verdict: 'KEEP', reason: 'r', gains: null }],
+          projected: {
+            attackSpeedPercent: null,
+            castSpeedPercent: null,
+            movementSpeedPercent: 138,
+            notDerivable: ['attack speed, because the skill rank moves'],
+          },
+          hold: [{ itemId: 'b', slot: 'Feet', beats: null, gains: ['+5% Fire Resistance'], reason: 'r' }],
+          sell: ['c', null],
+        }) +
+        '\n```',
+    );
+    expect(plan).toBeDefined();
+    expect(plan!.projected!.attackSpeedPercent).toBeUndefined();
+    expect(plan!.projected!.movementSpeedPercent).toBe(138);
+    expect(plan!.verdicts[0]!.gains).toBeUndefined();
+    expect(plan!.hold[0]!.beats).toBeUndefined();
+    // A null inside an array is dropped rather than carried as a hole.
+    expect(plan!.sell).toEqual(['c']);
+  });
+
   it('accepts a plan with only some sections filled in', () => {
     const plan = parseAdvice('```json\n{"verdicts":[{"slot":"Head","itemId":"a","verdict":"KEEP","reason":"r"}]}\n```')!;
     expect(plan.hold).toEqual([]);

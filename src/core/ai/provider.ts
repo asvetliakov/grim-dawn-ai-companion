@@ -469,10 +469,33 @@ export function parseAdvice(text: string): AdvisorPlan | undefined {
     } catch {
       continue;
     }
-    const parsed = advisorPlanSchema.safeParse(raw);
+    const parsed = advisorPlanSchema.safeParse(stripNulls(raw));
     if (parsed.success) return normalizePlan(parsed.data);
   }
   return undefined;
+}
+
+/**
+ * `null` is JSON's way of writing `undefined`, and an optional field is exactly
+ * where a model reaches for it.
+ *
+ * A live gpt-5.6 run wrote `"attackSpeedPercent": null` for two speeds it had
+ * honestly listed in `notDerivable` — and lost its **entire plan** to the two
+ * type errors, twenty-two thousand words of analysis degraded to prose because
+ * a field the schema calls optional was explicitly said to be absent. Nothing
+ * in the plan is meaningfully null (a required field is never legitimately one,
+ * and an optional one means "omitted"), so a null is dropped here rather than
+ * every optional field in the schema being taught to spell it a second way.
+ */
+function stripNulls(value: unknown): unknown {
+  if (Array.isArray(value)) return value.filter((v) => v !== null).map(stripNulls);
+  if (value === null || typeof value !== 'object') return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, v] of Object.entries(value as Record<string, unknown>)) {
+    if (v === null) continue;
+    out[key] = stripNulls(v);
+  }
+  return out;
 }
 
 /**
