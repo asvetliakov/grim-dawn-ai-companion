@@ -464,6 +464,11 @@ function gameRules(out: Writer, ctx: RenderContext): void {
   out.line('Enemies in the late game carry resistance reduction of their own, so the community target is **+20 to +30 overcap** on the resistances a build actually faces, not exactly 80. Being under cap on a resistance the character meets constantly is the single most common cause of death.');
 
   out.line();
+  out.line(
+    '**Physical Resistance is the exception, and the cap rule does not apply to it.** It is the scarcest resistance in the game — it appears on some armour, shields and a few devotions, and on no augment — so no realistic loadout caps it, and the community treats 20–30% as a good figure rather than a deficit (the difficulty penalty above does not touch it either). Treat whatever the character has as a bonus defensive layer: its under-cap figure is never a shortfall to fix, and a few points of Physical Resistance never outweigh on-build damage, Offensive Ability or a cappable resistance still under its target.',
+  );
+
+  out.line();
   const hits = ctx.db.combatFormulas().hitChances;
   out.line(`**Armour is localized, not pooled.** Every physical hit rolls one body part — ${ARMOR_PARTS.map((p) => `${p.slot} ${num(hits[p.slot] ?? p.hitChance)}%`).join(', ')} (the game's own combat formulas record) — and is met by *that piece alone*. Summing six ratings describes a character who does not exist. Flat \`+Armor\` from rings, components and skills is added to **every** part. Absorption is multiplicative on a 70% base: \`+20% Armor Absorption\` gives 84%, not 90%, and it caps at 100%.`);
 
@@ -778,13 +783,24 @@ function resistanceMatrix(out: Writer, ctx: RenderContext): void {
   );
   out.table(headers, rows);
 
-  const under = RESIST_COLUMNS.filter((c) => (overcap[c.key] ?? 0) < 0);
+  // Physical Resistance is kept out of the shortfall list on purpose: §2 states
+  // that no realistic loadout caps it, and a "-76" here reads as the single
+  // biggest hole in the build — which mechanically tells the model to fix a
+  // figure the game rules section just told it to ignore.
+  const under = RESIST_COLUMNS.filter((c) => c.key !== 'physical' && (overcap[c.key] ?? 0) < 0);
+  const physicalUnder = (overcap['physical'] ?? 0) < 0;
   out.line();
   out.line(
     under.length
       ? `**Under cap** (each figure is that resistance, in points): ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(' · ')}. Everything else is at or over cap; points spent past cap are wasted except as buffer against enemy resistance reduction.`
-      : '**Every resistance is at or above its cap** at this difficulty. Further resistance is buffer against enemy resistance reduction only.',
+      : `**Every ${physicalUnder ? 'cappable ' : ''}resistance is at or above its cap** at this difficulty. Further resistance is buffer against enemy resistance reduction only.`,
   );
+  if (physicalUnder) {
+    out.line();
+    out.line(
+      `Physical Resistance is ${num(r.effective['physical'] ?? 0)}% — **not counted as a shortfall**: see §2, no realistic loadout caps it.`,
+    );
+  }
 
   if (r.secondary.length) {
     out.line();
@@ -1936,7 +1952,10 @@ function craftText(entry: CensusEntry): string {
     .map((r) => `${r.quantity}× ${r.name ?? r.record}`)
     .join(', ');
   const cost = `${plan.ironTotal.toLocaleString('en-US')} iron`;
-  if (plan.missing.length) return `blueprint learned but **not craftable**: needs ${reagents}, ${cost} — missing ${plan.missing.join(', ')}`;
+  // How it is known matters when it is *not* craftable: "blueprint learned"
+  // about a smith's default recipe claims a learning that never happened.
+  const way = recipe.alwaysKnown ? 'any blacksmith crafts it, but' : 'blueprint learned but';
+  if (plan.missing.length) return `${way} **not craftable**: needs ${reagents}, ${cost} — missing ${plan.missing.join(', ')}`;
   const first = plan.prerequisites.length ? `, after first crafting ${plan.prerequisites.join(', ')}` : '';
   return `**craftable now** from ${reagents}, ${cost}${first}`;
 }
@@ -2043,6 +2062,124 @@ function factionAugments(out: Writer, ctx: RenderContext): void {
   if (groups.length === 0) out.line('\nNo faction vendor this character has unlocked stocks a level-appropriate augment.');
 }
 
+/** Where a loose socketable can sit, said the way the window names the container. */
+const SOURCE_PLACE: Record<string, string> = {
+  inventory: 'in your bags',
+  stash: 'in the personal stash',
+  transfer: 'in the transfer stash',
+  materials: 'in the materials store',
+};
+
+/**
+ * Where to obtain each socketable the document knows, as prose lines by record.
+ *
+ * A *proposed* component or augment is installed nowhere, so "where does it
+ * come from" is the first practical question its tooltip has to answer — and
+ * every answer already exists in this module's derivations: the loose tally and
+ * the installed hosts (§8's census), the craft plan (§8/§10's recipe view) and
+ * the faction stock (§9). This is those four, keyed by record for the UI
+ * snapshot to attach to `UiSocketable.obtain`; the sections keep their own
+ * renderings.
+ *
+ * Order is the sourcing order the prompt teaches: on hand, then craft, then
+ * buy — and the only-installed warning last, exactly when no other source
+ * exists, because that is when extraction (which destroys the host) becomes
+ * the actual proposal.
+ */
+export function socketableObtain(input: ContextInput, recipes: RecipeView = recipeView(input)): Map<string, string[]> {
+  const { save, db, aggregate, resolved } = input;
+
+  const loose = new Map<string, Map<string, number>>();
+  const hosts = new Map<string, string[]>();
+  const installedAugments = new Set<string>();
+  for (const item of resolved.items) {
+    if (item.base && (item.base.slot === COMPONENT_CLASS || item.base.slot === AUGMENT_CLASS)) {
+      const bySource = loose.get(item.base.record) ?? new Map<string, number>();
+      bySource.set(item.source, (bySource.get(item.source) ?? 0) + Math.max(1, item.stackCount));
+      loose.set(item.base.record, bySource);
+    }
+    if (item.component) {
+      const list = hosts.get(item.component.record) ?? [];
+      list.push(`${item.display} (${item.location})`);
+      hosts.set(item.component.record, list);
+    }
+    if (item.augment) installedAugments.add(item.augment.record);
+  }
+
+  const craft = new Map<string, string>();
+  for (const recipe of recipes.relevant) {
+    const result = recipe.resultRecord ? db.getItem(recipe.resultRecord) : undefined;
+    if (result?.slot !== COMPONENT_CLASS || craft.has(result.record)) continue;
+    const plan = recipes.planFor(recipe);
+    const reagents = [...(recipe.baseReagent ? [recipe.baseReagent] : []), ...recipe.reagents]
+      .map((r) => `${r.quantity}× ${r.name ?? r.record}`)
+      .join(', ');
+    craft.set(
+      result.record,
+      plan.missing.length
+        ? `${recipe.alwaysKnown ? 'Any blacksmith crafts it, but' : 'Blueprint learned but'} not craftable yet — missing ${plan.missing.join(', ')}`
+        : `Craftable now from ${reagents}, ${plan.ironTotal.toLocaleString('en-US')} iron${
+            plan.prerequisites.length ? `, after first crafting ${plan.prerequisites.join(', ')}` : ''
+          }`,
+    );
+  }
+
+  const buy = new Map<string, string>();
+  for (const stock of vendorStock(save, db, aggregate.level)) {
+    for (const augment of stock.augments) {
+      if (buy.has(augment.record)) continue;
+      const at = augment.vendors?.find((v) => v.factionId === stock.factionId)?.repTier ?? stock.tier;
+      const cost = augment.stats['itemCost'];
+      buy.set(
+        augment.record,
+        `Buy: ${stock.factionName} (${at}), ${typeof cost === 'number' ? cost.toLocaleString('en-US') : '?'} iron`,
+      );
+    }
+  }
+
+  // The tier actually reached per unlocked faction, for the one negative answer
+  // worth giving: a vendor augment whose faction the character has not stood
+  // high enough with yet.
+  const reached = new Map<string, string>();
+  for (const rep of save.factions) {
+    if (!rep.unlocked) continue;
+    const slot = factionSlot(rep.id);
+    if (slot) reached.set(slot.id, factionTier(rep.value));
+  }
+
+  const records = new Set([...loose.keys(), ...hosts.keys(), ...craft.keys(), ...buy.keys(), ...installedAugments]);
+  const out = new Map<string, string[]>();
+  for (const record of records) {
+    const lines: string[] = [];
+    const bySource = loose.get(record);
+    if (bySource) {
+      lines.push(`On hand: ${[...bySource].map(([s, n]) => `${n}× ${SOURCE_PLACE[s] ?? s}`).join(', ')}`);
+    }
+    const crafted = craft.get(record);
+    if (crafted) lines.push(crafted);
+    const bought = buy.get(record);
+    if (bought) lines.push(bought);
+    else if (!bySource && !crafted) {
+      const vendor = db.getItem(record)?.vendors?.[0];
+      if (vendor) {
+        const faction = db.factions().find((f) => f.id === vendor.factionId)?.name ?? vendor.factionId;
+        const standing = reached.get(vendor.factionId);
+        lines.push(
+          `Sold by ${faction} at ${vendor.repTier} reputation — not reached yet${standing ? ` (currently ${standing})` : ''}`,
+        );
+      }
+    }
+    const inside = hosts.get(record);
+    if (inside && lines.length === 0) {
+      lines.push(
+        `The only ${inside.length === 1 ? 'copy is' : 'copies are'} installed in ${inside.join(', ')} — extraction destroys the host item`,
+      );
+    }
+    if (lines.length) out.set(record, lines);
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // 10 — blueprints and upgrade paths
 // ---------------------------------------------------------------------------
@@ -2108,7 +2245,7 @@ interface RecipeView {
   craftableAfterChain: DbRecipe[];
   /** The full resolution for one recipe, prerequisites included. */
   planFor(recipe: DbRecipe): CraftPlan;
-  /** Learned blueprint record paths. */
+  /** Craftable blueprint record paths: learned, plus every smith's defaults. */
   known: Set<string>;
   /** Record path → count, pooled across every container the character can reach. */
   onHand: Map<string, number>;
@@ -2124,7 +2261,13 @@ function recipeView(input: ContextInput): RecipeView {
     onHand.set(item.record, (onHand.get(item.record) ?? 0) + Math.max(1, item.stackCount));
   }
 
+  // Learned blueprints, plus the ones every blacksmith offers unlearned — the
+  // crafting panel's own default list (base components, the starter relics).
+  // Without the second half, a chain like Runestone = 3× Aether Crystal +
+  // 3× Wardstone reports "missing Wardstone" against a Wardstone any smith
+  // will make from materials on hand.
   const known = new Set(resolved.recipes.map((r) => r.record));
+  for (const recipe of db.recipes()) if (recipe.alwaysKnown) known.add(recipe.record);
   const byRecord = new Map(db.recipes().map((r) => [r.record, r]));
 
   // Learned blueprints indexed by what they *produce*, so a missing reagent can

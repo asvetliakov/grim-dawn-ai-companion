@@ -31,7 +31,7 @@ import {
 } from './types.js';
 
 /** Bump when the shape below changes so stale caches rebuild instead of misreading. */
-export const DB_SCHEMA_VERSION = 12;
+export const DB_SCHEMA_VERSION = 13;
 
 export interface NormalizedDb {
   schemaVersion: number;
@@ -102,6 +102,11 @@ const WANTED_PREFIXES = [
   // The combat manager record (`gameengine.dbr` points at it): the
   // attribute→damage equations and the hit-location weights live here.
   'records/game/combatformulas.dbr',
+  // The crafting panel's own record: `craftingDefaultRecipes` is the list every
+  // blacksmith offers with no blueprint learned — 39 base components, the three
+  // starter relics. A recipe model that only reads `formulas.gst` calls all of
+  // them uncraftable.
+  'records/ui/inventor/craftingpanel/crafting_table.dbr',
 ];
 
 /**
@@ -1101,6 +1106,13 @@ function factionName(
  * "result" to name and no advice to support beyond "ascension is a gamble".
  */
 function buildRecipes(records: Map<string, ArzRecord>, items: Record<string, DbItem>): DbRecipe[] {
+  // What every blacksmith crafts unlearned. The record lives in the base
+  // archive only; the list includes random-gear crafts too, which never become
+  // recipes here because they have no fixed result item.
+  const defaults = new Set(
+    strList(records.get('records/ui/inventor/craftingpanel/crafting_table.dbr'), 'craftingDefaultRecipes'),
+  );
+
   const recipes: DbRecipe[] = [];
   for (const [path, rec] of records) {
     if ((str(rec, 'Class') ?? rec.type) !== 'ItemArtifactFormula') continue;
@@ -1118,6 +1130,7 @@ function buildRecipes(records: Map<string, ArzRecord>, items: Record<string, DbI
 
     const resultRecord = str(rec, 'artifactName');
     const recipe: DbRecipe = { record: path, name: item.name, reagents: [] };
+    if (defaults.has(path)) recipe.alwaysKnown = true;
     if (resultRecord) {
       recipe.resultRecord = resultRecord;
       const result = items[resultRecord];

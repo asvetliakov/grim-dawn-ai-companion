@@ -40,6 +40,7 @@ import {
   providerDefaults,
   wornSlots,
   wornSocketables,
+  socketableIdFor,
   DEFAULT_TIMEOUT_MS,
   type AdviceRunRef,
   type AdviseActivityState,
@@ -265,10 +266,13 @@ export class AdviseRunner {
         durationMs: Date.now() - run.startedAt,
         itemNames: Object.fromEntries([...scope.doc.itemsById].map(([id, item]) => [id, item.display])),
         socketableNames: Object.fromEntries([...scope.doc.socketablesById].map(([id, item]) => [id, item.name])),
+        itemBaseIds: Object.fromEntries([...scope.doc.itemsById].map(([id, item]) => [id, item.baseId])),
         // What the run is about, so a stored answer can say whether it still is —
         // sockets included, because an item's id changes when its component does.
-        worn: wornSlots(snapshot.resolved.items),
-        wornSockets: wornSocketables(snapshot.resolved.items, shortHash),
+        // Ids from the document's maps, not raw hashes: the renderer compares
+        // against `docId`, which is the disambiguated side.
+        worn: wornSlots(scope.doc.itemsById),
+        wornSockets: wornSocketables(snapshot.resolved.items, socketableIdFor(scope.doc.socketablesById, shortHash)),
         stashIncluded,
       });
 

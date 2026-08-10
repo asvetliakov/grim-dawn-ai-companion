@@ -444,6 +444,13 @@ await showTip(actionCell);
 const actionTip = (await page.locator(ITEM_TIP).innerText()).split('\n');
 check('hovering an Action shows the socketable it installs', actionTip[0]?.includes('Mogdrogen'), actionTip.slice(0, 2).join(' · '));
 check('labelled with the socket it fills', actionTip[1] === 'Component', actionTip[1]);
+// A proposed socketable is installed nowhere, so its panel has to say where to
+// get one — on hand, craft, or which faction sells it.
+check(
+  'and says where to obtain it',
+  actionTip.some((l) => l.startsWith('On hand:')) && actionTip.some((l) => l.startsWith('Craftable now')),
+  actionTip.join(' · ').slice(0, 160),
+);
 // The stats say what the component does; the advisor's sentence says why this
 // one. A reader asking "and why?" is looking at this panel when they ask it.
 check(
@@ -1040,7 +1047,17 @@ await page.waitForTimeout(300);
 const hasDone = (await page.locator('.advice-done').count()) === 1;
 check('a move already made is reported as done', hasDone);
 const doneNote = hasDone ? await page.locator('.advice-done').innerText() : '';
-check('and names the slot and what is in it now', /Hands now holds/.test(doneNote), doneNote.replace(/\n/g, ' '));
+check('and names the slot and what is in it now', /Belt now holds/.test(doneNote), doneNote.replace(/\n/g, ' '));
+// A slot mid-plan gets its own sentence, written as a checklist: what is in
+// place, then what is still to apply — not the drift warning's vocabulary.
+const hasPartial = (await page.locator('.advice-partial').count()) === 1;
+check('a move part-way through is reported as partial', hasPartial);
+const partialNote = hasPartial ? await page.locator('.advice-partial').innerText() : '';
+check(
+  'and names what is still to apply',
+  /Hands/.test(partialNote) && /still to apply/.test(partialNote) && /Mark of Mogdrogen/.test(partialNote),
+  partialNote.replace(/\n/g, ' '),
+);
 const hasDrift = (await page.locator('.advice-drift').count()) === 1;
 check('a slot the plan did not ask about gets its own note', hasDrift);
 const driftNote = hasDrift ? await page.locator('.advice-drift').innerText() : '';
@@ -1073,10 +1090,17 @@ const stamps = await page
       bordered: getComputedStyle(e).borderTopWidth !== '0px',
     })),
   );
-check('each affected slot is stamped', stamps.length === 2, JSON.stringify(stamps));
-check('DONE and CHANGED are told apart', stamps.map((x) => x.text).sort().join(',') === 'CHANGED,DONE');
+check('each affected slot is stamped', stamps.length === 3, JSON.stringify(stamps));
+check(
+  'DONE, PARTIAL and CHANGED are told apart',
+  stamps.map((x) => x.text).sort().join(',') === 'CHANGED,DONE,PARTIAL',
+);
 check('each stamp carries a glyph', stamps.every((x) => x.glyph));
 check('and a border, so it reads as a stamp not a third line of the name', stamps.every((x) => x.bordered));
+// A partial row keeps its urgency: striking through means "record, not
+// instruction", and half the instruction is still standing.
+const struckPartial = await page.locator('.slot-row.partial .verdict-tag.done').count();
+check('a partial row is not struck through', struckPartial === 0, `${struckPartial} struck`);
 
 // ---------------------------------------------------------------------------
 // The landing state: answers kept, none of them open
@@ -1190,7 +1214,10 @@ await page.locator('.control-note').waitFor({ state: 'visible', timeout: 3000 })
 const refreshNote = await page.locator('.control-note').innerText();
 check('Refresh explains itself in the reader’s terms', /save file again/i.test(refreshNote), refreshNote.replace(/\n/g, ' — '));
 check('naming what it picks up', /wearing/.test(refreshNote) && /bags and stashes/.test(refreshNote));
-check('and what happens to the answer on screen', /stays open/.test(refreshNote) && /DONE and amber CHANGED/.test(refreshNote));
+check(
+  'and what happens to the answer on screen',
+  /stays open/.test(refreshNote) && /DONE, PARTIAL and amber CHANGED/.test(refreshNote),
+);
 // Since the watcher this button is the belt-and-braces rather than the loop, and
 // a reader pressing it and seeing nothing change deserves to know why.
 check('and that the window keeps up on its own', /by itself/.test(refreshNote) && /rarely need it/.test(refreshNote));
@@ -1294,8 +1321,11 @@ await page.goto(story('app-settings--pane-with-nothing-found'), { waitUntil: 'ne
 await page.locator('.modal').waitFor({ state: 'visible' });
 check(
   'with nothing detected the fields are still the way in',
+  // Three path fields: game directory, save directory, and the backend's
+  // Command — the CLI's location became a setting when the packaged app
+  // stopped inheriting a shell PATH.
   (await page.locator('.settings-found-path').count()) === 0 &&
-    (await page.locator('.settings-path-input').count()) === 2,
+    (await page.locator('.settings-path-input').count()) === 3,
 );
 
 await page.goto(story('app-settings--context-document'), { waitUntil: 'networkidle' });

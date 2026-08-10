@@ -330,9 +330,14 @@ check('and closes again', (await page.locator('.modal').count()) === 0);
 
 // The override is only meaningful if it reaches the model, and the document is
 // the only place that is *visible*. The resistance penalty is per difficulty and
-// is not uniform, so the two documents cannot be the same text.
+// is not uniform, so the two documents cannot be the same text — provided the
+// override actually differs from the save's own difficulty, which is the live
+// character's to choose: this once always picked Normal, and failed the day the
+// character was actually played on Normal. The subtitle above named the
+// difficulty the first document was built at, so pick the other one.
 const wasDifficulty = await page.locator('.app-header select').nth(1).inputValue();
-await page.locator('.app-header select').nth(1).selectOption('Normal');
+const overrideDifficulty = contextSubtitle.includes('Normal') ? 'Ultimate' : 'Normal';
+await page.locator('.app-header select').nth(1).selectOption(overrideDifficulty);
 // The stats panel, not the loadout: the column has been on the Advice tab since
 // the reload checks, and a difficulty change re-aggregates rather than rebuilding
 // the database, so this is a fast re-read.
@@ -343,11 +348,11 @@ await page.locator('.settings-section', { hasText: 'Advice' }).locator('.chrome-
 await page.locator('.context-rendered').waitFor({ state: 'visible', timeout: 120_000 });
 await page.locator('.view-tabs .tab', { hasText: 'Raw' }).click();
 await page.locator('.context-document').waitFor({ state: 'visible', timeout: 30_000 });
-const onNormal = await page.locator('.context-document').innerText();
-check('the difficulty override changes what the model is sent', onNormal !== contextText, `${contextText.length} → ${onNormal.length} chars`);
+const onOverride = await page.locator('.context-document').innerText();
+check('the difficulty override changes what the model is sent', onOverride !== contextText, `${contextText.length} → ${onOverride.length} chars`);
 check(
   'and the document says which difficulty it was built for',
-  (await page.locator('.modal-subtitle').innerText()).includes('Normal'),
+  (await page.locator('.modal-subtitle').innerText()).includes(overrideDifficulty),
 );
 await page.locator('.modal .chrome-button', { hasText: 'Close' }).click();
 await page.locator('.app-header select').nth(1).selectOption(wasDifficulty);

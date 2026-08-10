@@ -198,6 +198,13 @@ export interface DbReagent {
 export interface DbRecipe {
   /** Blueprint record path (as stored in `formulas.gst`). */
   record: string;
+  /**
+   * Offered by every blacksmith with no blueprint learned — the crafting
+   * panel's own `craftingDefaultRecipes` list (base components, the starter
+   * relics). `formulas.gst` never records these, because there is nothing to
+   * learn; a recipe model that reads only the save calls them uncraftable.
+   */
+  alwaysKnown?: boolean;
   /** Localized blueprint name, e.g. "Blueprint: Bloodrager's Cowl". */
   name: string;
   /** Localized name of the item the blueprint crafts, when resolvable. */

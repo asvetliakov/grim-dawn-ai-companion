@@ -106,12 +106,16 @@ export function LoadoutPanel({
   };
 
   // Where the live loadout has moved away from the one the run was written for.
-  // Two states per slot, and they are opposites: `applied` is the plan being
-  // carried out, anything else is the plan being overtaken.
+  // Three states per slot: `done` is the plan fully carried out, `partial` is
+  // the plan part-way through (the entry names the outstanding pieces), and
+  // `moved` is the plan being overtaken. Drift is computed against `heldSet` —
+  // that only governs which weapon slots a bare "Main hand" alias binds to; the
+  // output rows carry the worn map's own labels for both sets, so the stowed
+  // set's rows are found by the same lookup.
   const drift = loadoutDrift(advice, currentWorn(snapshot), heldSet);
-  const stateBySlot = new Map(drift.map((d) => [slotKey(d.slot), d.applied ? 'done' : 'changed'] as const));
-  const stateFor = (slot: string): 'done' | 'changed' | undefined =>
-    stateBySlot.get(slotKey(slot === 'main' || slot === 'off' ? `Weapon set ${weaponSet} ${slot}` : slot));
+  const driftBySlot = new Map(drift.map((d) => [slotKey(d.slot), d]));
+  const driftFor = (slot: string): SlotDrift | undefined =>
+    driftBySlot.get(slotKey(slot === 'main' || slot === 'off' ? `Weapon set ${weaponSet} ${slot}` : slot));
 
   return (
     <section className="loadout">
@@ -152,7 +156,7 @@ export function LoadoutPanel({
             socketables={snapshot.socketables}
             names={advice?.socketableNames ?? {}}
             hasAdvice={advice !== null}
-            {...(stateFor(entry.slot) ? { state: stateFor(entry.slot)! } : {})}
+            {...(driftFor(entry.slot) ? { drift: driftFor(entry.slot)! } : {})}
           />
         ))}
       </div>
@@ -168,7 +172,7 @@ function SlotRow({
   socketables,
   names,
   hasAdvice,
-  state,
+  drift,
 }: {
   label: string;
   current: UiItem | null;
@@ -178,15 +182,18 @@ function SlotRow({
   names: Record<string, string>;
   hasAdvice: boolean;
   /**
-   * How this slot stands against the run: `done` when it already holds what the
-   * plan asked for, `changed` when it holds something the plan never mentioned.
-   * Absent when the slot is exactly what the run was written against.
+   * How this slot stands against the run: `done` when it already holds
+   * everything the plan asked for, `partial` when some pieces are in place and
+   * `piecesLeft` names the rest, `moved` when it holds something the plan never
+   * mentioned. Absent when the slot is exactly what the run was written against.
    */
-  state?: 'done' | 'changed';
+  drift?: SlotDrift;
 }): React.ReactNode {
   const highlight = useHighlight();
   const tooltip = useTooltip();
   const verdict = advice?.verdict ?? '';
+  // The stamp's word: `moved` renders as CHANGED, which is the reader's view of it.
+  const state = drift ? (drift.state === 'moved' ? 'changed' : drift.state) : undefined;
   const done = state === 'done';
 
   // Anything the slot is told to fit that its verdict is not named for. It goes
@@ -261,12 +268,14 @@ function SlotRow({
             className={`slot-state ${state}`}
             title={
               done
-                ? 'This slot already holds what the plan asked for.'
-                : 'This slot holds something the plan did not ask for, so its verdict is about gear you are no longer wearing.'
+                ? 'This slot already holds everything the plan asked for.'
+                : state === 'partial'
+                  ? `Part of this slot's plan is done — ${drift!.piecesDone.join('; ')}. Still to apply: ${drift!.piecesLeft.join('; ')}.`
+                  : 'This slot holds something the plan did not ask for, so its verdict is about gear you are no longer wearing.'
             }
           >
             {SLOT_STATE_GLYPH[state]}
-            {done ? 'DONE' : 'CHANGED'}
+            {done ? 'DONE' : state === 'partial' ? 'PARTIAL' : 'CHANGED'}
           </span>
         )}
       </div>
@@ -490,8 +499,9 @@ function DriftNotice({
   byId: Map<string, UiItem>;
 }): React.ReactNode {
   if (!advice || drift.length === 0) return null;
-  const done = drift.filter((d) => d.applied);
-  const moved = drift.filter((d) => !d.applied);
+  const done = drift.filter((d) => d.state === 'done');
+  const partial = drift.filter((d) => d.state === 'partial');
+  const moved = drift.filter((d) => d.state === 'moved');
   const itemName = (id: string): string => byId.get(id)?.display ?? advice.itemNames[id] ?? `#${id}`;
   const partName = (id: string): string => advice.socketableNames[id] ?? `#${id}`;
   const phrase = (d: SlotDrift): string => {
@@ -503,6 +513,10 @@ function DriftNotice({
     if (!d.nowId) return `${d.slot} is now empty`;
     return `${d.slot} now holds ${itemName(d.nowId)}${d.wasId ? ` (was ${itemName(d.wasId)})` : ''}`;
   };
+  // A partial slot is read forwards, not backwards: what is in place, then what
+  // is still to do — the notice is a checklist, where `moved`'s is a warning.
+  const partPhrase = (d: SlotDrift): string =>
+    `${d.slot} is part-way there — ${d.piecesDone.join(' and ')} in place; still to apply: ${d.piecesLeft.join(' and ')}`;
 
   return (
     <>
@@ -512,6 +526,7 @@ function DriftNotice({
           {done.map(phrase).join('; ')}.
         </p>
       )}
+      {partial.length > 0 && <p className="advice-partial">{partial.map(partPhrase).join('; ')}.</p>}
       {moved.length > 0 && (
         <p className="advice-drift">
           Changed since this run, in {moved.length} slot{moved.length === 1 ? '' : 's'} the plan did not ask for:{' '}
@@ -536,6 +551,9 @@ export function currentWorn(snapshot: UiSnapshot): Record<string, WornSlot> {
   const entry = (item: UiItem): WornSlot => ({
     itemId: item.docId,
     display: item.display,
+    // The socket-agnostic identity, so an EQUIP candidate that has since had
+    // its fits installed is still recognisable as the item the plan named.
+    ...(item.baseId ? { baseId: item.baseId } : {}),
     // What it is carrying, so a component the reader has just installed reads as
     // the plan being carried out rather than as the item being replaced.
     ...(item.tooltip.component?.id ? { componentId: item.tooltip.component.id } : {}),

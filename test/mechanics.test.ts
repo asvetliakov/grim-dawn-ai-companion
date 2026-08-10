@@ -1305,11 +1305,16 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
       expect(agg.maintained.map((m) => m.name)).toContain('Pneumatic Burst');
       const awakening = agg.resistances.rows.find((r) => r.label === 'Elemental Awakening');
       expect(awakening?.band).toBe('maintainable');
-      // 11 invested + 1 from the relic's +1 to all Nightblade skills.
-      expect(awakening?.note).toBe('rank 12');
+      // The *effective* rank — invested points plus gear `+skills` — rendered
+      // as a note. The exact number moves every time the character respecs or
+      // re-gears (it was 12 when this test was written, 2 after the 2026-08-10
+      // advice run was acted on), so pin the mechanism, not the count.
+      expect(awakening?.note).toMatch(/^rank \d+$/);
 
-      // A pierce/bleed build has to read as one.
-      expect(agg.damage.ranked.slice(0, 2).map((d) => d.key)).toEqual(['pierce', 'bleeding']);
+      // A pierce/bleed build has to read as one. Which of the two leads swings
+      // with the loadout — acting on a bleed-focused plan flipped it — so the
+      // pair is the pin, not the order.
+      expect(new Set(agg.damage.ranked.slice(0, 2).map((d) => d.key))).toEqual(new Set(['pierce', 'bleeding']));
 
       // Night's Chill is resistance reduction, not defence — the sign trap.
       expect(agg.damage.resistReduction.some((rr) => rr.source === "Night's Chill")).toBe(true);
@@ -1339,11 +1344,12 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
       expect(flatOf('physical')).toBe(0);
       expect(flatOf('pierce')).toBeGreaterThan(200);
 
-      // Shares are percentages of one whole.
+      // Shares are percentages of one whole, led by one of the build's two
+      // types (pierce until the 2026-08-10 re-gear, bleeding since).
       const shares = agg.damage.weaponAttack.composition.reduce((n, s) => n + s.share, 0);
       expect(shares).toBeGreaterThanOrEqual(98);
       expect(shares).toBeLessThanOrEqual(102);
-      expect(agg.damage.weaponAttack.composition[0]?.key).toBe('pierce');
+      expect(['pierce', 'bleeding']).toContain(agg.damage.weaponAttack.composition[0]?.key);
 
       // Every invested attack skill gets typed, the main attack among them.
       expect(agg.damage.skillDamage.length).toBeGreaterThan(2);

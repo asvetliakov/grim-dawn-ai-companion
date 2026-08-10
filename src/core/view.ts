@@ -13,6 +13,7 @@
  * rule and the granted-skill hop all come along for free.
  */
 
+import { socketableObtain } from './context/builder.js';
 import { itemStatBlocks } from './context/filters.js';
 import { describeSlots, formatStats, num } from './context/statfmt.js';
 import type { DbItem, GameDb, StatValue } from './db/types.js';
@@ -63,6 +64,12 @@ export async function buildUiSnapshot(snap: CharacterSnapshot, icons: IconServic
     snap.save.skills.filter((s) => s.level > 0).map((s) => s.record),
   );
 
+  // Where each socketable can be obtained — bought, crafted, on hand, or only
+  // inside gear. Derived once from the same input the dossier reads, because a
+  // *proposed* component or augment is installed nowhere and its tooltip has to
+  // answer "where do I get one" itself.
+  const obtain = socketableObtain(snap.input);
+
   // Socketables are identified by record path, so one id serves the installed
   // copy and the loose one — which is exactly what a plan needs when it says
   // "take the Seal of Might out of that and put it here".
@@ -70,7 +77,7 @@ export async function buildUiSnapshot(snap: CharacterSnapshot, icons: IconServic
   const socketables: Record<string, UiSocketable> = {};
   for (const [id, part] of snap.doc.socketablesById) {
     socketableIds.set(part.record, id);
-    socketables[id] = describeSocketable(part, id, db, invested);
+    socketables[id] = describeSocketable(part, id, db, invested, obtain.get(part.record));
   }
 
   const toUi = (item: ResolvedItem): UiItem => {
@@ -78,6 +85,7 @@ export async function buildUiSnapshot(snap: CharacterSnapshot, icons: IconServic
     const size = iconPath ? sizes.get(iconPath) : undefined;
     return {
       docId: docIds.get(item) ?? item.id,
+      baseId: item.baseId,
       display: item.display,
       rarity: item.base?.rarity ?? 'Common',
       iconPath,
@@ -86,7 +94,7 @@ export async function buildUiSnapshot(snap: CharacterSnapshot, icons: IconServic
       position: item.position,
       source: item.source,
       stackCount: Math.max(1, item.stackCount),
-      tooltip: buildTooltip(item, db, standing, socketableIds, invested),
+      tooltip: buildTooltip(item, db, standing, socketableIds, invested, obtain),
     };
   };
 
@@ -289,6 +297,7 @@ function describeSocketable(
   id: string | undefined,
   db: GameDb,
   invested?: ReadonlySet<string>,
+  obtain?: string[],
 ): UiSocketable {
   const useOn = describeSlots(part.allowedSlots);
   return {
@@ -297,6 +306,7 @@ function describeSocketable(
     lines: formatStats(part.stats, { db, ...(invested ? { invested } : {}) }),
     iconPath: part.iconPath || null,
     ...(useOn ? { useOn } : {}),
+    ...(obtain?.length ? { obtain } : {}),
   };
 }
 
@@ -306,6 +316,7 @@ function buildTooltip(
   standing: CharacterStanding,
   socketableIds?: ReadonlyMap<string, string>,
   invested?: ReadonlySet<string>,
+  obtain?: ReadonlyMap<string, string[]>,
 ): UiTooltip {
   const base = item.base;
   const grantedSkills: string[] = [];
@@ -346,7 +357,7 @@ function buildTooltip(
    * part it comes from, it is stated once and in the right place.
    */
   const socketable = (part: DbItem): UiSocketable =>
-    describeSocketable(part, socketableIds?.get(part.record), db, invested);
+    describeSocketable(part, socketableIds?.get(part.record), db, invested, obtain?.get(part.record));
 
   const sockets: string[] = [];
   const slot = base?.slot ?? '';

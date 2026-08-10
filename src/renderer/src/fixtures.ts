@@ -44,7 +44,7 @@ interface ItemSpec {
  * item, the loose one in the store, and the one a plan proposes. Deriving it
  * the same way here is what lets the fixture's socket verdicts join.
  */
-function socketable(part: { name: string; lines: string[]; useOn?: string }): UiSocketable {
+function socketable(part: { name: string; lines: string[]; useOn?: string; obtain?: string[] }): UiSocketable {
   const slug = part.name.toLowerCase().replace(/[^a-z]+/g, '-');
   return {
     id: `s-${slug}`,
@@ -52,6 +52,7 @@ function socketable(part: { name: string; lines: string[]; useOn?: string }): Ui
     lines: part.lines,
     iconPath: `items/fixture/socket-${slug}.tex`,
     ...(part.useOn ? { useOn: part.useOn } : {}),
+    ...(part.obtain ? { obtain: part.obtain } : {}),
   };
 }
 
@@ -86,16 +87,21 @@ const SOCKETABLES: UiSocketable[] = [
     name: 'Mark of Mogdrogen',
     lines: ['+25% Bleeding Resistance', '+3% Health Regenerated per second'],
     useOn: 'boots, leg armour, shoulder guards',
+    // The three obtain shapes a proposed socketable comes in — on hand,
+    // craftable, and buyable — so the panel story shows the real vocabulary.
+    obtain: ['On hand: 2× in the materials store', 'Craftable now from 3× Ectoplasm, 2,400 iron'],
   }),
   socketable({
     name: 'Kymon’s Vigil',
     lines: ['+18% Fire Damage', '+40 Offensive Ability', '+12% Chaos Resistance'],
     useOn: 'rings, amulets, medals',
+    obtain: ['Buy: Kymon’s Chosen (Honored), 1,500 iron'],
   }),
   socketable({
     name: 'Bloodied Crystal',
     lines: ['+30% Bleeding Damage', '+8% Attack Speed'],
     useOn: 'one-handed melee weapons',
+    obtain: ['The only copy is installed in Servitor’s Slicer (bag 1 (4,0)) — extraction destroys the host item'],
   }),
 ];
 
@@ -109,6 +115,9 @@ function item(spec: ItemSpec, position: ItemPosition): UiItem {
 
   const ui: UiItem = {
     docId,
+    // Every fixture item is unique, so its socket-agnostic identity can simply
+    // be its document id — the drift stories only need the two to agree.
+    baseId: docId,
     display: spec.name,
     rarity: spec.rarity,
     // A texture path shaped like the real thing. Nothing resolves it in a
@@ -914,6 +923,23 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
         spareBlade,
         duplicateGauntlets,
       ].map((i) => [i.docId, i.display]),
+    ),
+    // Identity over the same ids: fixture items set `baseId: docId`. What the
+    // stories need is only that the envelope's and the snapshot's sides agree.
+    itemBaseIds: Object.fromEntries(
+      [
+        head,
+        feet,
+        hands,
+        ring1,
+        belt,
+        mainHand,
+        mythicalVisor,
+        gauntlets,
+        girdle,
+        spareBlade,
+        duplicateGauntlets,
+      ].map((i) => [i.docId, i.baseId ?? i.docId]),
     ),
     socketableNames: {
       's-mark-of-mogdrogen': 'Mark of Mogdrogen',

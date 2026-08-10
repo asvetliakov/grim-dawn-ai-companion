@@ -109,7 +109,7 @@ export function Header({
           title: 'Read your save file again',
           body: runningAdvice
             ? 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. This happens by itself a couple of seconds after the game saves, so you rarely need it. The question already being asked is not affected: it has everything it needs, and it is answering about the gear it started with.'
-            : 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. This happens by itself a couple of seconds after the game saves, so you rarely need it. An answer you have open stays open, and the green DONE and amber CHANGED stamps on it are worked out again from what you are wearing now.',
+            : 'Picks up whatever you have changed in the game — what you are wearing, what is in your bags and stashes. This happens by itself a couple of seconds after the game saves, so you rarely need it. An answer you have open stays open, and the green DONE, PARTIAL and amber CHANGED stamps on it are worked out again from what you are wearing now.',
         }}
       />
 

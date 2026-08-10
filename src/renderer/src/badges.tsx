@@ -150,14 +150,21 @@ export function primaryMark(marks: readonly AdviceMark[]): AdviceMark | undefine
  *
  * Drawn in the same 16-box as every other glyph in this file so they match
  * optically, and given the same shapes the rest of the window already uses for
- * these meanings: `KEEP`'s tick for a move that has been made, and a triangle for
+ * these meanings: `KEEP`'s tick for a move that has been made, a half-filled
+ * circle for one part-way through — progress, not a verdict — and a triangle for
  * the one state in the loadout that wants a second look. A word alone was legible
  * and needed reading; the pair is recognisable at a glance in an 84 px column.
  */
-export const SLOT_STATE_GLYPH: Readonly<Record<'done' | 'changed', React.ReactNode>> = {
+export const SLOT_STATE_GLYPH: Readonly<Record<'done' | 'partial' | 'changed', React.ReactNode>> = {
   done: (
     <Glyph>
       <path d="M3.5 8.5l3 3 6-7" />
+    </Glyph>
+  ),
+  partial: (
+    <Glyph>
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M8 2.5a5.5 5.5 0 010 11z" fill="currentColor" stroke="none" />
     </Glyph>
   ),
   changed: (

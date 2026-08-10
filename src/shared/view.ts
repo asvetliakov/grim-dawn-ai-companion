@@ -38,6 +38,13 @@ export interface UiSocketable {
   iconPath: string | null;
   /** Which slots the socketable may be applied to, already prose. */
   useOn?: string;
+  /**
+   * Where to get one, already prose — "Buy: Coven of Ugdenbog, Honored,
+   * 1,500 iron", "On hand: 2× in the materials store", "Craftable now from
+   * 3× Ectoplasm". A *proposed* socketable is installed nowhere, so where it
+   * comes from is the first practical question its tooltip must answer.
+   */
+  obtain?: string[];
 }
 
 export interface UiTooltip {
@@ -69,6 +76,14 @@ export interface UiTooltip {
 export interface UiItem {
   /** The **document** id, so Stage 7B can join advice straight onto the grid. */
   docId: string;
+  /**
+   * The instance minus its attachments — unchanged by a component or augment
+   * going in, where `docId` shifts on every socket move. The drift check uses
+   * it to recognise a stored plan's EQUIP candidate after its fits were
+   * applied. Optional so an old snapshot (or a fixture) without one degrades
+   * to name matching rather than lying.
+   */
+  baseId?: string;
   display: string;
   rarity: string;
   /** Arc-relative `.tex` path; the renderer turns it into a `gdicon://` URL. */

@@ -47,6 +47,9 @@
   /* "This item is spent" — an extraction destroys it. Off the red/amber/green
      scale on purpose: see `.action-destroy`. */
   --spend: #b07bf5;
+  /* A slot part-way through its plan: between --good and --accent on purpose,
+     because it must read as neither "done" nor "look again". */
+  --part: #b8c063;
 
   --rarity-common: #ece4d3;
   --rarity-magical: #ffd76e;
@@ -1151,6 +1154,14 @@ h3 {
   color: var(--good);
 }
 
+/* Between the two, in reading order as in meaning: a slot mid-plan is neither
+   done nor drifted, and its sentence is a checklist rather than a warning. */
+.advice-partial {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--part);
+}
+
 /*
  * How a slot stands against the run, under its name.
  *
@@ -1177,6 +1188,11 @@ h3 {
 .slot-state.done {
   color: var(--good);
   background: color-mix(in srgb, var(--good) 12%, transparent);
+}
+
+.slot-state.partial {
+  color: var(--part);
+  background: color-mix(in srgb, var(--part) 12%, transparent);
 }
 
 .slot-state.changed {
@@ -2427,6 +2443,13 @@ h3 {
 }
 
 .tooltip-note {
+  color: var(--ink-dim);
+  font-size: 13px;
+}
+
+/* Where to obtain a socketable — buy, craft, on hand, or only inside gear.
+   Dim like the use-on line: it is logistics, not the stats being argued. */
+.tooltip-obtain {
   color: var(--ink-dim);
   font-size: 13px;
 }

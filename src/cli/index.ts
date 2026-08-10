@@ -23,6 +23,7 @@ import {
   buildEnvelope,
   wornSlots,
   wornSocketables,
+  socketableIdFor,
   createProvider,
   projectPlan,
   verdictRows,
@@ -1004,8 +1005,8 @@ function contextFor(
     name: snap.character,
     input: scope.input,
     doc: scope.doc,
-    worn: wornSlots(snap.resolved.items),
-    wornSockets: wornSocketables(snap.resolved.items, shortHash),
+    worn: wornSlots(scope.doc.itemsById),
+    wornSockets: wornSocketables(snap.resolved.items, socketableIdFor(scope.doc.socketablesById, shortHash)),
     snapshot: snap,
   };
 }
@@ -1414,6 +1415,7 @@ program
             durationMs: Date.now() - started,
             itemNames: Object.fromEntries([...doc.itemsById].map(([id, item]) => [id, item.display])),
             socketableNames: Object.fromEntries([...doc.socketablesById].map(([id, item]) => [id, item.name])),
+            itemBaseIds: Object.fromEntries([...doc.itemsById].map(([id, item]) => [id, item.baseId])),
             worn,
             wornSockets,
             stashIncluded: includeStash,

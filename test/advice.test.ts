@@ -29,6 +29,7 @@ import {
   saveAdvice,
   normalizeName,
   wornSlots,
+  socketableIdFor,
   totalUsage,
   type AdviseEnvelope,
 } from '../src/core/ai/index.js';
@@ -380,7 +381,10 @@ describe('loadoutDrift', () => {
 
   /** The live side, as `currentWorn` builds it from the snapshot. */
   const now = (
-    slots: Record<string, { itemId: string; display?: string; componentId?: string; augmentId?: string }>,
+    slots: Record<
+      string,
+      { itemId: string; display?: string; baseId?: string; componentId?: string; augmentId?: string }
+    >,
   ): Record<string, WornSlot> =>
     Object.fromEntries(
       Object.entries(slots).map(([slot, v]) => [slot, { display: '', ...v } as WornSlot]),
@@ -389,7 +393,16 @@ describe('loadoutDrift', () => {
   it('reports a slot now holding what the plan told it to equip as done, not stale', () => {
     const env = stored({ Neck: 'old1' }, [{ slot: 'Neck', nextId: 'new1' }]);
     expect(loadoutDrift(env, now({ Neck: { itemId: 'new1' } }))).toEqual([
-      { slot: 'Neck', wasId: 'old1', nowId: 'new1', applied: true, changed: 'item', socketNames: [] },
+      {
+        slot: 'Neck',
+        wasId: 'old1',
+        nowId: 'new1',
+        state: 'done',
+        changed: 'item',
+        socketNames: [],
+        piecesDone: ['item new1'],
+        piecesLeft: [],
+      },
     ]);
   });
 
@@ -398,21 +411,136 @@ describe('loadoutDrift', () => {
     // map speaks the document's labels, the verdict speaks the model's.
     const env = stored({ 'Weapon set 1 main': 'old1' }, [{ slot: 'Main hand', nextId: 'new1' }]);
     expect(loadoutDrift(env, now({ 'Weapon set 1 main': { itemId: 'new1' } }), 1)[0]).toMatchObject({
-      applied: true,
+      state: 'done',
       changed: 'item',
     });
     // Resolved against the *active* set: with set 2 held, the same verdict
     // names a different slot and this move no longer counts as carried out.
     expect(loadoutDrift(env, now({ 'Weapon set 1 main': { itemId: 'new1' } }), 2)[0]).toMatchObject({
-      applied: false,
+      state: 'moved',
     });
   });
 
-  it('reports a slot holding something the plan never mentioned as not applied', () => {
+  it('reports a slot holding something the plan never mentioned as moved', () => {
     const env = stored({ Neck: 'old1' }, [{ slot: 'Neck', nextId: 'new1' }]);
     expect(loadoutDrift(env, now({ Neck: { itemId: 'other' } }))[0]).toMatchObject({
-      applied: false,
+      state: 'moved',
       changed: 'item',
+    });
+  });
+
+  /**
+   * Bug A of the second live run: the plan said EQUIP Maiven's Lens `s1f5` with
+   * a component and an augment in `fits`; the reader did exactly that, and the
+   * worn copy's id became `jetc` — an item's document id hashes its attachments,
+   * so **carrying out the plan is what broke the id match**, and the slot
+   * stamped CHANGED as its reward. The base id survives socket moves, which is
+   * what it is for.
+   */
+  it('recognises an EQUIP whose fits were installed, by base id', () => {
+    const env = {
+      ...stored({ Neck: 'old1' }, [{ slot: 'Neck', nextId: 'cand' }]),
+      itemNames: { cand: 'Maiven’s Lens' },
+      itemBaseIds: { cand: 'lens' },
+      socketableNames: { skull1: 'Dread Skull', powd1: 'Sagethorn Powder' },
+      plan: {
+        verdicts: [
+          {
+            slot: 'Neck',
+            itemId: 'old1',
+            verdict: 'EQUIP' as const,
+            targetId: 'cand',
+            fits: [
+              { kind: 'component' as const, id: 'skull1' },
+              { kind: 'augment' as const, id: 'powd1' },
+            ],
+            reason: '',
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+    };
+    const drift = loadoutDrift(
+      env,
+      now({
+        Neck: {
+          itemId: 'worn9',
+          display: 'Maiven’s Lens',
+          baseId: 'lens',
+          componentId: 'skull1',
+          augmentId: 'powd1',
+        },
+      }),
+    );
+    expect(drift[0]).toMatchObject({
+      state: 'done',
+      piecesDone: ['item Maiven’s Lens', 'component Dread Skull', 'augment Sagethorn Powder'],
+      piecesLeft: [],
+    });
+  });
+
+  it('recognises the same case on an old envelope by display name', () => {
+    const env = {
+      ...stored({ Neck: 'old1' }, [{ slot: 'Neck', nextId: 'cand' }]),
+      itemNames: { cand: 'Maiven’s Lens' },
+      plan: {
+        verdicts: [
+          {
+            slot: 'Neck',
+            itemId: 'old1',
+            verdict: 'EQUIP' as const,
+            targetId: 'cand',
+            fits: [{ kind: 'component' as const, id: 'skull1' }],
+            reason: '',
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+    };
+    expect(
+      loadoutDrift(env, now({ Neck: { itemId: 'worn9', display: 'Maiven’s Lens', componentId: 'skull1' } }))[0],
+    ).toMatchObject({ state: 'done' });
+  });
+
+  it('lets a base-id mismatch veto a name match', () => {
+    // Two rings can read identically; a same-named different item must not
+    // count as the plan carried out when both sides carry base ids.
+    const env = {
+      ...stored({ 'Ring 1': 'old1' }, [{ slot: 'Ring 1', nextId: 'cand' }]),
+      itemNames: { cand: 'Cronley’s Signet' },
+      itemBaseIds: { cand: 'ringA' },
+    };
+    expect(
+      loadoutDrift(env, now({ 'Ring 1': { itemId: 'worn9', display: 'Cronley’s Signet', baseId: 'ringB' } }))[0],
+    ).toMatchObject({ state: 'moved' });
+  });
+
+  it('reports an EQUIP whose fits are still missing as partial, naming them', () => {
+    const env = {
+      ...stored({ Hands: 'old1' }, [{ slot: 'Hands', nextId: 'cand' }]),
+      itemNames: { cand: 'Voidsteel Gauntlets' },
+      socketableNames: { mark1: 'Mark of Mogdrogen' },
+      plan: {
+        verdicts: [
+          {
+            slot: 'Hands',
+            itemId: 'old1',
+            verdict: 'EQUIP' as const,
+            targetId: 'cand',
+            fits: [{ kind: 'component' as const, id: 'mark1' }],
+            reason: '',
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+    };
+    expect(loadoutDrift(env, now({ Hands: { itemId: 'cand' } }))[0]).toMatchObject({
+      state: 'partial',
+      piecesDone: ['item Voidsteel Gauntlets'],
+      piecesLeft: ['component Mark of Mogdrogen'],
     });
   });
 
@@ -457,7 +585,16 @@ describe('loadoutDrift', () => {
       now({ Feet: { itemId: 'boot1', display: 'Bloodhound Greaves', componentId: 'mark1' } }),
     );
     expect(drift).toEqual([
-      { slot: 'Feet', wasId: 'boot0', nowId: 'boot1', applied: true, changed: 'sockets', socketNames: ['mark1'] },
+      {
+        slot: 'Feet',
+        wasId: 'boot0',
+        nowId: 'boot1',
+        state: 'done',
+        changed: 'sockets',
+        socketNames: ['mark1'],
+        piecesDone: ['component mark1'],
+        piecesLeft: [],
+      },
     ]);
   });
 
@@ -477,7 +614,7 @@ describe('loadoutDrift', () => {
     };
     expect(
       loadoutDrift(env, now({ Feet: { itemId: 'boot2', display: 'Bloodhound Greaves', componentId: 'other' } }))[0],
-    ).toMatchObject({ applied: false, changed: 'sockets', socketNames: ['other'] });
+    ).toMatchObject({ state: 'moved', changed: 'sockets', socketNames: ['other'] });
   });
 
   it('counts a `fits` socketable as the plan being carried out too', () => {
@@ -502,7 +639,132 @@ describe('loadoutDrift', () => {
     };
     expect(
       loadoutDrift(env, now({ Neck: { itemId: 'amu1', display: 'Bloodmoon', componentId: 'skull1' } }))[0],
-    ).toMatchObject({ applied: true, changed: 'sockets' });
+    ).toMatchObject({ state: 'done', changed: 'sockets' });
+  });
+
+  /**
+   * Bug B of the second live run: RE-AUGMENT named the augment, `fits` carried a
+   * component, and installing **only the component** stamped the slot DONE — the
+   * old check flattened both into one set and passed on `.some()`. Every planned
+   * piece must be in place, each in the socket of its own kind.
+   */
+  it('reports one of two planned socketables as partial, not done', () => {
+    const env = {
+      ...base(),
+      worn: { 'Ring 2': 'ring0' },
+      wornSockets: {},
+      itemNames: { ring0: 'Amarastan Sigil' },
+      socketableNames: { heart1: 'Frozen Heart', thorn1: 'Bloodrose Thorn' },
+      plan: {
+        verdicts: [
+          {
+            slot: 'Ring 2',
+            itemId: 'ring0',
+            verdict: 'RE-AUGMENT' as const,
+            targetId: 'thorn1',
+            fits: [{ kind: 'component' as const, id: 'heart1' }],
+            reason: '',
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+    };
+    expect(
+      loadoutDrift(env, now({ 'Ring 2': { itemId: 'ring1', display: 'Amarastan Sigil', componentId: 'heart1' } }))[0],
+    ).toMatchObject({
+      state: 'partial',
+      piecesDone: ['component Frozen Heart'],
+      piecesLeft: ['augment Bloodrose Thorn'],
+    });
+  });
+
+  it('never matches a planned socketable sitting in the socket of the wrong kind', () => {
+    const env = {
+      ...base(),
+      worn: { Feet: 'boot0' },
+      wornSockets: {},
+      itemNames: { boot0: 'Bloodhound Greaves' },
+      plan: {
+        verdicts: [
+          { slot: 'Feet', itemId: 'boot0', verdict: 'ADD-COMPONENT' as const, targetId: 'mark1', reason: '' },
+        ],
+        hold: [],
+        sell: [],
+      },
+    };
+    // The planned *component* id turning up as the augment is not that
+    // component installed — ids are record hashes and the spaces are disjoint,
+    // so this is a corrupt or colliding read, and it must not read as done.
+    expect(
+      loadoutDrift(env, now({ Feet: { itemId: 'boot1', display: 'Bloodhound Greaves', augmentId: 'mark1' } }))[0],
+    ).toMatchObject({ state: 'moved' });
+  });
+
+  /** The live Medal: planned item and component in place, a *different* augment. */
+  it('reports a different augment than planned as partial, naming the planned one', () => {
+    const env = {
+      ...stored({ Medal: 'old1' }, [{ slot: 'Medal', nextId: 'cand' }]),
+      itemNames: { cand: 'Beastcaller’s Talisman' },
+      itemBaseIds: { cand: 'tali' },
+      socketableNames: { skull1: 'Dread Skull', glyph1: 'Glyph of Kurn Endurance' },
+      plan: {
+        verdicts: [
+          {
+            slot: 'Medal',
+            itemId: 'old1',
+            verdict: 'EQUIP' as const,
+            targetId: 'cand',
+            fits: [
+              { kind: 'component' as const, id: 'skull1' },
+              { kind: 'augment' as const, id: 'glyph1' },
+            ],
+            reason: '',
+          },
+        ],
+        hold: [],
+        sell: [],
+      },
+    };
+    expect(
+      loadoutDrift(
+        env,
+        now({
+          Medal: {
+            itemId: 'worn9',
+            display: 'Beastcaller’s Talisman',
+            baseId: 'tali',
+            componentId: 'skull1',
+            augmentId: 'emblem1',
+          },
+        }),
+      )[0],
+    ).toMatchObject({
+      state: 'partial',
+      piecesDone: ['item Beastcaller’s Talisman', 'component Dread Skull'],
+      piecesLeft: ['augment Glyph of Kurn Endurance'],
+    });
+  });
+
+  it('reads a socket-only plan whose host was replaced as moved, not carried out', () => {
+    const env = {
+      ...base(),
+      worn: { Feet: 'boot0' },
+      wornSockets: {},
+      itemNames: { boot0: 'Bloodhound Greaves' },
+      plan: {
+        verdicts: [
+          { slot: 'Feet', itemId: 'boot0', verdict: 'ADD-COMPONENT' as const, targetId: 'mark1', reason: '' },
+        ],
+        hold: [],
+        sell: [],
+      },
+    };
+    // The planned component *is* installed — but in a replacement item the plan
+    // never proposed. That is the plan overtaken, not carried out.
+    expect(
+      loadoutDrift(env, now({ Feet: { itemId: 'boot9', display: 'Stoneplate Greaves', componentId: 'mark1' } }))[0],
+    ).toMatchObject({ state: 'moved', changed: 'item' });
   });
 
   it('reports nothing for a run stored before the loadout was recorded', () => {
@@ -513,14 +775,28 @@ describe('loadoutDrift', () => {
 });
 
 describe('wornSlots', () => {
-  it('keys the equipped items by the slot label the dossier prints', () => {
+  it('keys the equipped items by the document’s own id for the slot label', () => {
+    // The map's keys are the document's — disambiguated — ids, not the items'
+    // raw hashes: the renderer compares against `docId`, and a collision the
+    // document rewrote would otherwise never match.
     expect(
       wornSlots([
-        { source: 'equipped', location: 'Head', id: 'aaaa' },
-        { source: 'equipped', location: 'Weapon set 1 main', id: 'bbbb' },
-        { source: 'stash', location: 'Stash tab 3 (2,4)', id: 'cccc' },
+        ['aaaa', { source: 'equipped', location: 'Head' }],
+        ['bbbb', { source: 'equipped', location: 'Weapon set 1 main' }],
+        ['cccc', { source: 'stash', location: 'Stash tab 3 (2,4)' }],
       ]),
     ).toEqual({ Head: 'aaaa', 'Weapon set 1 main': 'bbbb' });
+  });
+});
+
+describe('socketableIdFor', () => {
+  it('answers with the document’s id, falling back to the raw hash', () => {
+    const idFor = socketableIdFor(
+      [['dk1a', { record: 'records/items/materia/dreadskull.dbr' }]],
+      () => 'raw0',
+    );
+    expect(idFor('records/items/materia/dreadskull.dbr')).toBe('dk1a');
+    expect(idFor('records/items/materia/other.dbr')).toBe('raw0');
   });
 });
 

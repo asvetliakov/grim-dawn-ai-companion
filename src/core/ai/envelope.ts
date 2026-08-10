@@ -203,6 +203,18 @@ export const adviseEnvelopeSchema = z.object({
   itemNames: z.record(z.string(), z.string()),
   socketableNames: z.record(z.string(), z.string()),
   /**
+   * Document id → socket-agnostic base id, for every item the dossier named.
+   *
+   * An item's document id hashes its attachments, so equipping a plan's EQUIP
+   * candidate *and then installing its `fits`* leaves the slot holding an id
+   * the plan never wrote — the drift check would call the plan's own success a
+   * change. The base id (base record + seed + affixes, attachments left out)
+   * survives socket moves, so it is what "the slot holds the item the plan
+   * named" is actually checked against. Optional: an old envelope falls back
+   * to display-name matching, which is honest but ambiguous.
+   */
+  itemBaseIds: z.record(z.string(), z.string()).optional(),
+  /**
    * What the character was wearing when the run started: the document's own slot
    * label → the item's document id, empty slots omitted.
    *
@@ -300,6 +312,8 @@ export interface BuildEnvelopeArgs {
   /** Every id the dossier defined, to the name it printed. */
   itemNames: Record<string, string>;
   socketableNames: Record<string, string>;
+  /** Every item id the dossier defined, to its socket-agnostic base id. */
+  itemBaseIds?: Record<string, string>;
   /**
    * Slot label → worn item id, at the moment the run started. Optional so an
    * older caller still compiles; a run without it just cannot be staleness-checked.
@@ -361,6 +375,7 @@ export function buildEnvelope(args: BuildEnvelopeArgs): AdviseEnvelope {
     verdictRows: plan ? verdictRows(plan, (id) => args.itemNames[id]) : [],
     itemNames: args.itemNames,
     socketableNames: args.socketableNames,
+    ...(args.itemBaseIds ? { itemBaseIds: args.itemBaseIds } : {}),
     ...(args.worn ? { worn: args.worn } : {}),
     ...(args.wornSockets ? { wornSockets: args.wornSockets } : {}),
     ...(args.stashIncluded !== undefined ? { stashIncluded: args.stashIncluded } : {}),
@@ -376,18 +391,41 @@ export function buildEnvelope(args: BuildEnvelopeArgs): AdviseEnvelope {
  * back in `verdicts[].slot` — that identity is what lets a stored run be lined up
  * against a live save without a second mapping table to keep honest.
  *
- * Argument typed structurally so this stays in the renderer's type graph: a
- * `ResolvedItem[]` is assignable to it, and importing the resolver here would
- * drag the database types across the boundary.
+ * Consumes the **document's** id map rather than the items' own `id` fields,
+ * because the two are not the same string when the document had to
+ * disambiguate a hash collision — and the renderer compares against `docId`,
+ * which is the document's side. Storing the raw hash here once meant a worn
+ * map the live snapshot could never match.
+ *
+ * Argument typed structurally so this stays in the renderer's type graph:
+ * `ContextDoc.itemsById` is assignable to it, and importing the resolver here
+ * would drag the database types across the boundary.
  */
 export function wornSlots(
-  items: readonly { source: string; location: string; id: string }[],
+  itemsById: Iterable<readonly [string, { source: string; location: string }]>,
 ): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const item of items) {
-    if (item.source === 'equipped') out[item.location] = item.id;
+  for (const [id, item] of itemsById) {
+    if (item.source === 'equipped') out[item.location] = id;
   }
   return out;
+}
+
+/**
+ * An `idFor` for `wornSocketables` that answers with the **document's** id for
+ * a record — the disambiguated one, when `assignSocketableIds` had to rewrite
+ * a colliding hash — falling back to the caller's raw hash only for a record
+ * the document never tabled (belt and braces: the document tables every worn
+ * socketable). Same reasoning as `wornSlots`: the stored id must be the one
+ * the plan and the live snapshot both speak.
+ */
+export function socketableIdFor(
+  socketablesById: Iterable<readonly [string, { record: string }]>,
+  fallback: (record: string) => string,
+): (record: string) => string {
+  const byRecord = new Map<string, string>();
+  for (const [id, part] of socketablesById) byRecord.set(part.record, id);
+  return (record) => byRecord.get(record) ?? fallback(record);
 }
 
 /**

@@ -152,6 +152,14 @@ export function SocketableTooltip({
         <StatLines lines={part.lines} />
       </div>
       {part.useOn && <div className="tooltip-note">use-on: {part.useOn}</div>}
+      {/* Where to get one. A proposed socketable is installed nowhere, so this
+          is the first practical question the panel has to answer — and for an
+          installed one it answers "where do I get another". */}
+      {part.obtain?.map((line) => (
+        <div className="tooltip-obtain" key={line}>
+          {line}
+        </div>
+      ))}
       {note && <div className="tooltip-why">{note}</div>}
     </div>
   );
@@ -234,6 +242,11 @@ function SocketableBlock({ label, part }: { label: string; part: UiSocketable })
       </div>
       <StatLines lines={part.lines} />
       {part.useOn && <div className="tooltip-note">use-on: {part.useOn}</div>}
+      {part.obtain?.map((line) => (
+        <div className="tooltip-obtain" key={line}>
+          {line}
+        </div>
+      ))}
     </div>
   );
 }

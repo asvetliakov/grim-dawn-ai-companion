@@ -358,6 +358,26 @@ describe.skipIf(!haveGameInstall())(`game database (${haveGameInstall() ? 'live'
     expect(recipe?.resultName).toBe("Bloodrager's Cowl");
   });
 
+  it('marks every smith’s default recipes as known without a blueprint', { timeout: BUILD_TIMEOUT }, async () => {
+    // The crafting panel's own `craftingDefaultRecipes` list: base components
+    // and the starter relics, offered by every blacksmith with nothing learned.
+    // `formulas.gst` never records these, so without the flag a Wardstone —
+    // the reagent half the low-level component chains lean on — reads as
+    // uncraftable, and so does everything downstream of it.
+    const db = await gameDb();
+    const byRecord = new Map(db.recipes().map((r) => [r.record, r]));
+    const wardstone = byRecord.get('records/items/crafting/blueprints/component/craft_component_wardstone.dbr');
+    expect(wardstone?.alwaysKnown).toBe(true);
+    expect(wardstone?.resultRecord).toBe('records/items/materia/compa_wardstone.dbr');
+    // A drop-learned blueprint stays learnable, not default.
+    const cowl = byRecord.get('records/items/crafting/blueprints/armor/craft_headd28_bloodragerscowl.dbr');
+    expect(cowl?.alwaysKnown).toBeUndefined();
+    // The whole default list resolved against real recipes — random-gear crafts
+    // carry no fixed result and are the only entries allowed to have none.
+    const marked = db.recipes().filter((r) => r.alwaysKnown);
+    expect(marked.length).toBeGreaterThan(40);
+  });
+
   it('localizes tags, and echoes unknown ones rather than blanking them', { timeout: BUILD_TIMEOUT }, async () => {
     const db = await gameDb();
     expect(db.localize('tagRelicC003')).toBe('Slaughter');

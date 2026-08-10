@@ -8,7 +8,7 @@ import type { DbItem, GameDb } from '../src/core/db/types.js';
 import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../src/core/mechanics/stats.js';
 import { ambiguousStats } from '../src/core/ai/verify.js';
-import { itemId, resolveCharacter, type ResolvedItem } from '../src/core/resolve.js';
+import { itemBaseId, itemId, resolveCharacter, type ResolvedItem } from '../src/core/resolve.js';
 import { factionSlot, factionTier } from '../src/core/save/factions.js';
 import { parseGdc } from '../src/core/save/gdc.js';
 import { parseFormulasFile, parseReagents, parseTransferStash } from '../src/core/save/gst.js';
@@ -92,6 +92,7 @@ function instance(over: Partial<ItemInstance> = {}): ItemInstance {
 function resolved(over: Partial<ResolvedItem> = {}): ResolvedItem {
   return {
     id: 'test',
+    baseId: 'test',
     record: 'records/items/x.dbr',
     display: 'X',
     source: 'inventory',
@@ -400,6 +401,25 @@ describe('itemId', () => {
   });
 });
 
+describe('itemBaseId', () => {
+  it('survives socket moves where itemId does not, and still tells rolls apart', () => {
+    const bare = instance({ baseName: 'records/items/a.dbr', seed: 12345 });
+    const fitted = instance({
+      baseName: 'records/items/a.dbr',
+      seed: 12345,
+      relicName: 'records/items/materia/dreadskull.dbr',
+      relicSeed: 777,
+      augmentName: 'records/items/enchants/powder.dbr',
+      augmentSeed: 888,
+    });
+    // The drift check's whole premise: installing the plan's fits changes the
+    // document id and must not change the identity an EQUIP is checked by.
+    expect(itemId(fitted)).not.toBe(itemId(bare));
+    expect(itemBaseId(fitted)).toBe(itemBaseId(bare));
+    expect(itemBaseId(bare)).not.toBe(itemBaseId(instance({ baseName: 'records/items/a.dbr', seed: 12346 })));
+  });
+});
+
 // ---------------------------------------------------------------------------
 // The real document, against the live saves
 // ---------------------------------------------------------------------------
@@ -637,8 +657,31 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     const doc = buildContextDoc(input);
     const section = doc.markdown.slice(doc.markdown.indexOf('\n## 8. '), doc.markdown.indexOf('\n## 9. '));
 
+    // How many components really are single-instance, derived from the same
+    // facts the census reads: exactly one installed copy, none loose, and no
+    // recipe — learned *or* a smith's default — producing the record. The
+    // expectation is computed rather than assumed at >0 because the default
+    // recipes made every one of this character's once-scarce components
+    // craftable, which is the game's answer, not a regression.
+    const known = new Set(input.resolved.recipes.map((r) => r.record));
+    const craftableResults = new Set(
+      input.db
+        .recipes()
+        .filter((r) => r.resultRecord && (r.alwaysKnown || known.has(r.record)))
+        .map((r) => r.resultRecord!),
+    );
+    const hosts = new Map<string, number>();
+    const loose = new Set<string>();
+    for (const item of input.resolved.items) {
+      if (item.component) hosts.set(item.component.record, (hosts.get(item.component.record) ?? 0) + 1);
+      if (item.base?.slot === 'ItemRelic') loose.add(item.base.record);
+    }
+    const scarceExpected = [...hosts].filter(
+      ([record, count]) => count === 1 && !loose.has(record) && !craftableResults.has(record),
+    ).length;
+
     const scarce = section.match(/single instance — extraction destroys `#(\w+)`/g) ?? [];
-    expect(scarce.length).toBeGreaterThan(0);
+    expect(scarce.length).toBe(scarceExpected);
     for (const line of scarce) {
       const id = /`#(\w+)`/.exec(line)![1]!;
       expect(doc.itemIds.has(id), `${id} should be a real item id`).toBe(true);

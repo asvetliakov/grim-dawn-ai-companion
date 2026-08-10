@@ -52,6 +52,13 @@ export interface ResolvedItem {
    * the same string from the same save.
    */
   id: string;
+  /**
+   * The instance minus its attachments — what an equipped item still is after a
+   * component or augment goes in. `id` changes on every socket move (the
+   * attachments are hashed into it); this one survives them, which is what lets
+   * a stored plan recognise its own EQUIP candidate after the fits were applied.
+   */
+  baseId: string;
   /** The base item's record path, as stored in the save. */
   record: string;
   /** Full name, e.g. "Thunderstruck Legion Warhammer of Alacrity". */
@@ -175,6 +182,7 @@ export function resolveItem(
 
   const item: ResolvedItem = {
     id: itemId(inst),
+    baseId: itemBaseId(inst),
     record: inst.baseName,
     display: [prefix.name, base?.name ?? recordStem(inst.baseName), suffix.name].filter(Boolean).join(' '),
     source,
@@ -253,6 +261,17 @@ export function itemId(inst: ItemInstance): string {
       inst.augmentSeed,
     ].join('|'),
   );
+}
+
+/**
+ * The same handle with the attachments left out: base record, roll seed and
+ * affixes only. Installing or removing a component or augment changes `itemId`
+ * (their names and seeds are hashed in) but not this — so it is the identity a
+ * drift check compares when "the same item, newly fitted" must not read as a
+ * different item.
+ */
+export function itemBaseId(inst: ItemInstance): string {
+  return shortHash([inst.baseName, inst.seed, inst.prefixName, inst.suffixName, inst.modifierName].join('|'));
 }
 
 /**

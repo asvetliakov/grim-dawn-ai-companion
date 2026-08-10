@@ -229,6 +229,8 @@ export interface WornSlot {
   itemId: string;
   /** Display name, so an item that was only re-socketed can be recognised. */
   display: string;
+  /** Socket-agnostic identity — survives component/augment installs. */
+  baseId?: string;
   componentId?: string;
   augmentId?: string;
 }
@@ -241,10 +243,15 @@ export interface SlotDrift {
   /** What is in it now; empty if the slot is now empty. */
   nowId: string;
   /**
-   * True when what is in it now is exactly what the plan told this slot to end up
-   * with — the advice was **carried out**, not overtaken.
+   * How the slot stands against the plan. `done`: **every** planned piece — the
+   * item on an EQUIP, plus each named socketable in the socket of its own kind
+   * — is in place; the advice was carried out, not overtaken. `partial`: some
+   * pieces are in place and `piecesLeft` names the rest — the reader is
+   * mid-plan, which is a state a binary done/changed cannot say without lying
+   * in one direction or the other. `moved`: the slot changed in a way the plan
+   * did not ask for.
    */
-  applied: boolean;
+  state: 'done' | 'partial' | 'moved';
   /**
    * Whether the *item* changed or only what it carries.
    *
@@ -255,8 +262,12 @@ export interface SlotDrift {
    * Bloodhound Greaves (was Bloodhound Greaves)".
    */
   changed: 'item' | 'sockets';
-  /** For a socket change, what is in the sockets now — by name where known. */
+  /** For a socket change, what is in the sockets now — ids, named via `socketableNames`. */
   socketNames: string[];
+  /** Planned pieces already in place, human-readable ("component Dread Skull"). */
+  piecesDone: string[];
+  /** Planned pieces still outstanding — what the stamp and the notice name. */
+  piecesLeft: string[];
 }
 
 /**
@@ -283,26 +294,49 @@ export function loadoutDrift(
   if (!before) return [];
   const socketsBefore = envelope.wornSockets ?? {};
 
-  // The item each slot was told to end up holding, by the same slot key the
+  // Everything the plan asked each slot to end up with, by the same slot key the
   // verdict table joins on — alias-aware on the verdict side, because the slot
-  // strings are model text. Only a replacement changes the item, so everything
-  // else expects to find what it started with.
-  const equipTo = new Map<string, string>();
+  // strings are model text. An EQUIP row contributes the item; a socket verdict
+  // contributes its named socketable with the kind its verdict word implies; and
+  // every `fits` entry contributes its own explicit kind. "Done" is all of them,
+  // each in the socket of its kind — a component id sitting in the augment
+  // socket is not that component installed.
+  interface SlotPlan {
+    itemId?: string;
+    sockets: { kind: 'component' | 'augment'; id: string }[];
+  }
+  const planFor = new Map<string, SlotPlan>();
+  const at = (key: string): SlotPlan => {
+    let entry = planFor.get(key);
+    if (!entry) planFor.set(key, (entry = { sockets: [] }));
+    return entry;
+  };
   for (const row of envelope.verdictRows) {
-    if (row.replaces && row.nextId) equipTo.set(verdictSlotKey(row.slot, activeSet), row.nextId);
+    if (row.replaces && row.nextId) at(verdictSlotKey(row.slot, activeSet)).itemId = row.nextId;
+  }
+  for (const v of envelope.plan?.verdicts ?? []) {
+    const entry = at(verdictSlotKey(v.slot, activeSet));
+    if (SOCKET_VERDICTS.has(v.verdict) && v.targetId) {
+      entry.sockets.push({ kind: v.verdict.includes('AUGMENT') ? 'augment' : 'component', id: v.targetId });
+    }
+    for (const fit of v.fits ?? []) entry.sockets.push({ kind: fit.kind, id: fit.id });
+    if (entry.itemId === undefined && entry.sockets.length === 0) planFor.delete(verdictSlotKey(v.slot, activeSet));
   }
 
-  // Every socketable the plan asked a slot to end up carrying: the one its verdict
-  // is named for, plus anything in `fits`. Socketables are identified by record
-  // path, so an installed copy and a proposed one share an id — which is what
-  // makes "is it in there yet" answerable at all.
-  const socketTo = new Map<string, Set<string>>();
-  for (const v of envelope.plan?.verdicts ?? []) {
-    const wanted = new Set<string>();
-    if (SOCKET_VERDICTS.has(v.verdict) && v.targetId) wanted.add(v.targetId);
-    for (const fit of v.fits ?? []) wanted.add(fit.id);
-    if (wanted.size > 0) socketTo.set(verdictSlotKey(v.slot, activeSet), wanted);
-  }
+  // "The slot holds the item the plan named" — modulo sockets, because carrying
+  // out an EQUIP's fits changes the worn copy's document id. Exact id first (the
+  // no-fits case, and free), then base ids when both sides carry one; a base-id
+  // *mismatch* is authoritative and must not fall through to the name check, or
+  // a same-named different item reads as the plan carried out. Names are the
+  // fallback for a run stored before `itemBaseIds` existed.
+  const itemMatches = (plannedId: string, now: WornSlot | undefined): boolean => {
+    if (!now || now.itemId === '') return false;
+    if (now.itemId === plannedId) return true;
+    const plannedBase = envelope.itemBaseIds?.[plannedId];
+    if (plannedBase !== undefined && now.baseId !== undefined) return plannedBase === now.baseId;
+    const name = envelope.itemNames[plannedId];
+    return name !== undefined && name === now.display;
+  };
 
   const slots = new Set([...Object.keys(before), ...Object.keys(worn)]);
   const out: SlotDrift[] = [];
@@ -319,24 +353,47 @@ export function loadoutDrift(
       (wasSockets.component ?? '') !== (now?.componentId ?? '') ||
       (wasSockets.augment ?? '') !== (now?.augmentId ?? '');
 
-    // Same name, same slot, different id, and its sockets moved: the item was
-    // re-socketed rather than replaced. The name comparison is what rules out the
-    // coincidence of a *different* item arriving with different sockets — and the
-    // stored name is available because the envelope carries `itemNames`.
+    // Same item, same slot, different id, and its sockets moved: the item was
+    // re-socketed rather than replaced. Base ids decide where both sides carry
+    // one; the name comparison covers runs stored before they existed, ruling
+    // out the coincidence of a *different* item arriving with different sockets.
+    const wasBase = envelope.itemBaseIds?.[wasId];
     const sameItem =
-      socketsMoved && now !== undefined && wasId !== '' && envelope.itemNames[wasId] === now.display;
+      socketsMoved &&
+      now !== undefined &&
+      wasId !== '' &&
+      (wasBase !== undefined && now.baseId !== undefined
+        ? wasBase === now.baseId
+        : envelope.itemNames[wasId] === now.display);
 
-    const wanted = socketTo.get(key);
-    const socketApplied = wanted !== undefined && nowSockets.some((id) => wanted.has(id));
-    const equipApplied = nowId !== '' && equipTo.get(key) === nowId;
+    const req = planFor.get(key);
+    const piecesDone: string[] = [];
+    const piecesLeft: string[] = [];
+    let state: SlotDrift['state'] = 'moved';
+    // A socket-only plan keeps its host: the planned augment turning up inside
+    // a *replacement* item is the plan overtaken, not carried out.
+    if (req && (req.itemId !== undefined || sameItem)) {
+      if (req.itemId !== undefined) {
+        const label = `item ${envelope.itemNames[req.itemId] ?? req.itemId}`;
+        (itemMatches(req.itemId, now) ? piecesDone : piecesLeft).push(label);
+      }
+      for (const s of req.sockets) {
+        const have = s.kind === 'component' ? now?.componentId : now?.augmentId;
+        const label = `${s.kind} ${envelope.socketableNames[s.id] ?? s.id}`;
+        (have === s.id ? piecesDone : piecesLeft).push(label);
+      }
+      state = piecesLeft.length === 0 ? 'done' : piecesDone.length > 0 ? 'partial' : 'moved';
+    }
 
     out.push({
       slot,
       wasId,
       nowId,
-      applied: equipApplied || (sameItem && socketApplied) || (socketApplied && !equipTo.has(key)),
+      state,
       changed: sameItem ? 'sockets' : 'item',
       socketNames: nowSockets,
+      piecesDone,
+      piecesLeft,
     });
   }
   return out;

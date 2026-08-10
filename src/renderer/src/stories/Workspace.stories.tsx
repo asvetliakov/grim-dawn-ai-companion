@@ -206,8 +206,14 @@ export const AdviceAfterActing: Story = {
     const advice = fixtureAdvice(snapshot);
     const bag = snapshot.bags[0]!.items;
 
-    // Hands: the EQUIP has been carried out, so the gauntlets the plan named are
-    // now the worn item.
+    // Belt: the EQUIP has been carried out in full — it names no fits, so the
+    // girdle being the worn item is the whole instruction done.
+    const belt = advice.verdictRows.find((r) => r.slot === 'Belt')!;
+    snapshot.equipment[8] = bag.find((item) => item.docId === belt.nextId) ?? snapshot.equipment[8]!;
+    // Hands: the EQUIP is carried out but its `fits` are not — the gauntlets are
+    // on with their planned component and augment still to apply. Part-way is a
+    // state of its own: equipped-then-fitted must not read as CHANGED, and
+    // equipped-but-unfitted must not read as DONE.
     const hands = advice.verdictRows.find((r) => r.slot === 'Hands')!;
     snapshot.equipment[5] = bag.find((item) => item.docId === hands.nextId) ?? snapshot.equipment[5]!;
     // Feet: something the plan never mentioned, so its verdict there is about

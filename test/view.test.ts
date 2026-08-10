@@ -23,7 +23,7 @@ import { resolveCharacter, type ResolvedItem } from '../src/core/resolve.js';
 import { parseGdc } from '../src/core/save/gdc.js';
 import { accountFiles, loadSnapshot } from '../src/core/session.js';
 import { resolveSettings } from '../src/core/settings.js';
-import { buildUiSnapshot, type UiGrid } from '../src/core/view.js';
+import { buildUiSnapshot, type UiGrid, type UiSocketable } from '../src/core/view.js';
 import type { PositionedItem } from '../src/core/save/types.js';
 
 import {
@@ -380,6 +380,52 @@ describe.skipIf(skipSaves)('buildUiSnapshot', () => {
         for (const line of it.tooltip.grantedSkills) {
           expect(fromParts, `${it.display} repeats a socketable's grant`).not.toContain(line);
         }
+      }
+    } finally {
+      icons.close();
+    }
+  });
+
+  /**
+   * Where to obtain a socketable. A proposed one is installed nowhere, so its
+   * tooltip has to answer "where do I get one" — and every answer is already
+   * derived for the dossier (§8's census, the recipe view, §9's faction stock),
+   * so the dictionary carries the same facts as prose lines.
+   */
+  it('says where to obtain a socketable', async () => {
+    const db = await gameDb();
+    const icons = createIconService();
+    try {
+      const snap = loadSnapshot(db, resolveSettings(), { character: CHARACTERS[0] });
+      const ui = await buildUiSnapshot(snap, icons);
+      const all = Object.values(ui.socketables);
+
+      // Faction augments name the vendor, the tier and the price.
+      const buys = all.filter((p) => p.obtain?.some((l) => l.startsWith('Buy: ')));
+      expect(buys.length, 'no socketable says which faction sells it').toBeGreaterThan(0);
+      for (const p of buys) {
+        expect(p.obtain!.find((l) => l.startsWith('Buy: '))).toMatch(
+          /^Buy: .+ \((Friendly|Respected|Honored|Revered)\), [\d,]+ iron$/,
+        );
+      }
+
+      // Loose copies say which container they are in; this character's live
+      // components sit in the materials store.
+      const onHand = all.filter((p) => p.obtain?.some((l) => l.startsWith('On hand: ')));
+      expect(onHand.length, 'no socketable reports a loose copy').toBeGreaterThan(0);
+
+      // A learned blueprint shows up as a craft line.
+      const craftable = all.filter((p) => p.obtain?.some((l) => l.startsWith('Craftable now')));
+      expect(craftable.length, 'no socketable reports a learned blueprint').toBeGreaterThan(0);
+
+      // The installed copy carries the same obtain lines as the dictionary
+      // entry — one derivation, keyed by record, read from both places.
+      const installed = [...ui.equipment, ...ui.weaponSets.flat()]
+        .filter((i) => i !== null)
+        .flatMap((i) => [i.tooltip.component, i.tooltip.augment])
+        .filter((p): p is UiSocketable => p !== undefined && p.id !== undefined);
+      for (const part of installed) {
+        expect(part.obtain).toEqual(ui.socketables[part.id!]?.obtain);
       }
     } finally {
       icons.close();

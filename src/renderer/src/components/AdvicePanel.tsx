@@ -175,10 +175,11 @@ export function AdvicePanel({
   const stale = staleIds(adviceMarks(plan), (id) => byId.has(id));
   // Which rows have already been carried out. The *notices* about this live at the
   // top of the loadout, next to the gear they are about — see `DriftNotice`; here
-  // it is only needed to strike the finished rows through.
+  // it is only needed to strike the finished rows through. Only fully-done rows:
+  // striking means "record, not instruction", and a partial slot still carries one.
   const doneSlots = new Set(
     loadoutDrift(advice, currentWorn(snapshot), heldSet)
-      .filter((d) => d.applied)
+      .filter((d) => d.state === 'done')
       .map((d) => slotKey(d.slot)),
   );
   return (
