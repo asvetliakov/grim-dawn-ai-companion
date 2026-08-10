@@ -1236,7 +1236,14 @@ program
         let provider;
         let repairProvider;
         try {
-          const base = { ...(model !== undefined ? { model } : {}), timeoutMs, fast };
+          // A path pinned in settings wins over the bare name for both calls.
+          const binary = settings.providerBinary?.[providerId];
+          const base = {
+            ...(model !== undefined ? { model } : {}),
+            ...(binary ? { binary } : {}),
+            timeoutMs,
+            fast,
+          };
           provider = createProvider(providerId, { ...base, effort });
           // The corrective call is an edit, so it runs at `repairEffort`.
           repairProvider = createProvider(providerId, { ...base, effort: repairEffort(effort) });

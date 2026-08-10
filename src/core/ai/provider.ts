@@ -560,6 +560,11 @@ export interface ProviderOptions {
   effort?: string;
   timeoutMs?: number;
   systemPrompt?: string;
+  /**
+   * The CLI to run, when the bare name is not enough — a packaged app inherits
+   * launchd's PATH, not the user's. Backends without a binary ignore it.
+   */
+  binary?: string;
   /** Output-speed tier, where the backend has one (codex `service_tier=fast`). Others ignore it. */
   fast?: boolean;
 }

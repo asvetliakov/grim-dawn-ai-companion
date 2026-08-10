@@ -32,6 +32,25 @@ export const settingsSchema = z.object({
   model: z.string().min(1).optional(),
   /** `ultra` exists only on the codex backend; the pane scopes the choices per backend. */
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']).optional(),
+  /**
+   * Where each backend's CLI actually is, keyed by provider id — an absolute
+   * path, used in place of the bare `claude`/`codex` name.
+   *
+   * This exists because **a packaged macOS app does not have your PATH**. A
+   * `.app` is launched by launchd, not by a shell, so it inherits launchd's
+   * environment — `/usr/bin:/bin:/usr/sbin:/sbin` and nothing else — while
+   * `~/.local/bin` (where both CLIs' installers put their binaries) and every
+   * other directory a `.zprofile` adds are absent. The same build run from a
+   * terminal works, which is what makes the report confusing: `npm run dev` and
+   * `npm run start` inherit the shell, and even `open release/….app` does not,
+   * because `open` hands the launch to launchd too. Windows needs none of this
+   * — a GUI process there gets the user's PATH from the registry.
+   *
+   * Keyed rather than a single field because a path belongs to a backend the
+   * same way a model does: `/Users/me/.local/bin/claude` means nothing to the
+   * codex provider, and one field would hand it over on the next switch.
+   */
+  providerBinary: z.record(z.string(), z.string().min(1)).optional(),
   /** Seconds before an advice request is killed. */
   advisorTimeoutSeconds: z.number().int().positive().optional(),
   /**

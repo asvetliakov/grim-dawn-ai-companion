@@ -24,7 +24,7 @@ import {
   type AdvisorRequest,
   type AdvisorResult,
 } from './provider.js';
-import { defaultSpawn, runCommand, stderrTail, type RunResult, type SpawnFn } from './subprocess.js';
+import { defaultSpawn, notFoundMessage, runCommand, stderrTail, type RunResult, type SpawnFn } from './subprocess.js';
 
 export type { SpawnFn } from './subprocess.js';
 
@@ -101,9 +101,7 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
   const spawn = opts.spawn ?? defaultSpawn;
   const runOpts = {
     label: 'claude CLI',
-    notFoundMessage:
-      `claude CLI not found (looked for ${JSON.stringify(binary)} on PATH) — install Claude Code, ` +
-      'set the binary in settings, or switch provider',
+    notFoundMessage: notFoundMessage('claude CLI', binary, 'install Claude Code'),
   };
   const run = (args: readonly string[], input: string, timeout: number, signal?: AbortSignal, onStdout?: (chunk: string) => void): Promise<RunResult> =>
     runCommand(spawn, binary, args, input, timeout, signal, { ...runOpts, ...(onStdout ? { onStdout } : {}) });

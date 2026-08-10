@@ -35,7 +35,7 @@ import {
   type AdvisorRequest,
   type AdvisorResult,
 } from './provider.js';
-import { defaultSpawn, runCommand, stderrTail, type RunResult, type SpawnFn } from './subprocess.js';
+import { defaultSpawn, notFoundMessage, runCommand, stderrTail, type RunResult, type SpawnFn } from './subprocess.js';
 
 export const CODEX_CLI_ID = 'codex-cli';
 
@@ -73,9 +73,6 @@ export interface CodexCliOptions {
   spawn?: SpawnFn;
 }
 
-const NOT_INSTALLED =
-  'codex CLI not found on PATH — install the Codex CLI (`npm install -g @openai/codex`), or switch provider';
-
 const NOT_LOGGED_IN =
   'the codex CLI is not signed in — run `codex login` once to sign in with your ChatGPT account, then try again';
 
@@ -87,10 +84,17 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const systemPrompt = opts.systemPrompt ?? ADVISOR_SYSTEM_PROMPT;
   const spawn = opts.spawn ?? defaultSpawn;
+  // Per-instance rather than a module constant, because it names the binary it
+  // looked for — which a settings path makes worth stating.
+  const notInstalled = notFoundMessage(
+    'codex CLI',
+    binary,
+    'install the Codex CLI (`npm install -g @openai/codex`)',
+  );
   const run = (args: readonly string[], input: string, timeout: number, signal?: AbortSignal, onStdout?: (chunk: string) => void): Promise<RunResult> =>
     runCommand(spawn, binary, args, input, timeout, signal, {
       label: 'codex CLI',
-      notFoundMessage: NOT_INSTALLED,
+      notFoundMessage: notInstalled,
       ...(onStdout ? { onStdout } : {}),
     });
 
@@ -100,7 +104,7 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
       const probe = await run(['login', 'status'], '', 15_000);
       return probe.code === 0 ? 'ok' : 'logged-out';
     } catch (err) {
-      return (err as Error).message === NOT_INSTALLED ? 'missing' : 'logged-out';
+      return (err as Error).message === notInstalled ? 'missing' : 'logged-out';
     }
   };
 
@@ -116,7 +120,7 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
       // minutes in into the right sentence now. This is also the sentence the
       // availability gate harvests when `available()` said no.
       const status = await loginStatus();
-      if (status === 'missing') throw new Error(NOT_INSTALLED);
+      if (status === 'missing') throw new Error(notInstalled);
       if (status === 'logged-out') throw new Error(NOT_LOGGED_IN);
 
       const args = [

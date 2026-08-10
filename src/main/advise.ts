@@ -359,8 +359,12 @@ function configuredProvider(settings: Settings, role: 'primary' | 'repair' = 'pr
   const defaults = providerDefaults(settings.provider);
   const effort = settings.effort ?? defaults.effort;
   const model = settings.model ?? defaults.model;
+  // Where that backend's CLI is, when it is not on the app's PATH — which for a
+  // packaged macOS app is launchd's four directories rather than the user's own.
+  const binary = settings.providerBinary?.[settings.provider];
   return createProvider(settings.provider, {
     ...(model !== undefined ? { model } : {}),
+    ...(binary ? { binary } : {}),
     effort: role === 'repair' ? repairEffort(effort) : effort,
     timeoutMs: (settings.advisorTimeoutSeconds ?? 0) * 1000 || DEFAULT_TIMEOUT_MS,
     // Codex fast mode; other backends ignore it. Absent means on.

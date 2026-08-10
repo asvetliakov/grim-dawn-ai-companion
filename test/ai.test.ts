@@ -461,6 +461,26 @@ describe('claude-cli provider', () => {
     expect(args[args.indexOf('--effort') + 1]).toBe('xhigh');
   });
 
+  /**
+   * The escape hatch for the PATH a packaged app does not have: a `.app` is
+   * launched by launchd, so `~/.local/bin` — where both CLIs install
+   * themselves — is not on it, and the settings path is what a run then spawns.
+   */
+  it('runs the binary it is given rather than the bare name', async () => {
+    const spawn = fakeSpawn((_run, child) => finish(child, envelope('ok')));
+    await createClaudeCliProvider({ spawn: spawn.fn, binary: '/opt/bin/claude' }).advise({ contextDoc: 'x' });
+    expect(spawn.runs[0]!.binary).toBe('/opt/bin/claude');
+  });
+
+  it('names the binary it looked for when it is not there', async () => {
+    const spawn: SpawnFn = () => {
+      throw Object.assign(new Error('spawn ENOENT'), { code: 'ENOENT' });
+    };
+    await expect(
+      createClaudeCliProvider({ spawn, binary: '/opt/bin/claude' }).advise({ contextDoc: 'x' }),
+    ).rejects.toThrow('/opt/bin/claude');
+  });
+
   it('appends the question after the document', async () => {
     const spawn = fakeSpawn((_run, child) => finish(child, envelope('ok')));
     await createClaudeCliProvider({ spawn: spawn.fn }).advise({

@@ -93,6 +93,8 @@ const BACKENDS: readonly {
   id: string;
   label: string;
   note: string;
+  /** The command it runs, and the placeholder for the path field. */
+  command?: string;
   models: readonly { id: string; label: string }[];
   efforts: readonly { id: string; label: string; note: string }[];
   defaultEffort: string;
@@ -101,6 +103,7 @@ const BACKENDS: readonly {
     id: 'claude-cli',
     label: 'Claude Code',
     note: 'Runs the `claude` command already on this machine and bills through the subscription it is signed into.',
+    command: 'claude',
     // Opus is what the advice quality was measured on; sonnet is untested here.
     models: [
       { id: 'opus', label: 'opus (recommended)' },
@@ -113,6 +116,7 @@ const BACKENDS: readonly {
     id: 'codex-cli',
     label: 'OpenAI (ChatGPT subscription)',
     note: 'Runs the `codex` command and bills through the ChatGPT subscription it is signed into — run `codex login` once if it is not.',
+    command: 'codex',
     // gpt-5.6-sol first: it is the provider's default, and the pane's
     // "Default (…)" line reads the first entry. The 5.4-and-older generations
     // the CLI still lists are deliberately left out of the picker; a
@@ -158,6 +162,9 @@ export function SettingsPane({
     id: providerId,
     label: providerId,
     note: 'A backend set by hand in settings.json.',
+    // No command name to offer, so no path field: this is a backend the pane
+    // does not know, and guessing what it runs would be a wrong placeholder.
+    command: undefined as string | undefined,
     models: [] as readonly { id: string; label: string }[],
     efforts: GENERIC_EFFORTS,
     defaultEffort: 'medium',
@@ -271,6 +278,22 @@ export function SettingsPane({
           </select>
         </label>
         <p className="settings-hint">{backend.note}</p>
+        {backend.command && (
+          <PathField
+            label="Command"
+            value={settings?.providerBinary?.[backend.id] ?? ''}
+            placeholder={backend.command}
+            hint={
+              `Blank runs \`${backend.command}\` from the PATH — which an installed app does not inherit from ` +
+              `your terminal, so a command that works in a shell can still come back "not found on PATH" here. ` +
+              `If it does, run \`which ${backend.command}\` in a terminal and put the full path it prints in this box.`
+            }
+            options={[]}
+            onCommit={(path) =>
+              onChange({ providerBinary: withBinary(settings?.providerBinary, backend.id, path) })
+            }
+          />
+        )}
         <label className="settings-row">
           <span className="settings-label">Model</span>
           <select
@@ -382,6 +405,24 @@ export function SettingsPane({
       </section>
     </Modal>
   );
+}
+
+/**
+ * The binary map with one backend's entry set or cleared.
+ *
+ * Cleared means *removed*, and an empty map means the key goes too: settings.json
+ * is a file people hand-edit, and a `"providerBinary": {}` left behind reads as a
+ * setting that is on with nothing in it.
+ */
+function withBinary(
+  current: Record<string, string> | undefined,
+  id: string,
+  path: string,
+): Record<string, string> | undefined {
+  const next = { ...current };
+  if (path) next[id] = path;
+  else delete next[id];
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 /**

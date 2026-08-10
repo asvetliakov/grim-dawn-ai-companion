@@ -144,6 +144,26 @@ export function runCommand(
   });
 }
 
+/**
+ * What "the binary is not there" says to the user, in one voice for both
+ * backends.
+ *
+ * It names the packaged-app case because that is the one that reads as a bug in
+ * the tool: on macOS a `.app` is launched by launchd, so it inherits
+ * `/usr/bin:/bin:/usr/sbin:/sbin` and *not* the PATH a `.zprofile` builds —
+ * `~/.local/bin`, where both CLIs' own installers put their binaries, is
+ * missing. The same build started from a terminal works, which is exactly why
+ * "but it is on my PATH" is the right thing for the reader to be thinking. The
+ * settings field is the answer, so the sentence points at it.
+ */
+export function notFoundMessage(label: string, binary: string, install: string): string {
+  return (
+    `${label} not found (looked for ${JSON.stringify(binary)} on PATH) — ${install}, ` +
+    'or set its full path in Settings → Advice. An installed app does not inherit the PATH ' +
+    'your terminal has, so a command that runs in a shell can still need its path set here.'
+  );
+}
+
 function notFound(err: unknown, opts: RunOptions): Error {
   const code = (err as NodeJS.ErrnoException).code;
   if (code === 'ENOENT') return new Error(opts.notFoundMessage);
