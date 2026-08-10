@@ -919,6 +919,15 @@ function devotionSection(out: Writer, ctx: RenderContext): void {
   );
 }
 
+/**
+ * Whether the build's damage actually lands through weapon attacks. Flat gear
+ * damage — and therefore the payload index — describes real output only when it
+ * does; the cadence line and the yardstick advice both hang off this.
+ */
+function ridesWeaponAttacks(d: CharacterAggregate['damage']): boolean {
+  return d.weaponAttack.composition.length > 0 || d.skillDamage.some((s) => s.weaponDamagePct);
+}
+
 function damageSection(out: Writer, ctx: RenderContext): void {
   const d = ctx.aggregate.damage;
   out.h(3, 'Damage profile (flat figures are post-conversion midpoints)');
@@ -944,8 +953,15 @@ function damageSection(out: Writer, ctx: RenderContext): void {
 
   if (d.payloadIndex) {
     out.line();
+    // The index measures what lands through weapon attacks, so it is the damage
+    // yardstick only for a build whose damage actually rides them. On a caster
+    // it prices a minor channel, and a plan told "you spent 30% of the payload"
+    // would defend a cost that barely exists.
+    const yardstick = ridesWeaponAttacks(d)
+      ? "State a plan's overall damage cost as a delta against this index."
+      : "This build's damage does not ride weapon attacks (see the cadence line below), so this index prices only a minor channel — judge a plan's damage cost against the build-focus types' `+%` columns above instead, and quote the index delta only as the secondary figure it is.";
     out.line(
-      `**Weapon payload index: ${num(d.payloadIndex)}** — the post-conversion flat pools above, each scaled by its own \`+%\` column (incl. \`+% Total Damage\`), summed. An index in arbitrary units for comparing this loadout against a proposed one — **not DPS**: attack speed (§3 carries the rate), crit, skill \`% Weapon Damage\` multipliers and §3's attribute damage bonus are all excluded. State a plan's overall damage cost as a delta against this index.`,
+      `**Weapon payload index: ${num(d.payloadIndex)}** — the post-conversion flat pools above, each scaled by its own \`+%\` column (incl. \`+% Total Damage\`), summed. An index in arbitrary units for comparing this loadout against a proposed one — **not DPS**: attack speed (§3 carries the rate), crit, skill \`% Weapon Damage\` multipliers and §3's attribute damage bonus are all excluded. ${yardstick}`,
     );
   }
 
@@ -1014,7 +1030,7 @@ function damageSection(out: Writer, ctx: RenderContext): void {
   }
 
   if (d.ranked.length) {
-    const ridesAttack = d.weaponAttack.composition.length > 0 || d.skillDamage.some((s) => s.weaponDamagePct);
+    const ridesAttack = ridesWeaponAttacks(d);
     out.line();
     out.line(
       ridesAttack
@@ -2369,7 +2385,12 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line('Give the projection as concrete numbers where §3–§5 gave numbers, and say plainly when a figure cannot be derived from this document instead of estimating it silently.');
   out.line();
-  out.line('Trading some damage for a capped resistance is normal; a plan that costs on the order of a third of the build\'s primary `+%` damage pool is not, unless the resistances it buys are otherwise broken. §4\'s **weapon payload index** is the yardstick: state the plan\'s index delta as a percentage — low single digits spent on a genuinely under-cap resistance is normal, tens of percent needs the resistance case spelled out.');
+  out.line(
+    'Trading some damage for a capped resistance is normal; a plan that costs on the order of a third of the build\'s primary `+%` damage pool is not, unless the resistances it buys are otherwise broken. ' +
+      (ridesWeaponAttacks(ctx.aggregate.damage)
+        ? '§4\'s **weapon payload index** is the yardstick: state the plan\'s index delta as a percentage — low single digits spent on a genuinely under-cap resistance is normal, tens of percent needs the resistance case spelled out.'
+        : 'This build\'s damage does not ride weapon attacks, so §4\'s weapon payload index prices only a minor channel — the yardstick here is the build-focus types\' `+%` damage pools: state the plan\'s damage cost against those columns, and quote the index delta only as the secondary figure it is.'),
+  );
   out.line();
   out.line('Then a **Next levels** section, ordered cheapest-first, from the costed thresholds in §12 — but **only those worth committing to**: what to spend and which held items it buys, dismissing a competing rung in a clause rather than a row of its own. Attribute points and farming targets are in scope; skill and devotion trees are not.');
   out.line();

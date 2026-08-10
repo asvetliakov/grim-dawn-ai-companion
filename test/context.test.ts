@@ -533,6 +533,36 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     expect(doc.markdown).not.toMatch(/\+-\d/);
   });
 
+  it('switches the payload yardstick for a build whose damage does not ride weapon attacks', async () => {
+    const input = await context('_Suchka');
+    // _Suchka's damage rides weapon attacks, so the index is the yardstick.
+    const attack = buildContextDoc(input);
+    expect(attack.markdown).toContain("State a plan's overall damage cost as a delta against this index.");
+    expect(attack.markdown).toContain('**weapon payload index** is the yardstick');
+
+    // The same character with the weapon-attack channels cleared is a caster:
+    // the index prices a minor channel, and §4 and §11 must both say so and
+    // point at the `+%` pools instead.
+    const d = input.aggregate.damage;
+    const caster: ContextInput = {
+      ...input,
+      aggregate: {
+        ...input.aggregate,
+        damage: {
+          ...d,
+          weaponAttack: { ...d.weaponAttack, composition: [] },
+          skillDamage: d.skillDamage.map((s) => ({ ...s, weaponDamagePct: 0 })),
+        },
+      },
+    };
+    const doc = buildContextDoc(caster);
+    expect(doc.markdown).toContain("rides §3's **casting speed** line");
+    expect(doc.markdown).toContain("judge a plan's damage cost against the build-focus types' `+%` columns");
+    expect(doc.markdown).toContain('the yardstick here is the build-focus types');
+    expect(doc.markdown).not.toContain("State a plan's overall damage cost as a delta against this index.");
+    expect(doc.markdown).not.toContain('**weapon payload index** is the yardstick');
+  });
+
   it('renders the resistance matrix with exactly the aggregate’s numbers', async () => {
     const input = await context('_Suchka');
     const doc = buildContextDoc(input);
