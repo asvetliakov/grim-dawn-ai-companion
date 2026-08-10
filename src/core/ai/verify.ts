@@ -159,8 +159,17 @@ const TYPE_TAIL_WORD = '(?:\\bDecay\\b|\\bTrauma\\b)';
  * What makes a stat reference unambiguous. A conversion arrow counts: in
  * `30% Vitality Damage → Pierce Damage` the arrow is what tells you the first
  * type is a source, and both ends still have to name their kind themselves.
+ *
+ * `Absorb` and `Share` are qualifiers too, added after the first post-8B live
+ * run's only surviving warning turned out to be two false alarms: "525
+ * Physical/Pierce absorption proc" names absorption — a stat kind of its own,
+ * the one statfmt prints as `Physical Damage Absorption` — and "the 10%
+ * Frostburn share of the weapon attack" is a §4 composition share, which a
+ * resistance cannot be.
  */
-const QUALIFIER = '(?:Resist|Res\\b|Damage|Dmg|Retaliation|Retal|Armor|Armour|Duration|Conversion|Converted|→)';
+const QUALIFIER =
+  // `Absor`, not `Absorb`: the noun is absor*p*tion, so the verb stem misses it.
+  '(?:Resist|Res\\b|Damage|Dmg|Retaliation|Retal|Armor|Armour|Duration|Conversion|Converted|Absor|Share|→)';
 
 /**
  * What may sit between a damage type and the qualifier that names its kind.

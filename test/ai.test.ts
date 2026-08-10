@@ -1265,6 +1265,17 @@ describe('ambiguous stat references', () => {
     expect(ambiguousStats('Weapon payload index: 7739 — this plan costs 3% of it')).toEqual([]);
   });
 
+  it('accepts absorption and composition shares — the first post-8B run’s surviving warning was these', () => {
+    // Both are verbatim from the opus post-8B live answer, and both were false
+    // alarms on correct prose: absorption is a stat kind of its own (statfmt
+    // prints `525 Physical Damage Absorption`), and a share of the weapon
+    // attack is a §4 composition claim a resistance cannot make.
+    expect(ambiguousStats('a 525 Physical/Pierce absorption proc')).toEqual([]);
+    expect(ambiguousStats('which does feed the 10% Frostburn share of the weapon attack')).toEqual([]);
+    // The qualifier still has to be there: the same numbers bare stay flagged.
+    expect(ambiguousStats('a 525 Physical proc')).toEqual(['525 Physical']);
+  });
+
   it('reports it against the plan, in reasons and in gains/costs', () => {
     const warnings = checkPlan(
       {
