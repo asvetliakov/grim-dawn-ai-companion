@@ -450,6 +450,18 @@ function ironOutlook(input: ContextInput, recipes: RecipeView): IronOutlook {
   };
 }
 
+/**
+ * Overcap is an endgame target, not a levelling one: enemy resistance
+ * reduction is what it buys against, and gear before ~94 turns over too fast
+ * for deliberate overcap to pay. 94 is when endgame gear goes on and stays on.
+ */
+const OVERCAP_ENDGAME_LEVEL = 94;
+
+/** Whether §2 states the +20–30 overcap target, or "the cap itself". */
+function overcapEndgame(ctx: RenderContext): boolean {
+  return ctx.aggregate.difficulty === 'Ultimate' && ctx.save.level >= OVERCAP_ENDGAME_LEVEL;
+}
+
 function gameRules(out: Writer, ctx: RenderContext): void {
   const { aggregate, db } = ctx;
   const caps = db.speedCaps();
@@ -461,7 +473,11 @@ function gameRules(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line(`> ${aggregate.difficulty}: ${penalty}`);
   out.line();
-  out.line('Enemies in the late game carry resistance reduction of their own, so the community target is **+20 to +30 overcap** on the resistances a build actually faces, not exactly 80. Being under cap on a resistance the character meets constantly is the single most common cause of death.');
+  out.line(
+    overcapEndgame(ctx)
+      ? 'Enemies in the late game carry resistance reduction of their own, so at this character\'s stage the community target is **+20 to +30 overcap** on the resistances a build actually faces, not exactly 80. Being under cap on a resistance the character meets constantly is the single most common cause of death.'
+      : 'Enemies in the late game carry resistance reduction of their own, and at level 94+ on Ultimate the community therefore targets +20 to +30 over cap — but this character is not there yet, so **the overcap target is the cap itself**: overcap picked up along the way is welcome buffer, never something to trade damage, health or an under-cap resistance for, because gear turns over too fast before endgame Ultimate for deliberate overcap to pay. Being under cap on a resistance the character meets constantly is the single most common cause of death.',
+  );
 
   out.line();
   out.line(
@@ -789,11 +805,14 @@ function resistanceMatrix(out: Writer, ctx: RenderContext): void {
   // figure the game rules section just told it to ignore.
   const under = RESIST_COLUMNS.filter((c) => c.key !== 'physical' && (overcap[c.key] ?? 0) < 0);
   const physicalUnder = (overcap['physical'] ?? 0) < 0;
+  const pastCap = overcapEndgame(ctx)
+    ? 'points past cap count toward the §2 overcap target; only points past *that* are wasted'
+    : 'points spent past cap are wasted except as buffer against enemy resistance reduction — §2: overcap is not a target at this stage';
   out.line();
   out.line(
     under.length
-      ? `**Under cap** (each figure is that resistance, in points): ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(' · ')}. Everything else is at or over cap; points spent past cap are wasted except as buffer against enemy resistance reduction.`
-      : `**Every ${physicalUnder ? 'cappable ' : ''}resistance is at or above its cap** at this difficulty. Further resistance is buffer against enemy resistance reduction only.`,
+      ? `**Under cap** (each figure is that resistance, in points): ${under.map((c) => `${c.label} ${num(overcap[c.key] ?? 0)}`).join(' · ')}. Everything else is at or over cap; ${pastCap}.`
+      : `**Every ${physicalUnder ? 'cappable ' : ''}resistance is at or above its cap** at this difficulty. Beyond that, ${pastCap}.`,
   );
   if (physicalUnder) {
     out.line();
@@ -2523,7 +2542,7 @@ function task(out: Writer, ctx: RenderContext): void {
     'the **enemy resistance-reduction list** restated when a change adds, removes or re-ranks an RR source — RR multiplies on-type damage, and within the flat and percent-reduced categories only the strongest source counts',
     '**skill ranks that move** — a swap that changes `+N to <skill>` shifts every stat read at that rank, including resistances already counted above; attack skills, RR skills and moving-stat buffs have their moved stats in §4\'s rank-by-rank tables, so read them there rather than estimating',
     '**attack, casting and movement speed** restated against their caps, using §3\'s figures and headroom — attack speed multiplies all damage throughput, so a swap that moves it has a damage consequence that the §4 profile does not show',
-    'anything pushed **past a cap** — speed past the §3 ceilings, or a resistance past its cap (both are wasted stats, not gains)',
+    'anything pushed **past a cap** — speed past the §3 ceilings, or a resistance past its §2 overcap target (both are wasted stats, not gains)',
   ]);
   out.line();
   out.line('Give the projection as concrete numbers where §3–§5 gave numbers, and say plainly when a figure cannot be derived from this document instead of estimating it silently.');
@@ -2543,7 +2562,7 @@ function task(out: Writer, ctx: RenderContext): void {
     'never propose a swap that leaves the character unable to meet an item\'s requirements once the outgoing item\'s bonuses and reductions are gone — re-check the whole post-swap loadout',
     'never remove the last dual-wield enabler while leaving two one-handed weapons equipped',
     'never propose moving or trading an item that is soulbound by an applied augment',
-    'never count `+% speed` past the caps in §2, and never count a resistance past its cap as a gain',
+    'never count `+% speed` past the caps in §2, and never count a resistance past its §2 overcap target as a gain',
     'state when a recommendation depends on something §3 lists as not counted',
   ]);
 }

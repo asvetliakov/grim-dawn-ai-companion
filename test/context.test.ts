@@ -620,6 +620,36 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     expect(elite.markdown).toContain('Elite penalty');
   });
 
+  it('states the +20–30 overcap target only on Ultimate at endgame level', async () => {
+    const ultimate = await context('_Suchka', 'Ultimate');
+    const atLevel = (input: ContextInput, level: number): ContextInput => ({
+      ...input,
+      save: { ...input.save, level },
+    });
+
+    // Ultimate + level ≥94: overcap is a target, and §3 measures against it.
+    const endgame = buildContextDoc(atLevel(ultimate, 100));
+    expect(endgame.markdown).toContain('the community target is **+20 to +30 overcap**');
+    expect(endgame.markdown).not.toContain('the overcap target is the cap itself');
+    expect(endgame.markdown).toContain('§2 overcap target');
+
+    // Same difficulty, real level (82): the level half of the gate.
+    const levelling = buildContextDoc(ultimate);
+    expect(levelling.markdown).toContain('the overcap target is the cap itself');
+    expect(levelling.markdown).not.toContain('the community target is **+20 to +30 overcap**');
+    expect(levelling.markdown).toContain('overcap is not a target at this stage');
+
+    // Endgame level but below Ultimate: the difficulty half of the gate.
+    const elite = buildContextDoc(atLevel(await context('_Suchka', 'Elite'), 100));
+    expect(elite.markdown).toContain('the overcap target is the cap itself');
+    expect(elite.markdown).not.toContain('the community target is **+20 to +30 overcap**');
+
+    // §11's hard constraint measures against the target in both regimes.
+    for (const doc of [endgame, levelling]) {
+      expect(doc.markdown).toContain('never count a resistance past its §2 overcap target as a gain');
+    }
+  });
+
   it('gives every equipped item a requirement line and real stat lines', async () => {
     const input = await context('_Suchka');
     const doc = buildContextDoc(input);
