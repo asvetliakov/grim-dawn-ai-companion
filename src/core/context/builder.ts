@@ -1992,7 +1992,7 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line('Give the projection as concrete numbers where §3–§5 gave numbers, and say plainly when a figure cannot be derived from this document instead of estimating it silently.');
   out.line();
-  out.line('Then a **Next levels** section, ordered cheapest-first, using the thresholds §12 has already grouped and costed. One line per threshold: what to spend, what it unlocks, and whether it is worth committing to. Attribute points and farming targets are in scope; skill and devotion trees are not.');
+  out.line('Then a **Next levels** section, ordered cheapest-first, from the costed thresholds in §12 — but **only those worth committing to**: what to spend and which held items it buys, dismissing a competing rung in a clause rather than a row of its own. Attribute points and farming targets are in scope; skill and devotion trees are not.');
   out.line();
   out.line('Hard constraints:');
   out.bullets([
@@ -2112,7 +2112,8 @@ function unlockLadder(out: Writer, ctx: RenderContext, selection: CandidateSelec
     `${plural(blocked.length, 'candidate')} in §7 fail a requirement. They are grouped below by the **threshold they share**, cheapest first, so a single purchase can be weighed against everything it unlocks at once — ` +
       `the largest group is "${biggest.heading}", which alone unlocks ${biggest.items.length}. ` +
       `Unspent now: **${plural(aggregate.attributes.unspentPoints, 'attribute point')}**. One point is ${lp.attributePerPoint.physique} Physique / ${lp.attributePerPoint.cunning} Cunning / ${lp.attributePerPoint.spirit} Spirit, and each level grants ${lp.attributePointsPerLevel} (both from the game's level table). ` +
-      `An item with two gaps appears under both and says so — it unlocks only when **all** of them are met.`,
+      `An item with two gaps appears under both and says so — it unlocks only when **all** of them are met. ` +
+      `A **costing table, not a to-do list**: a rung earns a "Next levels" line only where something you hold hangs off it.`,
   );
 
   for (const entry of ordered) {

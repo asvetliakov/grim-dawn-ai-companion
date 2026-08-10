@@ -403,13 +403,15 @@ export function AdvicePanel({
           )}
 
           {/*
-            The ladder: what to spend next, what it buys, and — the part that
-            makes it advice rather than a list — whether it is worth committing
-            to. Two of the four entries on the first live run were "skip this",
-            which is a recommendation that only exists here: §12 of the dossier
-            lists every blocked candidate so a threshold can be *costed*, and
-            without this section the reader is left holding the costing and no
-            verdict on it.
+            The ladder: what to spend next and what it buys. §12 of the dossier
+            costs *every* blocked candidate, and without this section the reader
+            is left holding that costing and no verdict on it — but the section
+            is the plan's commitments, not the ladder re-typed. A live gpt-5.6
+            run mirrored all sixteen rungs back, fourteen of them "skip,
+            off-build", each unlock rendered here as a name to go and find in a
+            stash tab: two hundred words telling the reader to hunt down gear
+            the same answer advises against. `uncommitted-next-level` is the
+            check, so an unlock here is an item the plan holds.
 
             An attribute line is one decision, not one per item, which is why
             these are thresholds with items hanging off them rather than items

@@ -765,11 +765,12 @@ check('a hold names its slot and what it displaces', /for Head over /.test(hold)
 check('and what it gains', (await page.locator('.hold-list .gain').count()) >= 1);
 
 // The ladder. §12 of the dossier costs every threshold; a costing with no verdict
-// on it is not advice, and two of the four entries on the first live run were
-// "skip this" — a recommendation that exists nowhere else.
+// on it is not advice — but only the thresholds the plan commits to get a row.
+// A live gpt-5.6 run mirrored all sixteen rungs back, fourteen of them "skip,
+// off-build", so a rejected rung is now dismissed inside the committed line.
 const steps = await page.locator('.next-levels li').allInnerTexts();
-check('the plan tab carries the next-levels ladder', steps.length === 2, steps.join(' | ').replace(/\n/g, ' '));
-check('each threshold says whether it is worth committing to', /Skip/.test(steps.join(' ')));
+check('the plan tab carries the next-levels ladder', steps.length === 1, steps.join(' | ').replace(/\n/g, ' '));
+check('the committed threshold dismisses the rung competing with it', /not into the 4-point Spirit rung/.test(steps.join(' ')));
 const unlocks = await page.locator('.next-levels .level-unlocks').first().innerText();
 check('and names what it unlocks, by name rather than by id', !/#/.test(unlocks), unlocks);
 // Hovering one lights everything it unlocks, wherever those items live.

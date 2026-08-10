@@ -153,6 +153,14 @@ export const PLAN_WARNING_KINDS = [
    * observed to make, decided mechanically so the repair round catches it.
    */
   'unfilled-socket',
+  /**
+   * A `nextLevels` entry naming an unlock the plan does not HOLD. The ladder in
+   * §12 costs *every* blocked candidate, most of which lose to what is already
+   * worn; mirroring it back turns two actionable thresholds into a page of
+   * "skip, off-build" rows, and the UI renders each unlock as an item to go and
+   * find. A threshold's unlocks are what the reader will put on when it is met.
+   */
+  'uncommitted-next-level',
 ] as const;
 
 export type PlanWarningKind = (typeof PLAN_WARNING_KINDS)[number];

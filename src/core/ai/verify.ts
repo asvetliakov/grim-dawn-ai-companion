@@ -300,8 +300,35 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
   }
   // Unlocks are item references like any other; a hallucinated one would
   // otherwise sail through because nothing else reads this array.
+  //
+  // And `nextLevels` is a commit list, not a walk down §12's ladder. §12 groups
+  // *every* blocked candidate so a threshold can be costed, and most of those
+  // items lose to what is already worn — a live gpt-5.6 run mirrored the whole
+  // thing back as sixteen rows, fourteen of them "skip, off-build", with one
+  // row naming twenty-eight unlocks of which two mattered. The UI renders every
+  // id as a thing to go and find, so an unlock the plan is not holding for is a
+  // reader sent hunting for an item the same answer tells them to skip. Held is
+  // the test because holding is what "I will put this on at the threshold"
+  // means; an empty `unlocks` is exempt — a farming target or the one line that
+  // says nothing is worth committing to has no item to name.
+  const heldIds = new Set(plan.hold.map((h) => h.itemId));
   for (const step of plan.nextLevels ?? []) {
-    for (const id of step.unlocks) known(id, `Next levels ("${step.threshold}")`);
+    const stray: string[] = [];
+    for (const id of step.unlocks) {
+      // An unknown id has already been reported; do not charge it twice.
+      if (!known(id, `Next levels ("${step.threshold}")`)) continue;
+      if (!heldIds.has(id)) stray.push(input.itemsById.get(id)?.display ?? `#${id}`);
+    }
+    if (stray.length === 0) continue;
+    // The offending entry is the one that names two dozen items, so the message
+    // that reports it must not name two dozen items back.
+    const named = stray.length > 4 ? `${stray.slice(0, 4).join(', ')} and ${stray.length - 4} more` : andList(stray);
+    warn(
+      'uncommitted-next-level',
+      `Next levels ("${step.threshold}") lists ${named}, which the plan does not HOLD — ` +
+        `a threshold's unlocks are the items you are keeping for it, not §12's costing list. ` +
+        `Drop ${stray.length === 1 ? 'it' : 'them'}, and drop the whole entry if nothing held is left in it`,
+    );
   }
 
   // Coverage: everything the document offered from the *carried bags* must end

@@ -896,6 +896,57 @@ describe('checkPlan', () => {
     expect(warnings[0]!.message).toContain('level 84');
   });
 
+  /**
+   * §12 costs every blocked candidate; a live gpt-5.6 run mirrored the whole
+   * ladder back as sixteen rows, fourteen of them "skip, off-build". A
+   * threshold's unlocks are the items the plan is holding for it — everything
+   * else is a reader sent hunting for gear the same answer advises against.
+   */
+  it('rejects a Next levels unlock the plan is not holding', () => {
+    const w = world();
+    const held = {
+      itemId: 'ring02',
+      slot: 'Ring 2',
+      beats: 'ring01',
+      gains: ['+5% Fire Resistance'],
+      reason: 'r',
+      until: 'level 84',
+    };
+
+    const noisy = checkPlan(
+      {
+        verdicts: [],
+        hold: [held],
+        sell: [],
+        nextLevels: [
+          { threshold: 'level 84', unlocks: ['ring02', 'bag01', 'head01'], recommendation: 'equip the first, skip the rest' },
+        ],
+      },
+      w,
+    );
+    expect(noisy.map((x) => x.kind)).toEqual(['uncommitted-next-level']);
+    expect(noisy[0]!.message).toContain('Rusty Band');
+    expect(noisy[0]!.message).toContain('Iron Helm');
+    expect(noisy[0]!.message).not.toContain('Spare Band');
+
+    // Held unlocks only, and an empty entry (a farming target, or the one line
+    // saying nothing is worth committing to), both pass.
+    expect(
+      checkPlan(
+        {
+          verdicts: [],
+          hold: [held],
+          sell: [],
+          nextLevels: [
+            { threshold: 'level 84', unlocks: ['ring02'], recommendation: 'commit' },
+            { threshold: 'farm Manticore Eye ×9', unlocks: [], recommendation: 'long-term' },
+          ],
+        },
+        w,
+      ),
+    ).toEqual([]);
+  });
+
   it('catches an id that is in no part of the document', () => {
     const w = world();
     const warnings = checkPlan(

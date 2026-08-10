@@ -712,21 +712,18 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
         notDerivable: ['Offensive Ability, because the engine’s level floor is not modelled'],
         notes: [],
       },
-      // The ladder. Two of the four entries on the first live run were "skip
-      // this", which is the recommendation the section exists to carry: §12 of
-      // the dossier costs every threshold, and a costing with no verdict on it
-      // is not advice.
+      // The ladder, filtered to what the plan commits to. §12 of the dossier
+      // costs *every* blocked candidate, and a live gpt-5.6 run mirrored all
+      // sixteen rungs back — fourteen of them "skip, off-build". So a rung is
+      // only an entry where something in `hold` hangs off it, and a rejected
+      // line that competes for the same points is dismissed in a clause of the
+      // committed one rather than in a row of its own.
       nextLevels: [
         {
           threshold: 'level 84',
           unlocks: [mythicalVisor.docId],
           recommendation:
-            'Worth it — the Mythical visor is a flat upgrade and the two attribute points those levels grant are not needed by anything else. Put both into Cunning.',
-        },
-        {
-          threshold: '4 attribute points into Spirit (299 → 331)',
-          unlocks: [],
-          recommendation: 'Skip — nothing this character can reach at 331 Spirit beats what is already worn.',
+            'Worth it — the Mythical visor is a flat upgrade and the two attribute points those levels grant are not needed by anything else. Put both into Cunning, not into the 4-point Spirit rung: nothing this character can reach at 331 Spirit beats what is already worn.',
         },
       ],
     },
