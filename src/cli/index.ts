@@ -62,7 +62,14 @@ import {
 } from '../core/session.js';
 import { findSaveDirs, listCharacters, resolveSettings } from '../core/settings.js';
 import { createSaveWatcher } from '../core/watcher.js';
-import { parseGdc } from '../core/save/gdc.js';
+import { parseGdc, parseGdcRecording } from '../core/save/gdc.js';
+import {
+  characterMasteries,
+  planMasteryRemoval,
+  type MasteryRemovalPlan,
+  type MasteryRemovalRefusal,
+} from '../core/save/mastery.js';
+import { backupCharacterSave, saveChangedOnDisk, writeSaveAtomically } from '../core/save/write.js';
 import { parseFormulasFile, parseReagents, parseTransferStash, type TransferStash } from '../core/save/gst.js';
 import {
   EQUIP_SLOT_NAMES,
@@ -1512,6 +1519,136 @@ program
     });
     // Nothing else to do: the watch handle is what keeps the process alive.
     await new Promise(() => {});
+  });
+
+// ---------------------------------------------------------------------------
+// Stage 9 — save writing: removing a mastery
+// ---------------------------------------------------------------------------
+
+function refusalText(r: MasteryRemovalRefusal): string {
+  switch (r.kind) {
+    case 'block-checksum':
+      return `block ${r.blockId} does not checksum — this save is damaged or half-written`;
+    case 'resynced-block':
+      return `block ${r.blockId} had to be resynced, so the file cannot be rebuilt exactly`;
+    case 'opaque-block':
+      return `block(s) ${r.blockIds.join(', ')} are not decoded; re-encoding them would corrupt them`;
+    case 'roundtrip-mismatch':
+      return `this build cannot reproduce the save byte-for-byte (first difference at ${r.offset}) — refusing to edit it`;
+    case 'encoder-prefix-mismatch':
+      return `a block encoder disagrees with the file: ${r.detail}`;
+    case 'unknown-mastery':
+      return `no mastery matching "${r.record}" on this character`;
+    case 'last-mastery':
+      return 'this is the character’s only mastery; a classless character is not a state the game has a screen for';
+    case 'mastery-not-reset':
+      return (
+        `still holds ${r.entryCount} skill(s) and ${r.pointsInvested} point(s) — ` +
+        'refund them in game first (any Spirit Guide), leaving one point in the mastery bar'
+      );
+    case 'save-changed-on-disk':
+      return 'the save changed on disk while this ran — is the game running?';
+  }
+}
+
+function printMasteryPlan(plan: MasteryRemovalPlan): void {
+  const m = plan.mastery;
+  console.log(`${plan.character}: remove ${m.name ?? m.record} (class ${m.classNumber})`);
+  console.log(`  removes       ${plan.removed.length} skill entry(ies)`);
+  for (const s of plan.removed) console.log(`                  ${s.name ?? s.record} @ rank ${s.level}`);
+  console.log(`  skill points  ${plan.skillPointsBefore} → ${plan.skillPointsAfter} (+${plan.skillPointsRefunded})`);
+  console.log(`  class         ${plan.classNameBefore} → ${plan.classNameAfter}  (${plan.classRecordAfter || '(none)'})`);
+  console.log(`  keeps         ${plan.remaining.map((r) => `${r.name ?? r.record} @ ${r.barLevel}`).join(', ') || '(none)'}`);
+  if (plan.danglingReferences.length) {
+    console.log(`  dangling      ${plan.danglingReferences.length} auto-cast binding(s) would be left pointing at a removed skill`);
+    for (const d of plan.danglingReferences) console.log(`                  ${d}`);
+  }
+  if (plan.refusals.length) {
+    console.log('\nWill not write:');
+    for (const r of plan.refusals) console.log(`  ! ${refusalText(r)}`);
+  }
+}
+
+program
+  .command('masteries')
+  .description('list a character’s masteries and what each one holds')
+  .option('-c, --char <name>', 'character name')
+  .option('--json', 'machine-readable output')
+  .action(async (opts: { char?: string; json?: boolean }) => {
+    const settings = resolveSettings();
+    const character = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
+    if (!character) {
+      console.error('error: no characters found');
+      process.exit(1);
+    }
+    const save = parseGdc(readSave(characterSavePath(character, settings.saveDir)));
+    const db = settings.gameDir
+      ? await loadGameDb({ gameDir: settings.gameDir, locale: settings.locale })
+      : undefined;
+    const masteries = characterMasteries(save, db);
+    if (opts.json) {
+      console.log(JSON.stringify({ character, classRecord: save.classRecord, masteries }, null, 2));
+      return;
+    }
+    console.log(`${save.name} — ${db?.localize(save.classRecord) ?? save.classRecord}`);
+    for (const m of masteries) {
+      console.log(
+        `  ${(m.name ?? `class ${m.classNumber}`).padEnd(14)} bar rank ${String(m.barLevel).padStart(2)}  ` +
+          `${String(m.entryCount).padStart(2)} entries  ${String(m.pointsInvested).padStart(3)} points  ${m.record}`,
+      );
+    }
+    console.log('\nA mastery can only be removed once it is reset to the bar alone at rank 1.');
+  });
+
+program
+  .command('remove-mastery')
+  .description('remove a mastery from a character (prints the plan; --commit to write)')
+  .option('-c, --char <name>', 'character name')
+  .requiredOption('-m, --mastery <name>', 'mastery name, class number, or record path')
+  .option('--out <path>', 'write the edited save to this path instead of the character’s')
+  .option('--commit', 'replace the character’s save (a backup is kept first)')
+  .action(async (opts: { char?: string; mastery: string; out?: string; commit?: boolean }) => {
+    const settings = resolveSettings();
+    const character = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
+    if (!character) {
+      console.error('error: no characters found');
+      process.exit(1);
+    }
+    // Never `snapshot.savePath`: that points at a rotation backup when the
+    // watcher fell back, and writing there would clobber the wrong file.
+    const savePath = characterSavePath(character, settings.saveDir);
+    const source = readSave(savePath);
+    const { save, transcript } = parseGdcRecording(source, { path: savePath });
+    const db = settings.gameDir
+      ? await loadGameDb({ gameDir: settings.gameDir, locale: settings.locale })
+      : undefined;
+
+    const plan = planMasteryRemoval({ character, save, transcript, source, db, mastery: opts.mastery });
+    printMasteryPlan(plan);
+
+    if (plan.refusals.length || !plan.output) process.exit(1);
+
+    if (opts.out) {
+      writeFileSync(opts.out, plan.output);
+      console.log(`\nwrote ${opts.out} (${plan.output.length} bytes, was ${source.length})`);
+      console.log('Nothing else was touched. Copy it over a save only after loading it in the game.');
+      return;
+    }
+    if (!opts.commit) {
+      console.log('\nDry run. Re-run with --out <path> to write a copy, or --commit to replace the save.');
+      console.log('Quit Grim Dawn first: the running game holds this character in memory and its next save overwrites the edit.');
+      return;
+    }
+
+    if (saveChangedOnDisk(savePath, source)) {
+      console.error(`\nerror: ${refusalText({ kind: 'save-changed-on-disk' })}`);
+      process.exit(1);
+    }
+    const backup = backupCharacterSave(savePath, character);
+    writeSaveAtomically(savePath, plan.output);
+    console.log(`\nbackup  ${backup}`);
+    console.log(`written ${savePath} (${plan.output.length} bytes, was ${source.length})`);
+    console.log('Nothing deletes that backup — copy it back over player.gdc to undo this.');
   });
 
 program.parse();

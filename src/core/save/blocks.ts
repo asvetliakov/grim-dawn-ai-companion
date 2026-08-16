@@ -14,20 +14,20 @@ import type { BlockReport } from './types.js';
 export function parseBlock(
   r: GdReader,
   block: BlockStart,
-  decode: ((r: GdReader) => void) | undefined,
+  decode: ((r: GdReader, block: BlockStart) => void) | undefined,
   warn: (msg: string) => void,
 ): BlockReport {
   const start = r.mark();
 
   if (decode) {
     try {
-      decode(r);
+      decode(r, block);
       if (r.offset > block.bodyEnd) {
         throw new Error(`overran block body by ${r.offset - block.bodyEnd} byte(s)`);
       }
       // Trailing bytes we chose not to decode (e.g. a patch-grown tail) still
       // have to advance the cipher before the checksum can be checked.
-      if (r.offset < block.bodyEnd) r.skipBlockBody(block.bodyEnd - r.offset);
+      if (r.offset < block.bodyEnd) r.skipBlockBody(block.bodyEnd - r.offset, block.id);
       r.endBlock(block);
       return { id: block.id, length: block.length, status: 'parsed', checksumOk: true };
     } catch (err) {
@@ -39,7 +39,7 @@ export function parseBlock(
   // Unknown or undecodable: try a plain skip first, which still verifies the
   // checksum and so proves the block had no nested sub-blocks.
   try {
-    r.skipBlockBody(block.length);
+    r.skipBlockBody(block.length, block.id);
     r.endBlock(block);
     return {
       id: block.id,
@@ -77,7 +77,7 @@ export function finishNested(
   if (left < 0) throw new Error(`${label}: overran nested block by ${-left} byte(s)`);
   if (left > 0) {
     warn(`${label}: ${left} undecoded trailing byte(s)`);
-    r.skipBlockBody(left);
+    r.skipBlockBody(left, block.id);
   }
   r.endBlock(block);
 }

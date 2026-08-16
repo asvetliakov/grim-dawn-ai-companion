@@ -127,10 +127,18 @@ export interface CharacterSkill {
   record: string;
   level: number;
   enabled: boolean;
+  /**
+   * The byte after `enabled`. Long assumed to be padding, and it is not: it is
+   * 1 on exactly the 32 GDX3 potion-modifier entries of both test characters
+   * and 0 on everything else. Kept verbatim so the block can be written back.
+   */
+  unknown1: number;
   devotionLevel: number;
   devotionExperience: number;
   sublevel: number;
   active: boolean;
+  /** The byte after `active`; zero everywhere seen, kept for the same reason. */
+  unknown2: number;
   autoCastSkill: string;
   autoCastController: string;
 }
@@ -211,12 +219,24 @@ export interface CharacterSave {
   iron: number;
   tributes: number;
   attributes: Attributes;
+  /**
+   * Block 8's array in *file order*, which interleaves skills and devotions
+   * (`_Suchka`: 29 skills, 57 devotions, 42 skills). `skills`/`devotions` are
+   * views over it — anything writing the block back must use this, since
+   * `skills.concat(devotions)` is not the order the file had.
+   */
+  skillEntries: CharacterSkill[];
   skills: CharacterSkill[];
   /** Skills whose record path lives under the devotion tree. */
   devotions: CharacterSkill[];
   masteriesAllowed: number;
   skillReclamationPointsUsed: number;
   devotionReclamationPointsUsed: number;
+  /**
+   * Block 8's two trailing words. Zero on every save seen, and genuinely u32s:
+   * decoding them at byte width yields noise, so the game wrote words.
+   */
+  skillsTail: number[];
   /** 12 equipment slots, plus 2×2 alternate weapon sets. */
   equipment: (EquippedItem | null)[];
   weaponSet1: (EquippedItem | null)[];

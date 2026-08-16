@@ -154,9 +154,13 @@ describe.skipIf(!haveSaves())('live player.gdc saves', () => {
     expect(save.warnings).toEqual([]);
     expect(save.blocks.length).toBeGreaterThan(10);
 
-    // The blocks we actually decode must all be present and decoded, not skipped.
+    // Every block is decoded, and that is a requirement rather than a nicety:
+    // a block whose field widths are unknown cannot be re-enciphered, so a
+    // single skipped block would make the save unwritable (see transcript.ts).
+    const skipped = save.blocks.filter((b) => b.status !== 'parsed').map((b) => b.id);
+    expect(skipped, 'blocks that fell back to a blind skip').toEqual([]);
     const decoded = save.blocks.filter((b) => b.status === 'parsed').map((b) => b.id).sort((a, b) => a - b);
-    expect(decoded).toEqual([1, 2, 3, 4, 8, 13, 16]);
+    expect(decoded).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17]);
   });
 
   it.each(CHARACTERS)('reads coherent character data for %s', (character) => {

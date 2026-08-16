@@ -8,7 +8,13 @@
  * checksum proof that the block was consumed byte-for-byte correctly.
  *
  * Reused verbatim by the .gst parsers (stash / formulas).
+ *
+ * A `TranscriptRecorder` can be attached to log what was read at the width it
+ * was read, which is what lets `transcript.ts` write a file back. Reading is
+ * unchanged when none is attached.
  */
+
+import type { RecorderMark, TranscriptRecorder } from './transcript.js';
 
 export class ChecksumError extends Error {
   constructor(
@@ -36,6 +42,8 @@ export class TruncatedError extends Error {
 export interface ReaderMark {
   readonly offset: number;
   readonly state: number;
+  /** Where the transcript stood, when one is being recorded. */
+  readonly rec?: RecorderMark;
 }
 
 export interface BlockStart {
@@ -67,20 +75,29 @@ function buildTable(seed: number): Uint32Array {
 export class GdReader {
   private readonly buf: Buffer;
   private readonly table: Uint32Array;
+  private readonly rec: TranscriptRecorder | undefined;
   private pos: number;
   private state: number;
+  readonly seed: number;
 
-  constructor(buf: Buffer) {
+  constructor(buf: Buffer, recorder?: TranscriptRecorder) {
     if (buf.length < 4) throw new TruncatedError(0, 4, buf.length);
     this.buf = buf;
     const seed = (buf.readUInt32LE(0) ^ 0x55555555) >>> 0;
+    this.seed = seed;
     this.table = buildTable(seed);
+    this.rec = recorder;
     this.state = seed;
     this.pos = 4;
   }
 
   get offset(): number {
     return this.pos;
+  }
+
+  /** Everything the reader never consumed, for the transcript's tail. */
+  restOfFile(): Buffer {
+    return this.buf.subarray(this.pos);
   }
 
   get eof(): boolean {
@@ -97,12 +114,14 @@ export class GdReader {
   }
 
   mark(): ReaderMark {
-    return { offset: this.pos, state: this.state };
+    const rec = this.rec?.mark();
+    return rec ? { offset: this.pos, state: this.state, rec } : { offset: this.pos, state: this.state };
   }
 
   reset(mark: ReaderMark): void {
     this.pos = mark.offset;
     this.state = mark.state;
+    if (mark.rec) this.rec?.reset(mark.rec);
   }
 
   private need(n: number): void {
@@ -114,7 +133,8 @@ export class GdReader {
     this.state = (this.state ^ this.table[cipherByte]!) >>> 0;
   }
 
-  readByte(): number {
+  /** The read itself, without recording — `beginBlock` frames its own words. */
+  private byteInternal(): number {
     this.need(1);
     const c = this.buf[this.pos]!;
     const plain = (c ^ (this.state & 0xff)) & 0xff;
@@ -123,16 +143,28 @@ export class GdReader {
     return plain;
   }
 
-  readBool(): boolean {
-    return this.readByte() !== 0;
-  }
-
-  readU32(): number {
+  private u32Internal(): number {
     this.need(4);
     const c = this.buf.readUInt32LE(this.pos);
     const plain = (c ^ this.state) >>> 0;
     for (let i = 0; i < 4; i++) this.advance(this.buf[this.pos + i]!);
     this.pos += 4;
+    return plain;
+  }
+
+  readByte(): number {
+    const plain = this.byteInternal();
+    this.rec?.u8(plain);
+    return plain;
+  }
+
+  readBool(): boolean {
+    return this.readByte() !== 0;
+  }
+
+  readU32(): number {
+    const plain = this.u32Internal();
+    this.rec?.u32(plain);
     return plain;
   }
 
@@ -153,6 +185,12 @@ export class GdReader {
    * one more such word right after its version field.
    */
   readU32NoAdvance(): number {
+    const plain = this.noAdvanceInternal();
+    this.rec?.noadvance(plain);
+    return plain;
+  }
+
+  private noAdvanceInternal(): number {
     this.need(4);
     const c = this.buf.readUInt32LE(this.pos);
     this.pos += 4;
@@ -191,9 +229,12 @@ export class GdReader {
    * equals the trailing checksum).
    */
   beginBlock(): BlockStart {
-    const id = this.readU32();
-    const length = this.readU32NoAdvance();
+    // Neither word is recorded as a segment: the transcript models a block as a
+    // node, and replay recomputes its length from the body it ends up with.
+    const id = this.u32Internal();
+    const length = this.noAdvanceInternal();
     const bodyStart = this.pos;
+    this.rec?.beginBlock(id);
     return { id, length, bodyStart, bodyEnd: bodyStart + length };
   }
 
@@ -212,13 +253,26 @@ export class GdReader {
     if (expected !== actual) {
       throw new ChecksumError(block.id, expected, actual, this.pos - 4);
     }
+    this.rec?.endBlock();
   }
 
-  /** Advance the cipher over `length` body bytes without decoding them. */
-  skipBlockBody(length: number): void {
+  /**
+   * Advance the cipher over `length` body bytes without decoding them.
+   *
+   * Recorded as an `opaque` segment, never as bytes: we know these bytes, but
+   * not the widths the game reads them at, and re-enciphering them from a
+   * different state would corrupt every multi-byte field inside.
+   */
+  skipBlockBody(length: number, blockId = -1): void {
     this.need(length);
-    for (let i = 0; i < length; i++) this.advance(this.buf[this.pos + i]!);
+    const plain: number[] = this.rec ? new Array<number>(length) : [];
+    for (let i = 0; i < length; i++) {
+      const c = this.buf[this.pos + i]!;
+      if (this.rec) plain[i] = (c ^ (this.state & 0xff)) & 0xff;
+      this.advance(c);
+    }
     this.pos += length;
+    if (length > 0) this.rec?.opaque(blockId, plain);
   }
 
   /**
@@ -238,6 +292,9 @@ export class GdReader {
     this.need(4);
     this.state = this.buf.readUInt32LE(this.pos) >>> 0;
     this.pos += 4;
+    // Keep the whole block — id, length, body, checksum — as ciphertext. It can
+    // be copied through verbatim, and only that: nothing upstream may change.
+    this.rec?.rawBlock(block.id, this.buf.subarray(block.bodyStart - 8, this.pos), this.state);
   }
 
   /**
@@ -260,5 +317,6 @@ export class GdReader {
     const expected = this.readRawU32();
     const actual = this.cipherState;
     if (expected !== actual) throw new ChecksumError(label, expected, actual, this.pos - 4);
+    this.rec?.checksum();
   }
 }
