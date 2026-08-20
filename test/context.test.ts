@@ -59,6 +59,7 @@ function stubDb(skills: Record<string, string> = {}, items: Record<string, DbIte
       maxDevotionPoints: 55,
     }),
     factions: () => [],
+    factionBoosters: () => [],
     vendorItems: () => [],
     recipes: () => [],
     localize: (tag) => tag,

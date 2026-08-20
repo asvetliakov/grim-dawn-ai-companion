@@ -88,6 +88,26 @@ export function factionSlot(index: number): FactionSlot | undefined {
   return name === undefined ? undefined : { id: `f${user}`, name };
 }
 
+/**
+ * The inverse: a `boostedFaction` key as the item records spell it → save slot.
+ *
+ * Booster records name their faction as `Survivors`, `Beasts`, `User8` — the
+ * `gamefactions.dbr` key without its `faction` prefix — which is the same
+ * identity `factionSlot` maps the other way. Nothing new is guessed: the
+ * `User<N>` → `N + 6` rule and the eight fixed slugs above are the whole
+ * implementation, and `User0` landing on Rovers is the fixed table agreeing
+ * with the numbered one on the slot they share.
+ */
+export function factionSlotByKey(key: string): number | undefined {
+  const wanted = key.trim().toLowerCase();
+  const fixed = FIXED_FACTIONS.findIndex((f) => f.id === wanted);
+  if (fixed >= 0) return fixed;
+  const user = /^user(\d+)$/.exec(wanted);
+  if (!user) return undefined;
+  const slot = Number(user[1]) + USER_SLOT_OFFSET;
+  return factionSlot(slot) ? slot : undefined;
+}
+
 export function factionName(index: number): string | undefined {
   return factionSlot(index)?.name;
 }

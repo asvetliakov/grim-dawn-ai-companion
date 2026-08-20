@@ -188,6 +188,29 @@ export interface DbFaction {
   hasVendor: boolean;
 }
 
+/**
+ * A faction reputation booster: the game's Writs, Mandates and Warrants.
+ *
+ * `records/items/faction/booster/` holds two template classes and the save has
+ * a field for each. `ItemFactionBooster` (Writ ×1.5, Mandate ×3) multiplies
+ * reputation *gained*, which is `FactionRep.positiveBoost`; `ItemFactionWarrant`
+ * (×3) multiplies reputation *lost* with a hostile faction — the slide to
+ * Nemesis — which is `negativeBoost`. The multipliers are read off the records
+ * rather than stated here: the Mandate's own description says it "does not stack
+ * with Writs", so the value in force is the largest one applied, never a sum.
+ */
+export interface DbFactionBooster {
+  record: string;
+  /** Localized name, e.g. "Mandate of the Rovers". */
+  name: string;
+  /** `boostedFaction` exactly as the record spells it: `Survivors`, `User8`, … */
+  factionKey: string;
+  /** `boostedMultiplier`. */
+  multiplier: number;
+  /** Which of the save's two boost fields this one sets. */
+  kind: 'reputation' | 'nemesis';
+}
+
 export interface DbReagent {
   record: string;
   /** Localized name, when the reagent resolves to a known item. */
@@ -387,6 +410,12 @@ export interface GameDb {
    */
   levelProgression(): LevelProgression;
   factions(): DbFaction[];
+  /**
+   * Every Writ, Mandate and Warrant the game ships, with the faction each names
+   * and the multiplier it applies. Not served by `vendorItems`: the twelve
+   * Warrants carry no vendor entry at all.
+   */
+  factionBoosters(): DbFactionBooster[];
   /** Everything a faction vendor stocks up to and including `maxTier`. */
   vendorItems(factionId: string, maxTier: RepTier): DbItem[];
   recipes(): DbRecipe[];

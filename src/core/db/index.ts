@@ -25,6 +25,7 @@ import {
   REP_TIERS,
   type DbAffix,
   type DbFaction,
+  type DbFactionBooster,
   type DbItem,
   type DbRecipe,
   type DbSet,
@@ -162,6 +163,27 @@ export class NormalizedGameDb implements GameDb {
 
   factions(): DbFaction[] {
     return this.db.factions;
+  }
+
+  /**
+   * The booster table, scanned out of the item index rather than stored: `slot`
+   * is the template `Class`, and the two booster classes are exactly the 42
+   * records under `records/items/faction/booster/`. Kept a scan so the cached
+   * database needs no new field — and so a mod adding a booster is picked up by
+   * the same rule the game's own records match.
+   */
+  factionBoosters(): DbFactionBooster[] {
+    const out: DbFactionBooster[] = [];
+    for (const item of Object.values(this.db.items)) {
+      const kind =
+        item.slot === 'ItemFactionBooster' ? 'reputation' : item.slot === 'ItemFactionWarrant' ? 'nemesis' : undefined;
+      if (!kind) continue;
+      const factionKey = item.stats['boostedFaction'];
+      const multiplier = item.stats['boostedMultiplier'];
+      if (typeof factionKey !== 'string' || typeof multiplier !== 'number') continue;
+      out.push({ record: item.record, name: item.name, factionKey, multiplier, kind });
+    }
+    return out.sort((a, b) => a.record.localeCompare(b.record));
   }
 
   vendorItems(factionId: string, maxTier: RepTier): DbItem[] {

@@ -17,8 +17,9 @@
  */
 
 import type { GameDb } from '../db/types.js';
+import { saveEditRefusals, type SaveEditRefusal } from './edit.js';
 import { encodeBlock2, encodeBlock8, encodeHeader } from './gdc.js';
-import { opaqueBlocks, replay, spliceRegion, type Seg, type Transcript } from './transcript.js';
+import { replay, spliceRegion, type Seg, type Transcript } from './transcript.js';
 import type { CharacterSave, CharacterSkill } from './types.js';
 
 /** `records/skills/playerclass04/...` — the two digits are the class number. */
@@ -39,16 +40,12 @@ export interface MasteryRef {
   pointsInvested: number;
 }
 
+/** The file-level refusals (`edit.ts`) plus the three this operation adds. */
 export type MasteryRemovalRefusal =
-  | { kind: 'block-checksum'; blockId: number }
-  | { kind: 'resynced-block'; blockId: number }
-  | { kind: 'opaque-block'; blockIds: number[] }
-  | { kind: 'roundtrip-mismatch'; offset: number }
-  | { kind: 'encoder-prefix-mismatch'; detail: string }
+  | SaveEditRefusal
   | { kind: 'unknown-mastery'; record: string }
   | { kind: 'last-mastery' }
-  | { kind: 'mastery-not-reset'; entryCount: number; pointsInvested: number }
-  | { kind: 'save-changed-on-disk' };
+  | { kind: 'mastery-not-reset'; entryCount: number; pointsInvested: number };
 
 export interface MasteryRemovalPlan {
   character: string;
@@ -166,17 +163,7 @@ export function planMasteryRemoval(input: PlanInput): MasteryRemovalPlan {
   const refunded = removed.reduce((n, e) => n + Math.max(0, e.level), 0);
 
   // --- what stands in the way -------------------------------------------
-  for (const block of save.blocks) {
-    if (!block.checksumOk) refusals.push({ kind: 'block-checksum', blockId: block.id });
-  }
-  for (const blockId of transcript.resynced) refusals.push({ kind: 'resynced-block', blockId });
-  const opaque = [...new Set(opaqueBlocks(transcript))];
-  if (opaque.length) refusals.push({ kind: 'opaque-block', blockIds: opaque });
-
-  const verbatim = replay(transcript);
-  if (!verbatim.equals(source)) {
-    refusals.push({ kind: 'roundtrip-mismatch', offset: firstDifference(verbatim, source) });
-  }
+  refusals.push(...saveEditRefusals(save, transcript, source));
 
   if (!target) refusals.push({ kind: 'unknown-mastery', record: input.mastery });
   else if (!remaining.length) refusals.push({ kind: 'last-mastery' });
@@ -242,12 +229,6 @@ function danglingReferences(save: CharacterSave, classNumber: string): string[] 
     }
   }
   return out;
-}
-
-function firstDifference(a: Buffer, b: Buffer): number {
-  const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) if (a[i] !== b[i]) return i;
-  return n;
 }
 
 // ---------------------------------------------------------------------------

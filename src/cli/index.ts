@@ -64,6 +64,13 @@ import { findSaveDirs, listCharacters, resolveSettings } from '../core/settings.
 import { createSaveWatcher } from '../core/watcher.js';
 import { parseGdc, parseGdcRecording } from '../core/save/gdc.js';
 import {
+  planFactionBoosters,
+  type BoosterChange,
+  type BoosterPlan,
+  type BoosterRefusal,
+} from '../core/save/boosters.js';
+import { saveEditRefusalText } from '../core/save/edit.js';
+import {
   characterMasteries,
   planMasteryRemoval,
   type MasteryRemovalPlan,
@@ -1527,16 +1534,6 @@ program
 
 function refusalText(r: MasteryRemovalRefusal): string {
   switch (r.kind) {
-    case 'block-checksum':
-      return `block ${r.blockId} does not checksum — this save is damaged or half-written`;
-    case 'resynced-block':
-      return `block ${r.blockId} had to be resynced, so the file cannot be rebuilt exactly`;
-    case 'opaque-block':
-      return `block(s) ${r.blockIds.join(', ')} are not decoded; re-encoding them would corrupt them`;
-    case 'roundtrip-mismatch':
-      return `this build cannot reproduce the save byte-for-byte (first difference at ${r.offset}) — refusing to edit it`;
-    case 'encoder-prefix-mismatch':
-      return `a block encoder disagrees with the file: ${r.detail}`;
     case 'unknown-mastery':
       return `no mastery matching "${r.record}" on this character`;
     case 'last-mastery':
@@ -1546,8 +1543,19 @@ function refusalText(r: MasteryRemovalRefusal): string {
         `still holds ${r.entryCount} skill(s) and ${r.pointsInvested} point(s) — ` +
         'refund them in game first (any Spirit Guide), leaving one point in the mastery bar'
       );
-    case 'save-changed-on-disk':
-      return 'the save changed on disk while this ran — is the game running?';
+    default:
+      return saveEditRefusalText(r);
+  }
+}
+
+function boosterRefusalText(r: BoosterRefusal): string {
+  switch (r.kind) {
+    case 'no-boosters':
+      return 'the item database knows no faction boosters — is `gameDir` pointing at the installed game?';
+    case 'unknown-faction':
+      return `no faction matching "${r.name}" sells a booster`;
+    default:
+      return saveEditRefusalText(r);
   }
 }
 
@@ -1650,5 +1658,131 @@ program
     console.log(`written ${savePath} (${plan.output.length} bytes, was ${source.length})`);
     console.log('Nothing deletes that backup — copy it back over player.gdc to undo this.');
   });
+
+/** `—` for an unboosted field: 0 is "no booster", not a multiplier of zero. */
+function boostText(v: number): string {
+  return v === 0 ? '—' : `×${v}`;
+}
+
+function boosterRow(kind: 'reputation' | 'nemesis', changes: BoosterChange[], unchanged: BoosterChange[]): string {
+  const change = changes.find((c) => c.kind === kind);
+  if (change) return `${boostText(change.from)} → ${boostText(change.to)}`;
+  const same = unchanged.find((c) => c.kind === kind);
+  return same ? `${boostText(same.to)} (already)` : '';
+}
+
+function printBoosterPlan(plan: BoosterPlan, clear: boolean): void {
+  const all = [...plan.changes, ...plan.unchanged];
+  const slots = [...new Set(all.map((c) => c.slot))].sort((a, b) => a - b);
+
+  console.log(`${plan.character}: ${clear ? 'clear every faction booster' : 'apply every faction booster the game sells'}`);
+  console.log(`  ${'faction'.padEnd(28)}${'reputation'.padEnd(18)}${'nemesis'.padEnd(18)}what the game sells for it`);
+  for (const slot of slots) {
+    const changes = plan.changes.filter((c) => c.slot === slot);
+    const unchanged = plan.unchanged.filter((c) => c.slot === slot);
+    const name = (changes[0] ?? unchanged[0])!.faction;
+    const sources = [...changes, ...unchanged].map((c) => c.source).join(' · ');
+    console.log(
+      `  ${name.padEnd(28)}${boosterRow('reputation', changes, unchanged).padEnd(18)}` +
+        `${boosterRow('nemesis', changes, unchanged).padEnd(18)}${sources}`,
+    );
+  }
+
+  const writs = plan.changes.filter((c) => c.kind === 'reputation').length;
+  const warrants = plan.changes.filter((c) => c.kind === 'nemesis').length;
+  console.log(`\n  ${plan.changes.length} change(s): ${writs} reputation, ${warrants} nemesis; ${plan.unchanged.length} already set`);
+  for (const s of plan.skipped) console.log(`  skipped  ${s.name}: ${s.reason}`);
+
+  if (!clear && warrants) {
+    console.log(
+      '\n  A warrant multiplies reputation *lost*. On a faction you are friendly with — Kymon’s Chosen,',
+    );
+    console.log('  the Order of Death’s Vigil, the Outcast, Barrowholm — that also triples what a wrong choice costs.');
+  }
+  if (plan.refusals.length) {
+    console.log('\nWill not write:');
+    for (const r of plan.refusals) console.log(`  ! ${boosterRefusalText(r)}`);
+  }
+}
+
+program
+  .command('boosters')
+  .description('apply every faction reputation booster the game sells (prints the plan; --commit to write)')
+  .option('-c, --char <name>', 'character name')
+  .option('--faction <name...>', 'only these factions (slot number, id, or name); default: all of them')
+  .option('--no-writs', 'leave the reputation-gain multiplier alone')
+  .option('--no-warrants', 'leave the hostile-faction multiplier alone')
+  .option('--clear', 'set the targeted multipliers back to 0')
+  .option('--out <path>', 'write the edited save to this path instead of the character’s')
+  .option('--commit', 'replace the character’s save (a backup is kept first)')
+  .action(
+    async (opts: {
+      char?: string;
+      faction?: string[];
+      writs: boolean;
+      warrants: boolean;
+      clear?: boolean;
+      out?: string;
+      commit?: boolean;
+    }) => {
+      const settings = resolveSettings();
+      const character = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
+      if (!character) {
+        console.error('error: no characters found');
+        process.exit(1);
+      }
+      if (!settings.gameDir) {
+        console.error('error: no game directory — the booster multipliers are read from the installed game');
+        process.exit(1);
+      }
+      // Never `snapshot.savePath`: that points at a rotation backup when the
+      // watcher fell back, and writing there would clobber the wrong file.
+      const savePath = characterSavePath(character, settings.saveDir);
+      const source = readSave(savePath);
+      const { save, transcript } = parseGdcRecording(source, { path: savePath });
+      const db = await loadGameDb({ gameDir: settings.gameDir, locale: settings.locale });
+
+      const plan = planFactionBoosters({
+        character,
+        save,
+        transcript,
+        source,
+        db,
+        writs: opts.writs,
+        warrants: opts.warrants,
+        ...(opts.faction ? { factions: opts.faction } : {}),
+        ...(opts.clear ? { clear: true } : {}),
+      });
+      printBoosterPlan(plan, opts.clear === true);
+
+      if (plan.refusals.length) process.exit(1);
+      if (!plan.output) {
+        console.log('\nNothing to do — every targeted booster is already at that value.');
+        return;
+      }
+
+      if (opts.out) {
+        writeFileSync(opts.out, plan.output);
+        console.log(`\nwrote ${opts.out} (${plan.output.length} bytes, was ${source.length})`);
+        console.log('Nothing else was touched. Copy it over a save only after loading it in the game.');
+        return;
+      }
+      if (!opts.commit) {
+        console.log('\nDry run. Re-run with --out <path> to write a copy, or --commit to replace the save.');
+        console.log('Quit Grim Dawn first: the running game holds this character in memory and its next save overwrites the edit.');
+        return;
+      }
+
+      if (saveChangedOnDisk(savePath, source)) {
+        console.error(`\nerror: ${boosterRefusalText({ kind: 'save-changed-on-disk' })}`);
+        process.exit(1);
+      }
+      const backup = backupCharacterSave(savePath, character);
+      writeSaveAtomically(savePath, plan.output);
+      console.log(`\nbackup  ${backup}`);
+      console.log(`written ${savePath} (${plan.output.length} bytes, was ${source.length})`);
+      console.log('Nothing deletes that backup — copy it back over player.gdc to undo this, or re-run with --clear.');
+    },
+  );
 
 program.parse();

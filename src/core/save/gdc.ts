@@ -331,7 +331,7 @@ function isDevotionRecord(record: string): boolean {
 function readBlock13(r: GdReader, s: ParseState): void {
   const version = r.readU32();
   if (version !== 5) s.warn(`block 13: unexpected version ${version} (expected 5)`);
-  r.readI32(); // faction selection (currently-favoured faction)
+  s.save.factionSelection = r.readI32(); // the currently-favoured faction
   const count = r.readU32();
   const factions: FactionRep[] = [];
   for (let i = 0; i < count; i++) {
@@ -352,6 +352,30 @@ function readBlock13(r: GdReader, s: ParseState): void {
     });
   }
   s.save.factions = factions;
+}
+
+/**
+ * The mirror of `readBlock13` — what a faction-booster edit splices in.
+ *
+ * Two of the five per-faction fields are the Writ/Mandate and Warrant
+ * multipliers, which is the whole reason this encoder exists: applying a
+ * booster is a float, not an item. The floats round-trip bit for bit, and
+ * `spliceRegion` proves this reproduces the file field for field before any
+ * edited version of it is allowed to replace it.
+ */
+export function encodeBlock13(save: CharacterSave, version: number): Seg[] {
+  const w = new SegWriter();
+  w.u32(version);
+  w.i32(save.factionSelection);
+  w.u32(save.factions.length);
+  for (const f of save.factions) {
+    w.bool(f.changed);
+    w.bool(f.unlocked);
+    w.f32(f.value);
+    w.f32(f.positiveBoost);
+    w.f32(f.negativeBoost);
+  }
+  return w.segments();
 }
 
 /**
@@ -589,6 +613,7 @@ function parseGdcInto(
     inventorySacks: [],
     personalStash: [],
     factions: [],
+    factionSelection: 0,
     playStats: {
       playTimeSeconds: 0,
       deaths: 0,

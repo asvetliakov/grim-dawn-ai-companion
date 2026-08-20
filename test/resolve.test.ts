@@ -60,6 +60,7 @@ function stubDb(items: Record<string, DbItem>, affixes: Record<string, string>):
       maxDevotionPoints: 55,
     }),
     factions: () => [],
+    factionBoosters: () => [],
     vendorItems: () => [],
     recipes: () => [],
     localize: (tag) => tag,

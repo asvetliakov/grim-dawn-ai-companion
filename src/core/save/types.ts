@@ -250,6 +250,12 @@ export interface CharacterSave {
   inventorySacks: PositionedItem[][];
   personalStash: StashTab[];
   factions: FactionRep[];
+  /**
+   * Block 13's leading word: the faction whose reputation the character is
+   * currently favouring. Nothing reads it — it is kept because block 13 cannot
+   * be written back around a field the parser threw away.
+   */
+  factionSelection: number;
   playStats: PlayStats;
   blocks: BlockReport[];
   /** Non-fatal problems: unknown blocks, unexpected versions, torn fields. */
