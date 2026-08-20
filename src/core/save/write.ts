@@ -18,6 +18,7 @@ import { closeSync, copyFileSync, existsSync, fsyncSync, mkdirSync, openSync, re
 import { dirname, join } from 'node:path';
 
 import { appDataDir } from '../db/cache.js';
+import type { SaveTree } from '../paths.js';
 
 /** `2026-08-16T12-30-05-123Z` — a filename, and still sorts chronologically. */
 function stamp(now: Date): string {
@@ -32,8 +33,16 @@ function stamp(now: Date): string {
  * and the watcher classifies by filename. Under the tool's own data directory a
  * backup is nobody else's business.
  */
-export function backupCharacterSave(savePath: string, character: string, now = new Date()): string {
-  const dir = join(appDataDir(), 'backups', character);
+export function backupCharacterSave(
+  savePath: string,
+  character: string,
+  tree: SaveTree = 'main',
+  now = new Date(),
+): string {
+  // Custom-game characters get their own subtree: the two namespaces are
+  // independent and a name can live in both (this machine has a `_Suchka` in
+  // each), so one shared folder would offer the wrong file to restore.
+  const dir = join(appDataDir(), 'backups', ...(tree === 'main' ? [] : [tree]), character);
   mkdirSync(dir, { recursive: true });
   const target = join(dir, `player-${stamp(now)}.gdc`);
   copyFileSync(savePath, target);

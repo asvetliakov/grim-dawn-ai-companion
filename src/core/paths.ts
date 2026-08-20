@@ -20,13 +20,27 @@ const DEFAULT_SAVE_DIR = join(
   'Program Files (x86)/Steam/userdata/42909985/219990/remote/save',
 );
 
-/** Root of the save tree: contains `main/<character>/` plus the shared `.gst` files. */
+/** Root of the save tree: contains `main/<character>/`, `user/` and the shared `.gst` files. */
 export function saveDir(): string {
   return process.env.GD_SAVE_DIR ?? DEFAULT_SAVE_DIR;
 }
 
-export function characterSavePath(character: string, dir = saveDir()): string {
-  return join(dir, 'main', character, 'player.gdc');
+/**
+ * Which tree a character lives in.
+ *
+ * `main` is the campaign. `user` is what the game's "Custom Game" writes —
+ * characters made on a mod or a custom map (the mod's own account-wide stashes
+ * sit beside the campaign's, in `save/<mod>/`). The two trees are independent
+ * namespaces, and a name can exist in both: this machine has a `_Suchka` in
+ * each. Only the campaign tree is a save directory's identity, which is why
+ * `findSaveDirs` still looks for `main/`.
+ */
+export type SaveTree = 'main' | 'user';
+
+export const SAVE_TREES: readonly SaveTree[] = ['main', 'user'];
+
+export function characterSavePath(character: string, dir = saveDir(), tree: SaveTree = 'main'): string {
+  return join(dir, tree, character, 'player.gdc');
 }
 
 /** Shared (softcore) transfer stash. Hardcore's `.gsh` twin is out of scope for now. */

@@ -12,7 +12,7 @@ import { join } from 'node:path';
 
 import { appDataDir, ensureDir } from './db/cache.js';
 import { findGameDir } from './db/gamefiles.js';
-import { saveDir as detectedSaveDir } from './paths.js';
+import { saveDir as detectedSaveDir, type SaveTree } from './paths.js';
 import { documentRoots, safeReaddir, steamRoots, STEAM_APP_ID } from './platform.js';
 import { settingsSchema, type ResolvedSettings, type Settings } from './settings-schema.js';
 
@@ -97,9 +97,15 @@ export function findSaveDir(): string | undefined {
   return findSaveDirs()[0];
 }
 
-/** Character directory names under `<saveDir>/main`. */
-export function listCharacters(saveDir: string): string[] {
-  return safeReaddir(join(saveDir, 'main'))
-    .filter((name) => existsSync(join(saveDir, 'main', name, 'player.gdc')))
+/**
+ * Character directory names in one of the save trees — the campaign by default,
+ * `user` for the characters a Custom Game writes. The default keeps every
+ * existing caller (the window, the session, the advisor) on the campaign, which
+ * is the only tree the rest of the app models: a custom game's items come from a
+ * mod's database, and this one reads the installed game's.
+ */
+export function listCharacters(saveDir: string, tree: SaveTree = 'main'): string[] {
+  return safeReaddir(join(saveDir, tree))
+    .filter((name) => existsSync(join(saveDir, tree, name, 'player.gdc')))
     .sort();
 }

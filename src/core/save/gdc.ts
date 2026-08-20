@@ -410,9 +410,24 @@ function readBlock16(r: GdReader, s: ParseState, block: BlockStart): void {
   // champion kills, last hit DA/OA, greatest damage received, hero kills, four
   // crafting counters, shrines, one-shot chests, lore notes (which agrees with
   // block 12's count: 238 and 4 on the two test characters), three boss-kill
-  // counters, four survival counters, an empty skills-map count, and the two
-  // endless-dungeon currencies.
-  for (let i = 0; i < 22; i++) r.readU32();
+  // counters and four survival counters.
+  for (let i = 0; i < 19; i++) r.readU32();
+  // Then a skills map: a count, and that many `record, u32` pairs. It is empty
+  // on every campaign character, which is why this was 22 blind words for a
+  // while — 19 + a zero count + the two currencies reads identically. A custom
+  // game fills it (`records/skills/playerclassmonk/blinding_flash.dbr`, 1 entry
+  // on the live custom save), and then the blind read walks into the string:
+  // every field after it decodes at the wrong width, and the block still
+  // checksums because the trailing drain swallows the difference. It cost a
+  // 1-byte `opaque` region at the end of the block, which is how it surfaced —
+  // an edit downstream of block 16 refused rather than corrupting it.
+  const skillMapCount = r.readU32();
+  for (let i = 0; i < skillMapCount; i++) {
+    r.readStr();
+    r.readU32();
+  }
+  // The two endless-dungeon currencies.
+  for (let i = 0; i < 2; i++) r.readU32();
   r.readByte(); // difficulty skip
   // Unique and randomized items found, plus two words this build adds.
   while (block.bodyEnd - r.offset >= 4) r.readU32();

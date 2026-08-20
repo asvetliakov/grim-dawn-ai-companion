@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, copyFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import { findGameDir } from '../src/core/db/gamefiles.js';
+import { listCharacters } from '../src/core/settings.js';
 import { loadGameDb } from '../src/core/db/index.js';
 import type { GameDb } from '../src/core/db/types.js';
 import {
@@ -31,6 +32,28 @@ export const CHARACTERS = ['_Suchka', '_abcdef'] as const;
 export function characterSavePath(name: string): string {
   return coreCharacterSavePath(name, SAVE_DIR);
 }
+
+/**
+ * Custom Game characters (`save/user`). Machine-dependent and optional: a
+ * campaign-only install has none, so every test over them is skipped rather
+ * than failed. The name deliberately collides with a campaign character here —
+ * that is the case the tree parameter exists for.
+ */
+export function customCharacters(): string[] {
+  return listCharacters(SAVE_DIR, 'user');
+}
+
+export function customCharacterSavePath(name: string): string {
+  return coreCharacterSavePath(name, SAVE_DIR, 'user');
+}
+
+export function haveCustomSaves(): boolean {
+  return customCharacters().length > 0;
+}
+
+export const MISSING_CUSTOM_SAVES_MESSAGE =
+  `no Custom Game characters under ${SAVE_DIR}/user — ` +
+  'these cover the save tree a mod or custom map writes to';
 
 export const TRANSFER_STASH_PATH = coreTransferStashPath(SAVE_DIR);
 export const FORMULAS_PATH = coreFormulasPath(SAVE_DIR);

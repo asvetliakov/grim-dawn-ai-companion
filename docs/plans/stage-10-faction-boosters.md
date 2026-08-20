@@ -120,3 +120,37 @@ refusal kinds that were never about masteries, and the CLI held their wording.
 Both now live in `edit.ts`, so the second edit command inherited every check —
 checksums, resyncs, opaque regions, the byte-identical round trip and the
 changed-on-disk guard — without restating one of them.
+
+## Follow-up: Custom Game characters
+
+Asked for right after the stage landed, and scoped to the boosters alone — a
+custom game's items come from a mod's database and this tool reads the installed
+game's, so nothing else should cross the boundary.
+
+`save/user/<char>` is what the game's Custom Game mode writes (the mod's own
+account-wide stashes sit beside the campaign's, in `save/<mod>/`). The two trees
+are independent namespaces and **a name can live in both** — this machine has a
+`_Suchka` in each — so `characterSavePath` and `listCharacters` took a `SaveTree`
+parameter that **defaults to `main`**, leaving every existing caller on the
+campaign. `--custom` selects the other tree, a name found in the wrong one says
+so (`"_abcdef" is a campaign character — drop --custom`), and backups go under
+`backups/user/<char>` so a shared name cannot offer the wrong file to restore.
+
+The interesting part was not the tree. The custom character **refused** the edit
+with one `opaque` byte in block 16 — and the refusal was right. Block 16 carries
+a **skills map**, and it is empty on every campaign character, so `19 words + a
+zero count + the two endless-dungeon currencies` reads identically to the 22
+blind words the decoder had. A mod character fills it (one entry,
+`records/skills/playerclassmonk/blinding_flash.dbr`), the blind read walks into
+the string, and every field after it decodes at the wrong width — while the block
+still checksums, because the trailing drain swallows the difference. The single
+leftover byte at the end of the block was the only visible symptom, and since
+block 16 sits *after* block 13, `replay` refused rather than corrupting it.
+
+That is the transcript design paying for itself: the failure mode it was built
+to make impossible showed up on the first save from outside the sample it was
+written against, and it showed up as a refusal rather than as a save the game
+would not load. The layout is now
+`19 u32 · count · count × (record string, u32) · 2 u32 · 1 byte · drain`, all
+four live saves replay byte-for-byte with zero opaque segments, and the custom
+character takes the same 27 changes.

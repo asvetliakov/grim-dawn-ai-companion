@@ -43,7 +43,7 @@ import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
 import { createIconService, readPngSize } from '../core/icons/index.js';
 import { aggregateCharacter, type CharacterAggregate } from '../core/mechanics/aggregate.js';
 import { RESIST_COLUMNS, type ResistVector } from '../core/mechanics/stats.js';
-import { characterSavePath, formulasPath, reagentsPath, transferStashPath } from '../core/paths.js';
+import { characterSavePath, formulasPath, reagentsPath, transferStashPath, type SaveTree } from '../core/paths.js';
 import {
   CoverageTracker,
   resolveCharacter,
@@ -1671,11 +1671,12 @@ function boosterRow(kind: 'reputation' | 'nemesis', changes: BoosterChange[], un
   return same ? `${boostText(same.to)} (already)` : '';
 }
 
-function printBoosterPlan(plan: BoosterPlan, clear: boolean): void {
+function printBoosterPlan(plan: BoosterPlan, clear: boolean, tree: SaveTree): void {
   const all = [...plan.changes, ...plan.unchanged];
   const slots = [...new Set(all.map((c) => c.slot))].sort((a, b) => a - b);
 
-  console.log(`${plan.character}: ${clear ? 'clear every faction booster' : 'apply every faction booster the game sells'}`);
+  const who = tree === 'user' ? `${plan.character} (custom game)` : plan.character;
+  console.log(`${who}: ${clear ? 'clear every faction booster' : 'apply every faction booster the game sells'}`);
   console.log(`  ${'faction'.padEnd(28)}${'reputation'.padEnd(18)}${'nemesis'.padEnd(18)}what the game sells for it`);
   for (const slot of slots) {
     const changes = plan.changes.filter((c) => c.slot === slot);
@@ -1705,10 +1706,36 @@ function printBoosterPlan(plan: BoosterPlan, clear: boolean): void {
   }
 }
 
+/**
+ * Which character, in which save tree.
+ *
+ * The two trees are independent namespaces and a name can live in both, so a
+ * name that is not in the chosen one but *is* in the other says so rather than
+ * reporting a missing character — the whole difference is one flag.
+ */
+function pickCharacter(saveDir: string, name: string | undefined, active: string | undefined, tree: SaveTree): string {
+  const here = listCharacters(saveDir, tree);
+  const other: SaveTree = tree === 'main' ? 'user' : 'main';
+  const character = name ?? (tree === 'main' ? (active ?? here[0]) : here[0]);
+  if (!character) {
+    console.error(`error: no ${tree === 'user' ? 'custom-game ' : ''}characters found under ${saveDir}/${tree}`);
+    process.exit(1);
+  }
+  if (here.includes(character)) return character;
+  if (listCharacters(saveDir, other).includes(character)) {
+    const fix = other === 'user' ? 'add --custom' : 'drop --custom';
+    console.error(`error: "${character}" is a ${other === 'user' ? 'custom-game' : 'campaign'} character — ${fix}`);
+  } else {
+    console.error(`error: no character "${character}" under ${saveDir}/${tree} (have: ${here.join(', ') || 'none'})`);
+  }
+  process.exit(1);
+}
+
 program
   .command('boosters')
   .description('apply every faction reputation booster the game sells (prints the plan; --commit to write)')
   .option('-c, --char <name>', 'character name')
+  .option('--custom', 'a Custom Game character (save/user) rather than a campaign one (save/main)')
   .option('--faction <name...>', 'only these factions (slot number, id, or name); default: all of them')
   .option('--no-writs', 'leave the reputation-gain multiplier alone')
   .option('--no-warrants', 'leave the hostile-faction multiplier alone')
@@ -1718,6 +1745,7 @@ program
   .action(
     async (opts: {
       char?: string;
+      custom?: boolean;
       faction?: string[];
       writs: boolean;
       warrants: boolean;
@@ -1726,18 +1754,15 @@ program
       commit?: boolean;
     }) => {
       const settings = resolveSettings();
-      const character = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
-      if (!character) {
-        console.error('error: no characters found');
-        process.exit(1);
-      }
+      const tree: SaveTree = opts.custom ? 'user' : 'main';
+      const character = pickCharacter(settings.saveDir, opts.char, settings.activeCharacter, tree);
       if (!settings.gameDir) {
         console.error('error: no game directory — the booster multipliers are read from the installed game');
         process.exit(1);
       }
       // Never `snapshot.savePath`: that points at a rotation backup when the
       // watcher fell back, and writing there would clobber the wrong file.
-      const savePath = characterSavePath(character, settings.saveDir);
+      const savePath = characterSavePath(character, settings.saveDir, tree);
       const source = readSave(savePath);
       const { save, transcript } = parseGdcRecording(source, { path: savePath });
       const db = await loadGameDb({ gameDir: settings.gameDir, locale: settings.locale });
@@ -1753,7 +1778,7 @@ program
         ...(opts.faction ? { factions: opts.faction } : {}),
         ...(opts.clear ? { clear: true } : {}),
       });
-      printBoosterPlan(plan, opts.clear === true);
+      printBoosterPlan(plan, opts.clear === true, tree);
 
       if (plan.refusals.length) process.exit(1);
       if (!plan.output) {
@@ -1777,7 +1802,7 @@ program
         console.error(`\nerror: ${boosterRefusalText({ kind: 'save-changed-on-disk' })}`);
         process.exit(1);
       }
-      const backup = backupCharacterSave(savePath, character);
+      const backup = backupCharacterSave(savePath, character, tree);
       writeSaveAtomically(savePath, plan.output);
       console.log(`\nbackup  ${backup}`);
       console.log(`written ${savePath} (${plan.output.length} bytes, was ${source.length})`);

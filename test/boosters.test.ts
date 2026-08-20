@@ -8,10 +8,14 @@ import { encodeBlock13, parseGdc, parseGdcRecording } from '../src/core/save/gdc
 import { spliceRegion } from '../src/core/save/transcript.js';
 import {
   CHARACTERS,
+  MISSING_CUSTOM_SAVES_MESSAGE,
   MISSING_GAME_MESSAGE,
   MISSING_SAVES_MESSAGE,
   characterSavePath,
+  customCharacterSavePath,
+  customCharacters,
   gameDb,
+  haveCustomSaves,
   haveGameInstall,
   haveSaves,
 } from './paths.js';
@@ -206,5 +210,33 @@ describe.skipIf(!haveSaves() || !haveGameInstall())('applying faction boosters (
     const wrong = await plan(source, { factions: ['The Fourth Wall'] });
     expect(wrong.refusals).toContainEqual({ kind: 'unknown-faction', name: 'The Fourth Wall' });
     expect(wrong.output).toBeUndefined();
+  });
+});
+
+/**
+ * A Custom Game character — a mod or custom map, `save/user`. The whole app
+ * models the campaign, but a booster is a faction slot and a float: nothing here
+ * needs the mod's item database, which is exactly why this is the one operation
+ * that can cross the tree boundary.
+ */
+describe.skipIf(!haveCustomSaves() || !haveGameInstall())('applying boosters to a Custom Game character', () => {
+  if (!haveCustomSaves() || !haveGameInstall()) it.skip(MISSING_CUSTOM_SAVES_MESSAGE, () => {});
+
+  it('plans and writes the same 27 boosters', async () => {
+    for (const character of customCharacters()) {
+      const source = readFileSync(customCharacterSavePath(character));
+      const { save, transcript } = parseGdcRecording(source);
+      const result = planFactionBoosters({ character, save, transcript, source, db: await gameDb() });
+
+      expect(result.refusals, character).toEqual([]);
+      expect(result.changes, character).toHaveLength(27);
+      expect(result.output, character).toBeDefined();
+
+      const after = parseGdc(result.output!);
+      expect(after.warnings, character).toEqual([]);
+      expect(after.blocks.every((b) => b.checksumOk && b.status === 'parsed'), character).toBe(true);
+      expect(after.factions.filter((f) => f.positiveBoost === 3)).toHaveLength(15);
+      expect(after.factions.filter((f) => f.negativeBoost === 3)).toHaveLength(12);
+    }
   });
 });

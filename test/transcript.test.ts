@@ -15,7 +15,16 @@ import {
   type Transcript,
 } from '../src/core/save/transcript.js';
 import { GdWriter } from '../src/core/save/writer.js';
-import { CHARACTERS, MISSING_SAVES_MESSAGE, characterSavePath, haveSaves } from './paths.js';
+import {
+  CHARACTERS,
+  MISSING_CUSTOM_SAVES_MESSAGE,
+  MISSING_SAVES_MESSAGE,
+  characterSavePath,
+  customCharacterSavePath,
+  customCharacters,
+  haveCustomSaves,
+  haveSaves,
+} from './paths.js';
 
 // ---------------------------------------------------------------------------
 // The fact the whole module is built around
@@ -301,5 +310,42 @@ describe.skipIf(!haveSaves())('live player.gdc transcripts', () => {
     expect(after.warnings).toEqual([]);
     expect(after.blocks.filter((b) => !b.checksumOk || b.status !== 'parsed')).toEqual([]);
     expect(after).toEqual(save);
+  });
+});
+
+/**
+ * A Custom Game character is the same file format written by a different mode,
+ * and it exercises what a campaign character cannot: block 16's skills map is
+ * empty on every campaign save, so 19 words + a zero count + two currencies
+ * reads identically to 22 blind words. A mod character fills it, and the blind
+ * read walked into the string — every field after it at the wrong width, the
+ * block still checksumming, and a single byte left `opaque` at the end.
+ */
+describe.skipIf(!haveCustomSaves())('live Custom Game transcripts', () => {
+  if (!haveCustomSaves()) {
+    it.skip(MISSING_CUSTOM_SAVES_MESSAGE, () => {});
+  }
+
+  it('replays every custom character byte for byte, with nothing left opaque', () => {
+    for (const character of customCharacters()) {
+      const source = readFileSync(customCharacterSavePath(character));
+      const { save, transcript } = parseGdcRecording(source);
+
+      expect(save.warnings, character).toEqual([]);
+      expect(replay(transcript).equals(source), character).toBe(true);
+      expect(opaqueBlocks(transcript), character).toEqual([]);
+      expect(transcript.resynced, character).toEqual([]);
+    }
+  });
+
+  it('survives a total state shift', () => {
+    for (const character of customCharacters()) {
+      const source = readFileSync(customCharacterSavePath(character));
+      const { save, transcript } = parseGdcRecording(source);
+      const reseeded = replay({ ...transcript, seed: (transcript.seed ^ 0xffffffff) >>> 0 });
+
+      expect(reseeded.equals(source), character).toBe(false);
+      expect(parseGdc(reseeded), character).toEqual(save);
+    }
   });
 });
