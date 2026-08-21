@@ -44,6 +44,7 @@ function stubDb(skills: Record<string, string> = {}, items: Record<string, DbIte
     getSet: () => undefined,
     skillName: (record) => skills[record],
     skillClass: () => undefined,
+    masteryNumber: () => undefined,
     difficultyPenalty: () => ({}),
     armorAbsorptionBase: () => 70,
     speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),

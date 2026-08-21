@@ -457,14 +457,30 @@ describe.skipIf(skipLive)('buildUiSnapshot', () => {
       const worn = ui.equipment.filter((i) => i !== null);
       expect(worn.length).toBeGreaterThan(6);
 
+      // "Everything worn is equippable" held until a character was respecced
+      // for real. A mastery bar carries attributes, so taking the masteries away
+      // drops Physique and Cunning below what the gear still on the character
+      // asks for — and the game leaves that gear equipped. The invariant is
+      // therefore about a character who has *spent* their points; one holding a
+      // pile of unspent ones is mid-respec, and the requirement check reporting
+      // a shortfall there is it working.
+      const midRespec = snap.save.attributes.skillPoints > 0 && snap.save.classRecord === '';
+
       for (const item of worn) {
         const lines = item.tooltip.blocks.flatMap((b) => b.lines);
         expect(lines.length, `${item.display} has no stat lines`).toBeGreaterThan(0);
         // The document's cardinal rule: no raw `key: value` fallbacks, and every
         // stat reference names its kind.
         for (const line of lines) expect(line).not.toMatch(/^`[a-z]+[A-Za-z]*:/);
-        // Everything worn is by definition equippable.
-        expect(item.tooltip.meetsRequirements, `${item.display} fails its own check`).toBe(true);
+
+        if (midRespec) {
+          // Whatever it decides, it has to say why rather than shrug.
+          if (item.tooltip.meetsRequirements === false) {
+            expect(item.tooltip.requirements?.length, `${item.display} fails with no requirement listed`).toBeGreaterThan(0);
+          }
+        } else {
+          expect(item.tooltip.meetsRequirements, `${item.display} fails its own check`).toBe(true);
+        }
       }
     } finally {
       icons.close();

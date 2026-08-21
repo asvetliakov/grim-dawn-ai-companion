@@ -76,6 +76,7 @@ function stubDb(world: World): GameDb {
     getSet: (r) => world.sets?.[r],
     skillName: (r) => world.skills?.[r]?.name,
     skillClass: () => undefined,
+    masteryNumber: () => undefined,
     difficultyPenalty: (d) => world.penalty?.[d] ?? {},
     armorAbsorptionBase: () => 70,
     speedCaps: () => ({ attack: 200, cast: 200, run: 135 }),
