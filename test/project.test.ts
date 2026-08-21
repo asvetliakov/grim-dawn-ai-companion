@@ -5,12 +5,12 @@ import { adviseEnvelopeSchema } from '../src/core/ai/envelope.js';
 import { projectPlan, type ProjectionInput } from '../src/core/ai/project.js';
 import type { AdvisorPlan } from '../src/core/ai/provider.js';
 import { buildContextDoc } from '../src/core/context/builder.js';
-import type { DbItem, DbSkill, GameDb } from '../src/core/db/types.js';
+import type { DbItem, DbSkill, GameDb } from '@grimdawn/core/db/types';
 import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../src/core/mechanics/stats.js';
-import { resolveCharacter, resolveItem, type AccountFiles, type ResolvedItem } from '../src/core/resolve.js';
-import { parseGdc } from '../src/core/save/gdc.js';
-import { parseFormulasFile, parseReagents, parseTransferStash } from '../src/core/save/gst.js';
+import { resolveCharacter, resolveItem, type AccountFiles, type ResolvedItem } from '@grimdawn/core/resolve';
+import { parseGdc } from '@grimdawn/core/save/gdc';
+import { parseFormulasFile, parseReagents, parseTransferStash } from '@grimdawn/core/save/gst';
 import {
   EQUIP_SLOT_NAMES,
   type CharacterSave,
@@ -18,7 +18,7 @@ import {
   type EquippedItem,
   type ItemInstance,
   type ItemPosition,
-} from '../src/core/save/types.js';
+} from '@grimdawn/core/save/types';
 import {
   FORMULAS_PATH,
   MISSING_GAME_MESSAGE,

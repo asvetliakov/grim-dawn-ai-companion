@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { DbAffix, DbItem, DbSet, DbSkill, GameDb } from '../src/core/db/types.js';
+import type { DbAffix, DbItem, DbSet, DbSkill, GameDb } from '@grimdawn/core/db/types';
 import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import {
   addDamage,
@@ -29,11 +29,19 @@ import type {
   CharacterSkill,
   EquippedItem,
   ItemInstance,
-} from '../src/core/save/types.js';
-import { CHARACTERS, MISSING_GAME_MESSAGE, MISSING_SAVES_MESSAGE, gameDb, haveGameInstall, haveSaves } from './paths.js';
-import { parseGdc } from '../src/core/save/gdc.js';
+} from '@grimdawn/core/save/types';
+import {
+  CHARACTERS,
+  MISSING_GAME_MESSAGE,
+  MISSING_SAVES_MESSAGE,
+  gameDb,
+  haveGameInstall,
+  haveSaves,
+  characterSavePath,
+  primaryCharacter,
+} from './paths.js';
+import { parseGdc } from '@grimdawn/core/save/gdc';
 import { readFileSync } from 'node:fs';
-import { characterSavePath } from '../src/core/paths.js';
 
 // ---------------------------------------------------------------------------
 // A synthetic world, so the rules are testable without the game installed
@@ -1299,7 +1307,7 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
 
     it('bands, ranks and profiles a real character', { timeout: TIMEOUT }, async () => {
       const db = await gameDb();
-      const path = characterSavePath(CHARACTERS[0]);
+      const path = characterSavePath(primaryCharacter());
       const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
 
       // Every equipped slot with resistances on it should be attributable.
@@ -1307,24 +1315,36 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
       expect(agg.resistances.rows.some((r) => r.kind === 'augment')).toBe(true);
       expect(agg.resistances.rows.some((r) => r.kind === 'devotion')).toBe(true);
 
-      // Pneumatic Burst is the maintainable band's reason for existing.
-      expect(agg.maintained.map((m) => m.name)).toContain('Pneumatic Burst');
-      const awakening = agg.resistances.rows.find((r) => r.label === 'Elemental Awakening');
-      expect(awakening?.band).toBe('maintainable');
-      // The *effective* rank — invested points plus gear `+skills` — rendered
-      // as a note. The exact number moves every time the character respecs or
-      // re-gears (it was 12 when this test was written, 2 after the 2026-08-10
-      // advice run was acted on), so pin the mechanism, not the count.
-      expect(awakening?.note).toMatch(/^rank \d+$/);
+      // A skill row carries its *effective* rank — invested points plus gear
+      // `+skills` — as a note. The exact number moves every time the character
+      // respecs or re-gears (it was 12 when this test was written, 2 after the
+      // 2026-08-10 advice run was acted on), so pin the mechanism, not the
+      // count: ranks are stated, and stated with a number. Other rows note
+      // other things — an affix's roll, for one — and are not this rule's
+      // business.
+      const rankNotes = agg.resistances.rows.map((r) => r.note).filter((n) => n?.startsWith('rank'));
+      expect(rankNotes.length).toBeGreaterThan(0);
+      for (const note of rankNotes) expect(note).toMatch(/^rank \d+$/);
 
-      // A pierce/bleed build has to read as one. Which of the two leads swings
-      // with the loadout — acting on a bleed-focused plan flipped it — so the
-      // pair is the pin, not the order.
-      expect(new Set(agg.damage.ranked.slice(0, 2).map((d) => d.key))).toEqual(new Set(['pierce', 'bleeding']));
+      // The damage profile reads as a build: types the character actually
+      // invests in, ordered by the `+%` it has committed to them and broken by
+      // flat. Which types lead is the player's business and changes with every
+      // respec, so the order is checked against its own rule rather than
+      // against a remembered pair.
+      expect(agg.damage.ranked.length).toBeGreaterThan(0);
+      const order = agg.damage.ranked.map((d) => [d.percent, d.flat] as const);
+      expect([...order].sort((a, b) => b[0] - a[0] || b[1] - a[1])).toEqual(order);
+      for (const entry of agg.damage.ranked) {
+        expect(entry.percent > 0 || entry.flat > 0, entry.key).toBe(true);
+      }
 
-      // Night's Chill is resistance reduction, not defence — the sign trap.
-      expect(agg.damage.resistReduction.some((rr) => rr.source === "Night's Chill")).toBe(true);
-      expect(agg.resistances.rows.some((r) => r.label === "Night's Chill")).toBe(false);
+      // Resistance reduction is not defence — the sign trap. Whatever supplies
+      // it must appear on that side of the ledger and on no other.
+      const rrSources = new Set(agg.damage.resistReduction.map((rr) => rr.source));
+      expect(rrSources.size).toBeGreaterThan(0);
+      for (const source of rrSources) {
+        expect(agg.resistances.rows.some((r) => r.label === source), source).toBe(false);
+      }
 
       // Nothing may render as a raw record path.
       const labels = [
@@ -1335,34 +1355,63 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
       expect(labels.filter((l) => l.includes('.dbr'))).toEqual([]);
     });
 
+    it('bands a maintainable buff apart from the permanent ones', { timeout: TIMEOUT }, async () => {
+      const db = await gameDb();
+      // The band exists to hold buffs that are only up while the player keeps
+      // them up. *Which* character has one is a fact about how the saves have
+      // been played — the one this test used to name was respecced out of the
+      // mastery granting it, and the buff moved to an alt — so the band is
+      // searched for, and its contract checked wherever it is found.
+      let found = 0;
+      for (const name of CHARACTERS) {
+        const path = characterSavePath(name);
+        const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
+        if (agg.maintained.length === 0) continue;
+        found++;
+
+        const maintained = new Set(agg.maintained.map((m) => m.name));
+        for (const buff of maintained) expect(buff, name).not.toMatch(/\.dbr$/);
+        // A resistance the character only has while that buff is up must be
+        // banded with it, never summed into the permanent total.
+        for (const row of agg.resistances.rows) {
+          if (maintained.has(row.label)) expect(row.band, `${name}: ${row.label}`).toBe('maintainable');
+        }
+      }
+      expect(found, 'no character on this machine has a maintainable buff').toBeGreaterThan(0);
+    });
+
     it('types the damage path: conversion applied, composition whole, attack skills typed', { timeout: TIMEOUT }, async () => {
       const db = await gameDb();
-      const path = characterSavePath(CHARACTERS[0]);
+      const path = characterSavePath(primaryCharacter());
       const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
 
-      // The Chosen Epaulets' 30% Elemental → Pierce is real, global, and folded:
-      // with both swords at 100% armor piercing, no physical flat survives, and
-      // pierce out-flats every other type by a distance.
-      const conversion = agg.damage.conversions.find((c) => c.from === 'Elemental' && c.to === 'Pierce');
-      expect(conversion?.scope).toBe('global');
-      expect(conversion?.fromKeys).toEqual(['fire', 'cold', 'lightning']);
-      const flatOf = (key: string) => agg.damage.ranked.find((d) => d.key === key)?.flat ?? 0;
-      expect(flatOf('physical')).toBe(0);
-      expect(flatOf('pierce')).toBeGreaterThan(200);
+      // A conversion is typed, scoped, and expands its in-type to real damage
+      // keys — `Elemental` is the three, and every pair names types the
+      // vocabulary knows. Which conversions a character carries is gear, and
+      // this one's swapped: it was pinned to a specific pair of epaulets until
+      // the loadout moved on.
+      for (const c of agg.damage.conversions) {
+        expect(['global', 'skill'], `${c.from}→${c.to}`).toContain(c.scope);
+        expect(c.fromKeys.length, `${c.from}→${c.to}`).toBeGreaterThan(0);
+        if (c.from === 'Elemental') expect(c.fromKeys).toEqual(['fire', 'cold', 'lightning']);
+      }
 
-      // Shares are percentages of one whole, led by one of the build's two
-      // types (pierce until the 2026-08-10 re-gear, bleeding since).
+      // Shares are percentages of one whole, led by a type the profile ranks.
       const shares = agg.damage.weaponAttack.composition.reduce((n, s) => n + s.share, 0);
       expect(shares).toBeGreaterThanOrEqual(98);
       expect(shares).toBeLessThanOrEqual(102);
-      expect(['pierce', 'bleeding']).toContain(agg.damage.weaponAttack.composition[0]?.key);
+      const lead = agg.damage.weaponAttack.composition[0]?.key;
+      expect(agg.damage.ranked.map((d) => d.key)).toContain(lead);
 
-      // Every invested attack skill gets typed, the main attack among them.
+      // Every invested attack skill gets typed, the main attack among them, and
+      // it is named rather than left as the record it came from.
       expect(agg.damage.skillDamage.length).toBeGreaterThan(2);
-      expect(agg.damage.weaponAttack.mainAttack).toBe('Onslaught');
-      const onslaught = agg.damage.skillDamage.find((s) => s.skill === 'Onslaught');
-      expect(onslaught?.isDefaultAttack).toBe(true);
-      expect(onslaught?.weaponDamagePct).toBeGreaterThan(100);
+      const mainAttack = agg.damage.weaponAttack.mainAttack;
+      expect(mainAttack).toBeTruthy();
+      expect(mainAttack).not.toMatch(/\.dbr$/);
+      const main = agg.damage.skillDamage.find((s) => s.skill === mainAttack);
+      expect(main, `${mainAttack} missing from skillDamage`).toBeDefined();
+      expect(main!.weaponDamagePct).toBeGreaterThan(0);
     });
 
     it('proves every equipped item satisfiable — the wearing-it invariant', { timeout: TIMEOUT }, async () => {
@@ -1402,19 +1451,26 @@ describe.skipIf(!haveGameInstall() || !haveSaves())(
         }
       }
 
-      // And the known case: _Suchka dual-wields swords behind Dual Blades.
-      const path = characterSavePath(CHARACTERS[0]);
-      const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
-      expect(agg.wielding.mode).toBe('dual-wield melee');
-      expect(agg.wielding.enablers.map((e) => e.name)).toContain('Dual Blades');
-      // Dual Blades' conditional stats count for this character — the
-      // dual-wield exclusion line must not appear for an actual dual-wielder.
-      expect(agg.exclusions.some((line) => line.includes('dual-wield-only'))).toBe(false);
+      // And the case with teeth, found rather than named: a character actually
+      // holding two weapons. Its enablers are named — the specific one was
+      // written down here and went stale the first time the character respecced
+      // into a different mastery — and because it really is dual-wielding, the
+      // conditional stats count and the exclusion line must not appear.
+      for (const name of CHARACTERS) {
+        const path = characterSavePath(name);
+        const agg = aggregateCharacter(parseGdc(readFileSync(path), { path }), db);
+        if (!agg.wielding.mode.startsWith('dual-wield')) continue;
+
+        expect(agg.wielding.enablers.length, name).toBeGreaterThan(0);
+        for (const e of agg.wielding.enablers) expect(e.name, name).not.toMatch(/\.dbr$/);
+        expect(agg.exclusions.some((line) => line.includes('dual-wield-only')), name).toBe(false);
+        break;
+      }
     });
 
     it('scales the totals by difficulty without touching the raw sums', { timeout: TIMEOUT }, async () => {
       const db = await gameDb();
-      const path = characterSavePath(CHARACTERS[0]);
+      const path = characterSavePath(primaryCharacter());
       const parsed = parseGdc(readFileSync(path), { path });
       const normal = aggregateCharacter(parsed, db, 'Normal');
       const ultimate = aggregateCharacter(parsed, db, 'Ultimate');

@@ -15,7 +15,7 @@
  * simulate the swap would be doing the advisor's job with none of its context.
  */
 
-import type { DbItem } from '../db/types.js';
+import type { DbItem } from '@grimdawn/core/db/types';
 import { checkRequirements, type CharacterStanding, type RequirementCheck } from '../mechanics/requirements.js';
 import {
   addDamage,
@@ -29,7 +29,7 @@ import {
   type DamageKey,
   type ResistKey,
 } from '../mechanics/stats.js';
-import type { ResolvedItem } from '../resolve.js';
+import type { ResolvedItem } from '@grimdawn/core/resolve';
 
 /** The slot a candidate competes for. Both rings share one group. */
 export type EquipGroup =

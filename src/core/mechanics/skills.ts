@@ -13,8 +13,8 @@
  *    counter-example, which is what makes it safe to lean on.
  */
 
-import type { DbSkill, GameDb, StatValue } from '../db/types.js';
-import type { CharacterSave, CharacterSkill } from '../save/types.js';
+import type { DbSkill, GameDb, StatValue } from '@grimdawn/core/db/types';
+import type { CharacterSave, CharacterSkill } from '@grimdawn/core/save/types';
 
 /**
  * Where a skill's numbers belong.

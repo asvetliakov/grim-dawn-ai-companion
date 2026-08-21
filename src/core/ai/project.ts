@@ -19,18 +19,18 @@
  * returns undefined — the envelope field is simply absent.
  */
 
-import type { GameDb } from '../db/types.js';
+import type { GameDb } from '@grimdawn/core/db/types';
 import { aggregateCharacter, type CharacterAggregate } from '../mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../mechanics/stats.js';
 import { weaponSlotRef } from '../../shared/slots.js';
-import type { AccountFiles, ResolvedItem } from '../resolve.js';
+import type { AccountFiles, ResolvedItem } from '@grimdawn/core/resolve';
 import {
   EQUIP_SLOT_NAMES,
   type CharacterSave,
   type Difficulty,
   type EquippedItem,
   type ItemInstance,
-} from '../save/types.js';
+} from '@grimdawn/core/save/types';
 import type { PlanProjection } from './envelope.js';
 import type { AdvisorPlan, SocketFit, Verdict } from './provider.js';
 

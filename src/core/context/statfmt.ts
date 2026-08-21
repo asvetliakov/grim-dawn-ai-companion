@@ -15,7 +15,7 @@
  * as a `Min`/`Max` pair, and a lone `Min` means the value is fixed.
  */
 
-import type { GameDb, StatValue } from '../db/types.js';
+import type { GameDb, StatValue } from '@grimdawn/core/db/types';
 import { atRank, statRecord, type EffectiveRank } from '../mechanics/skills.js';
 import {
   conversions,

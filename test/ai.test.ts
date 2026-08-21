@@ -46,8 +46,8 @@ import {
   type AdvisorRequest,
   type SpawnFn,
 } from '../src/core/ai/index.js';
-import type { DbItem } from '../src/core/db/types.js';
-import type { ResolvedItem } from '../src/core/resolve.js';
+import type { DbItem } from '@grimdawn/core/db/types';
+import type { ResolvedItem } from '@grimdawn/core/resolve';
 
 // ---------------------------------------------------------------------------
 // A fake `claude`

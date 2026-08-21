@@ -10,17 +10,18 @@
  * thirty-second rebuild on a dropdown change.
  */
 
-import { loadGameDb } from '../core/db/index.js';
-import type { GameDb } from '../core/db/types.js';
-import { findGameDirs, MISSING_GAME_DIR_MESSAGE } from '../core/db/gamefiles.js';
-import { createIconService, type IconService } from '../core/icons/index.js';
+import { loadGameDb } from '@grimdawn/core/db';
+import type { GameDb } from '@grimdawn/core/db/types';
+import { findGameDirs, MISSING_GAME_DIR_MESSAGE } from '@grimdawn/core/db/gamefiles';
+import { createIconService, type IconService } from '@grimdawn/core/icons';
 import { adviceScope, loadSnapshot, SessionError, type CharacterSnapshot } from '../core/session.js';
-import type { CharacterSave } from '../core/save/types.js';
-import { findSaveDirs, listCharacters, loadSettings, resolveSettings, saveSettings } from '../core/settings.js';
+import type { CharacterSave } from '@grimdawn/core/save/types';
+import { findSaveDirs, listCharacters } from '@grimdawn/core/paths';
+import { loadSettings, resolveSettings, saveSettings } from '../core/settings.js';
 import type { ResolvedSettings, Settings } from '../core/settings-schema.js';
 import { buildUiSnapshot } from '../core/view.js';
-import { createSaveWatcher, type SaveWatcher } from '../core/watcher.js';
-import { availableLocales } from '../core/db/gametext.js';
+import { createSaveWatcher, type SaveWatcher } from '@grimdawn/core/watcher';
+import { availableLocales } from '@grimdawn/core/db/gametext';
 import type { Bootstrap, ContextDocumentView, DetectedPaths, PushEvent } from '../shared/ipc.js';
 import type { UiSnapshot } from '../shared/view.js';
 

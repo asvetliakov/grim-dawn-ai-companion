@@ -14,7 +14,7 @@
 import { readFile } from 'node:fs/promises';
 import { protocol, type Session } from 'electron';
 
-import type { IconService } from '../core/icons/index.js';
+import type { IconService } from '@grimdawn/core/icons';
 
 export const GDICON_SCHEME = 'gdicon';
 

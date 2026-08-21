@@ -53,7 +53,7 @@ import {
   type PlanWarning,
 } from '../core/ai/index.js';
 import { documentSocketables, type ContextDoc, type ContextInput } from '../core/context/builder.js';
-import { shortHash } from '../core/resolve.js';
+import { shortHash } from '@grimdawn/core/resolve';
 import { adviceScope, type CharacterSnapshot } from '../core/session.js';
 import type { Settings } from '../core/settings-schema.js';
 import type { PushEvent } from '../shared/ipc.js';

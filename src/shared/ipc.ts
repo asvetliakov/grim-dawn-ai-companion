@@ -23,7 +23,7 @@ import type {
 } from '../core/ai/envelope.js';
 import type { AdvisorPlan, PlanWarning, VerdictRow } from '../core/ai/provider.js';
 import type { Settings } from '../core/settings-schema.js';
-import type { Difficulty } from '../core/save/types.js';
+import type { Difficulty } from '@grimdawn/core/save/types';
 import type { UiSnapshot } from './view.js';
 
 export type {

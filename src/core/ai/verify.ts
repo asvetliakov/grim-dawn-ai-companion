@@ -13,8 +13,8 @@
  */
 
 import { acceptsComponent } from '../context/builder.js';
-import type { DbItem } from '../db/types.js';
-import type { ResolvedItem } from '../resolve.js';
+import type { DbItem } from '@grimdawn/core/db/types';
+import type { ResolvedItem } from '@grimdawn/core/resolve';
 import type { PlanProjection } from './envelope.js';
 import {
   SOCKET_VERDICTS,

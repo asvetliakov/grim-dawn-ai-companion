@@ -15,16 +15,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { EXTRA_BAG, MAIN_BAG, sackDims } from '../src/core/grid.js';
+import { EXTRA_BAG, MAIN_BAG, sackDims } from '@grimdawn/core/grid';
 import { DESIGN_SIZE, MIN_SIZE, startingSize } from '../src/main/window-size.js';
-import { createIconService, flatten, readPngSize, CELL_PX } from '../src/core/icons/index.js';
-import { encodePng } from '../src/core/icons/png.js';
-import { resolveCharacter, type ResolvedItem } from '../src/core/resolve.js';
-import { parseGdc } from '../src/core/save/gdc.js';
+import { createIconService, flatten, readPngSize, CELL_PX } from '@grimdawn/core/icons';
+import { encodePng } from '@grimdawn/core/icons/png';
+import { resolveCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
+import { parseGdc } from '@grimdawn/core/save/gdc';
 import { accountFiles, loadSnapshot } from '../src/core/session.js';
 import { resolveSettings } from '../src/core/settings.js';
 import { buildUiSnapshot, type UiGrid, type UiSocketable } from '../src/core/view.js';
-import type { PositionedItem } from '../src/core/save/types.js';
+import type { PositionedItem } from '@grimdawn/core/save/types';
 
 import {
   CHARACTERS,
@@ -34,6 +34,9 @@ import {
   gameDb,
   haveGameInstall,
   haveSaves,
+  haveLiveSaves,
+  liveCharacters,
+  primaryLiveCharacter,
 } from './paths.js';
 
 // ---------------------------------------------------------------------------
@@ -157,6 +160,10 @@ describe('sackDims', () => {
 // ---------------------------------------------------------------------------
 
 const skipSaves = !haveSaves() || !haveGameInstall();
+// `buildUiSnapshot` loads through the session, off the real save tree, so it
+// needs characters that are actually there — not the fixtures the parsing
+// tests are content with.
+const skipLive = !haveLiveSaves() || !haveGameInstall();
 
 describe.skipIf(skipSaves)('ItemPosition', () => {
   if (skipSaves) it.skip(haveSaves() ? MISSING_GAME_MESSAGE : MISSING_SAVES_MESSAGE, () => {});
@@ -188,7 +195,11 @@ describe.skipIf(skipSaves)('ItemPosition', () => {
     const settings = resolveSettings();
     const save = parseGdc(readFileSync(characterSavePath(name)));
     const resolved = resolveCharacter(save, accountFiles(settings.saveDir), db);
-    expect(resolved.items.length).toBeGreaterThan(50);
+    // Enough items to be worth checking. Not a fixed floor: the account-wide
+    // stash is most of the count and belongs to the save *tree*, so a fixture
+    // read on a machine whose tree has moved away resolves the character's own
+    // gear and nothing else — which is a smaller number, not a broken one.
+    expect(resolved.items.length).toBeGreaterThan(10);
 
     for (const item of resolved.items) {
       const p = item.position;
@@ -240,8 +251,8 @@ describe.skipIf(!haveGameInstall())('getIconInfo', () => {
 // The snapshot the window paints
 // ---------------------------------------------------------------------------
 
-describe.skipIf(skipSaves)('buildUiSnapshot', () => {
-  if (skipSaves) it.skip(haveSaves() ? MISSING_GAME_MESSAGE : MISSING_SAVES_MESSAGE, () => {});
+describe.skipIf(skipLive)('buildUiSnapshot', () => {
+  if (skipLive) it.skip(haveLiveSaves() ? MISSING_GAME_MESSAGE : MISSING_SAVES_MESSAGE, () => {});
 
   /** Every cell an item covers, so overlaps and gaps are both visible. */
   function occupancy(grid: UiGrid): { cells: number; overlaps: number; outside: number } {
@@ -263,7 +274,12 @@ describe.skipIf(skipSaves)('buildUiSnapshot', () => {
     return { cells: taken.size, overlaps, outside };
   }
 
-  it.each(CHARACTERS)('builds a clone-safe, non-overlapping snapshot for %s', async (name) => {
+  // Loaded the way the app loads it — through the session, off the real save
+  // directory — so this one runs against the tree as it is now rather than
+  // against the fixtures. A snapshot of a character that has since been deleted
+  // cannot be loaded that way, and the path from save tree to screen is exactly
+  // what is being checked.
+  it.each(liveCharacters())('builds a clone-safe, non-overlapping snapshot for %s', async (name) => {
     const db = await gameDb();
     const icons = createIconService();
     try {
@@ -333,7 +349,7 @@ describe.skipIf(skipSaves)('buildUiSnapshot', () => {
     const db = await gameDb();
     const icons = createIconService();
     try {
-      const snap = loadSnapshot(db, resolveSettings(), { character: CHARACTERS[0] });
+      const snap = loadSnapshot(db, resolveSettings(), { character: primaryLiveCharacter() });
       const ui = await buildUiSnapshot(snap, icons);
 
       const ids = Object.keys(ui.socketables);
@@ -396,7 +412,7 @@ describe.skipIf(skipSaves)('buildUiSnapshot', () => {
     const db = await gameDb();
     const icons = createIconService();
     try {
-      const snap = loadSnapshot(db, resolveSettings(), { character: CHARACTERS[0] });
+      const snap = loadSnapshot(db, resolveSettings(), { character: primaryLiveCharacter() });
       const ui = await buildUiSnapshot(snap, icons);
       const all = Object.values(ui.socketables);
 
@@ -436,7 +452,7 @@ describe.skipIf(skipSaves)('buildUiSnapshot', () => {
     const db = await gameDb();
     const icons = createIconService();
     try {
-      const snap = loadSnapshot(db, resolveSettings(), { character: CHARACTERS[0] });
+      const snap = loadSnapshot(db, resolveSettings(), { character: primaryLiveCharacter() });
       const ui = await buildUiSnapshot(snap, icons);
       const worn = ui.equipment.filter((i) => i !== null);
       expect(worn.length).toBeGreaterThan(6);
@@ -459,7 +475,7 @@ describe.skipIf(skipSaves)('buildUiSnapshot', () => {
     const db = await gameDb();
     const icons = createIconService();
     try {
-      const snap = loadSnapshot(db, resolveSettings(), { character: CHARACTERS[0] });
+      const snap = loadSnapshot(db, resolveSettings(), { character: primaryLiveCharacter() });
       const ui = await buildUiSnapshot(snap, icons);
 
       expect(ui.bags[0]).toMatchObject({ width: MAIN_BAG.width, height: MAIN_BAG.height });

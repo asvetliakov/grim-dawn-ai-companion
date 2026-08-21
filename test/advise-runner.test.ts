@@ -24,9 +24,16 @@ import { resolveSettings } from '../src/core/settings.js';
 import type { Settings } from '../src/core/settings-schema.js';
 import type { PushEvent } from '../src/shared/ipc.js';
 import { ALREADY_RUNNING, AdviseRunner, planCheckInput } from '../src/main/advise.js';
-import { MISSING_GAME_MESSAGE, MISSING_SAVES_MESSAGE, gameDb, haveGameInstall, haveSaves } from './paths.js';
+import {
+  MISSING_GAME_MESSAGE,
+  MISSING_SAVES_MESSAGE,
+  gameDb,
+  haveGameInstall,
+  haveLiveSaves,
+  primaryLiveCharacter,
+} from './paths.js';
 
-const live = haveGameInstall() && haveSaves();
+const live = haveGameInstall() && haveLiveSaves();
 
 describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSING_SAVES_MESSAGE})`, () => {
   const originalData = process.env.GD_DATA_DIR;
@@ -37,7 +44,7 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     // Advice is written to `<appData>/advice/`, so every test gets its own.
     process.env.GD_DATA_DIR = mkdtempSync(join(tmpdir(), 'gd-runner-'));
     const db = await gameDb();
-    snapshot = loadSnapshot(db, resolveSettings(), { character: '_Suchka' });
+    snapshot = loadSnapshot(db, resolveSettings(), { character: primaryLiveCharacter() });
     pushes = [];
   });
 

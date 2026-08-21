@@ -10,10 +10,10 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { appDataDir, ensureDir } from './db/cache.js';
-import { findGameDir } from './db/gamefiles.js';
-import { saveDir as detectedSaveDir, type SaveTree } from './paths.js';
-import { documentRoots, safeReaddir, steamRoots, STEAM_APP_ID } from './platform.js';
+import { appDataDir } from './data-dir.js';
+import { ensureDir } from '@grimdawn/core/db/cache';
+import { findGameDir } from '@grimdawn/core/db/gamefiles';
+import { findSaveDir, saveDir as detectedSaveDir } from '@grimdawn/core/paths';
 import { settingsSchema, type ResolvedSettings, type Settings } from './settings-schema.js';
 
 export { settingsSchema } from './settings-schema.js';
@@ -61,51 +61,3 @@ export function resolveSettings(settings: Settings = loadSettings()): ResolvedSe
   };
 }
 
-/**
- * Every save tree on this machine, best first.
- *
- * Two locations, and which one is real depends on the *store and its settings*
- * rather than on the platform:
- *
- *   - **Steam with cloud saves on** writes to `userdata/<accountId>/219990/
- *     remote/save`. That is the normal Steam setup and the one this machine uses.
- *   - **GOG, and Steam with cloud saves off**, write to
- *     `Documents/My Games/Grim Dawn/save` — inside the wrapper's fake Windows
- *     profile under CrossOver, in the real one on Windows.
- *
- * A directory counts only if it has a `main/` in it, which is where characters
- * live: an empty `save` folder is left behind by an uninstall and would otherwise
- * shadow the tree that has the saves in it.
- */
-export function findSaveDirs(): string[] {
-  const found: string[] = [];
-  for (const steam of steamRoots()) {
-    const userdata = join(steam, 'userdata');
-    for (const account of safeReaddir(userdata)) {
-      found.push(join(userdata, account, STEAM_APP_ID, 'remote/save'));
-    }
-  }
-  for (const documents of documentRoots()) {
-    found.push(join(documents, 'My Games/Grim Dawn/save'));
-  }
-  return [...new Set(found)].filter((dir) => existsSync(join(dir, 'main')));
-}
-
-/** The best save tree, or nothing. `GD_SAVE_DIR` wins over all of it. */
-export function findSaveDir(): string | undefined {
-  if (process.env.GD_SAVE_DIR) return process.env.GD_SAVE_DIR;
-  return findSaveDirs()[0];
-}
-
-/**
- * Character directory names in one of the save trees — the campaign by default,
- * `user` for the characters a Custom Game writes. The default keeps every
- * existing caller (the window, the session, the advisor) on the campaign, which
- * is the only tree the rest of the app models: a custom game's items come from a
- * mod's database, and this one reads the installed game's.
- */
-export function listCharacters(saveDir: string, tree: SaveTree = 'main'): string[] {
-  return safeReaddir(join(saveDir, tree))
-    .filter((name) => existsSync(join(saveDir, tree, name, 'player.gdc')))
-    .sort();
-}

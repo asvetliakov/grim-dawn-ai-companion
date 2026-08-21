@@ -113,6 +113,24 @@ Each stage plan is self-contained (goal, format facts, deliverables, acceptance 
 - electron-builder packaging (dev-mode `npm run dev` is fine until then).
 - Nice-to-haves: per-slot "shopping list" view, multi-character comparison, hardcore (`.gsh`) stash support if ever needed.
 
+## Stage 11 — The split: a library, and a patcher of its own
+
+Stages 9 and 10 taught this repo to write saves, and stage 9's outcome recorded the reason it had no button: *"a control that irreversibly edits a save wants the write path to have been used on a real character before it gets a button."* It has been now, so the write half moved out rather than growing one here.
+
+Three repositories, checked out as siblings:
+
+- **`.`** — the companion, back to being an advisor that only reads.
+- **`../grimdawn-core`** — `@grimdawn/core`: the save parser and writer, the `.arz`/`.arc` readers, icons, path detection. Source-only (`exports` point at `.ts`), a `file:` **devDependency** so electron-vite bundles it instead of externalizing a symlink asar cannot follow. Verified: the packaged asar carries only `commander` and `zod`, with the library compiled into `out/main/index.cjs`.
+- **`../grimdawn-patcher`** — everything that modifies the game. `boosters`, `masteries` and `remove-mastery` moved there verbatim (the booster dry-run prints byte-identically before and after the move, which is how the move was checked), and it adds **`respec`**: a mastery with 120 points in it, the devotion tree, or both, taken back in one edit at any time — where `remove-mastery` refuses anything not already reduced to its bar.
+
+Two findings the split turned up, both from tests that had stopped meaning anything:
+
+**The fixtures had drifted into being live saves.** `test/paths.ts` read the user's real characters, and the roster was hardcoded to two of them. One was deleted in game months ago, so `haveSaves()` went false and **forty-one live tests skipped silently** — a skip being exactly what a machine without the game reports. The rest failed on a character that had been respecced out of the mastery they named. Fixtures are now snapshots taken once and read forever after, the roster is discovered, and the whole library suite passes with `GD_SAVE_DIR` pointing at an empty directory.
+
+**Block 14's hotbar is not 46 slots.** With those tests running again, a third character reported 94 — and its save checksums, replays byte for byte, and decodes identically after a total cipher-state shift, which is the width proof rather than the checksum. The game sizes the bar to the UI layout. The slot loop was already self-terminating, which is why a wrong constant was invisible rather than fatal; the block is now kept whole in `uiSettings` and has an encoder, which is what let `respec` clear a hotbar slot naming a skill it removed.
+
+**Open:** the in-game load test, still — and `respec` is a bigger edit to open it with than any before it, since it empties the class tag entirely.
+
 ## Risk log
 
 | Risk | Mitigation | Status |

@@ -4,15 +4,15 @@ import { describe, expect, it } from 'vitest';
 import { buildContextDoc, DEFAULT_MAX_TOKENS, type ContextInput } from '../src/core/context/builder.js';
 import { damageIdentity, equipGroup, estimateTokens, selectCandidates } from '../src/core/context/filters.js';
 import { describeSlots, formatStats } from '../src/core/context/statfmt.js';
-import type { DbItem, GameDb } from '../src/core/db/types.js';
+import type { DbItem, GameDb } from '@grimdawn/core/db/types';
 import { aggregateCharacter } from '../src/core/mechanics/aggregate.js';
 import { RESIST_COLUMNS } from '../src/core/mechanics/stats.js';
 import { ambiguousStats } from '../src/core/ai/verify.js';
-import { itemBaseId, itemId, resolveCharacter, type ResolvedItem } from '../src/core/resolve.js';
-import { factionSlot, factionTier } from '../src/core/save/factions.js';
-import { parseGdc } from '../src/core/save/gdc.js';
-import { parseFormulasFile, parseReagents, parseTransferStash } from '../src/core/save/gst.js';
-import { parseDifficulty, type ItemInstance } from '../src/core/save/types.js';
+import { itemBaseId, itemId, resolveCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
+import { factionSlot, factionTier } from '@grimdawn/core/save/factions';
+import { parseGdc } from '@grimdawn/core/save/gdc';
+import { parseFormulasFile, parseReagents, parseTransferStash } from '@grimdawn/core/save/gst';
+import { parseDifficulty, type ItemInstance } from '@grimdawn/core/save/types';
 import {
   FORMULAS_PATH,
   MISSING_GAME_MESSAGE,

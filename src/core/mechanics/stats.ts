@@ -17,7 +17,7 @@
  *   Electrocute, Bleeding, Internal Trauma, Poison, Vitality Decay).
  */
 
-import type { StatValue } from '../db/types.js';
+import type { StatValue } from '@grimdawn/core/db/types';
 
 // ---------------------------------------------------------------------------
 // Resistances

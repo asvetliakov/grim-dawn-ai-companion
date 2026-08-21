@@ -14,8 +14,8 @@
  * read. Rendering only — every game mechanic was computed in `src/core/mechanics`.
  */
 
-import type { DbItem, DbRecipe, DbSet, DbSkill, GameDb, RepTier, StatValue } from '../db/types.js';
-import { REP_TIERS } from '../db/types.js';
+import type { DbItem, DbRecipe, DbSet, DbSkill, GameDb, RepTier, StatValue } from '@grimdawn/core/db/types';
+import { REP_TIERS } from '@grimdawn/core/db/types';
 import type { CharacterAggregate, DualWieldEnabler, MatrixRow } from '../mechanics/aggregate.js';
 import type { CharacterStanding, RequirementCheck, RequirementGap } from '../mechanics/requirements.js';
 import { atRank, classify, modifierParent, skillLabel, statRecord, type EffectiveRank } from '../mechanics/skills.js';
@@ -38,9 +38,9 @@ import {
   type ResistReductionRow,
   type ResistVector,
 } from '../mechanics/stats.js';
-import { shortHash, type ResolvedCharacter, type ResolvedItem } from '../resolve.js';
-import { factionSlot, factionTier } from '../save/factions.js';
-import { EQUIP_SLOT_NAMES, type CharacterSave } from '../save/types.js';
+import { shortHash, type ResolvedCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
+import { factionSlot, factionTier } from '@grimdawn/core/save/factions';
+import { EQUIP_SLOT_NAMES, type CharacterSave } from '@grimdawn/core/save/types';
 import {
   equipGroup,
   estimateTokens,

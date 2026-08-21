@@ -31,7 +31,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { appDataDir, ensureDir } from '../db/cache.js';
+import { appDataDir } from '../data-dir.js';
+import { ensureDir } from '@grimdawn/core/db/cache';
 import { adviseEnvelopeSchema, type AdviceRunRef, type AdviseEnvelope } from './envelope.js';
 
 /** `<appData>/advice/` — beside `cache/`, not inside it: this is not derived data. */

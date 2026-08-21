@@ -37,20 +37,27 @@ import {
   type PlanProjection,
   type PlanWarning,
 } from '../core/ai/index.js';
-import { findGameDirs } from '../core/db/gamefiles.js';
-import { loadGameDb } from '../core/db/index.js';
-import { REP_TIERS, type GameDb, type SpeedCaps } from '../core/db/types.js';
-import { createIconService, readPngSize } from '../core/icons/index.js';
+import { findGameDirs } from '@grimdawn/core/db/gamefiles';
+import { loadGameDb } from '@grimdawn/core/db';
+import { REP_TIERS, type GameDb, type SpeedCaps } from '@grimdawn/core/db/types';
+import { createIconService, readPngSize } from '@grimdawn/core/icons';
 import { aggregateCharacter, type CharacterAggregate } from '../core/mechanics/aggregate.js';
 import { RESIST_COLUMNS, type ResistVector } from '../core/mechanics/stats.js';
-import { characterSavePath, formulasPath, reagentsPath, transferStashPath, type SaveTree } from '../core/paths.js';
+import {
+  characterSavePath,
+  findSaveDirs,
+  formulasPath,
+  listCharacters,
+  reagentsPath,
+  transferStashPath,
+} from '@grimdawn/core/paths';
 import {
   CoverageTracker,
   resolveCharacter,
   shortHash,
   type ResolvedCharacter,
   type ResolvedItem,
-} from '../core/resolve.js';
+} from '@grimdawn/core/resolve';
 import {
   accountFiles,
   adviceScope,
@@ -60,31 +67,17 @@ import {
   SessionError,
   type CharacterSnapshot,
 } from '../core/session.js';
-import { findSaveDirs, listCharacters, resolveSettings } from '../core/settings.js';
-import { createSaveWatcher } from '../core/watcher.js';
-import { parseGdc, parseGdcRecording } from '../core/save/gdc.js';
-import {
-  planFactionBoosters,
-  type BoosterChange,
-  type BoosterPlan,
-  type BoosterRefusal,
-} from '../core/save/boosters.js';
-import { saveEditRefusalText } from '../core/save/edit.js';
-import {
-  characterMasteries,
-  planMasteryRemoval,
-  type MasteryRemovalPlan,
-  type MasteryRemovalRefusal,
-} from '../core/save/mastery.js';
-import { backupCharacterSave, saveChangedOnDisk, writeSaveAtomically } from '../core/save/write.js';
-import { parseFormulasFile, parseReagents, parseTransferStash, type TransferStash } from '../core/save/gst.js';
+import { resolveSettings } from '../core/settings.js';
+import { createSaveWatcher } from '@grimdawn/core/watcher';
+import { parseGdc } from '@grimdawn/core/save/gdc';
+import { parseFormulasFile, parseReagents, parseTransferStash, type TransferStash } from '@grimdawn/core/save/gst';
 import {
   EQUIP_SLOT_NAMES,
   parseDifficulty,
   type BlockReport,
   type CharacterSave,
   type Difficulty,
-} from '../core/save/types.js';
+} from '@grimdawn/core/save/types';
 
 const program = new Command();
 
@@ -1527,287 +1520,5 @@ program
     // Nothing else to do: the watch handle is what keeps the process alive.
     await new Promise(() => {});
   });
-
-// ---------------------------------------------------------------------------
-// Stage 9 — save writing: removing a mastery
-// ---------------------------------------------------------------------------
-
-function refusalText(r: MasteryRemovalRefusal): string {
-  switch (r.kind) {
-    case 'unknown-mastery':
-      return `no mastery matching "${r.record}" on this character`;
-    case 'last-mastery':
-      return 'this is the character’s only mastery; a classless character is not a state the game has a screen for';
-    case 'mastery-not-reset':
-      return (
-        `still holds ${r.entryCount} skill(s) and ${r.pointsInvested} point(s) — ` +
-        'refund them in game first (any Spirit Guide), leaving one point in the mastery bar'
-      );
-    default:
-      return saveEditRefusalText(r);
-  }
-}
-
-function boosterRefusalText(r: BoosterRefusal): string {
-  switch (r.kind) {
-    case 'no-boosters':
-      return 'the item database knows no faction boosters — is `gameDir` pointing at the installed game?';
-    case 'unknown-faction':
-      return `no faction matching "${r.name}" sells a booster`;
-    default:
-      return saveEditRefusalText(r);
-  }
-}
-
-function printMasteryPlan(plan: MasteryRemovalPlan): void {
-  const m = plan.mastery;
-  console.log(`${plan.character}: remove ${m.name ?? m.record} (class ${m.classNumber})`);
-  console.log(`  removes       ${plan.removed.length} skill entry(ies)`);
-  for (const s of plan.removed) console.log(`                  ${s.name ?? s.record} @ rank ${s.level}`);
-  console.log(`  skill points  ${plan.skillPointsBefore} → ${plan.skillPointsAfter} (+${plan.skillPointsRefunded})`);
-  console.log(`  class         ${plan.classNameBefore} → ${plan.classNameAfter}  (${plan.classRecordAfter || '(none)'})`);
-  console.log(`  keeps         ${plan.remaining.map((r) => `${r.name ?? r.record} @ ${r.barLevel}`).join(', ') || '(none)'}`);
-  if (plan.danglingReferences.length) {
-    console.log(`  dangling      ${plan.danglingReferences.length} auto-cast binding(s) would be left pointing at a removed skill`);
-    for (const d of plan.danglingReferences) console.log(`                  ${d}`);
-  }
-  if (plan.refusals.length) {
-    console.log('\nWill not write:');
-    for (const r of plan.refusals) console.log(`  ! ${refusalText(r)}`);
-  }
-}
-
-program
-  .command('masteries')
-  .description('list a character’s masteries and what each one holds')
-  .option('-c, --char <name>', 'character name')
-  .option('--json', 'machine-readable output')
-  .action(async (opts: { char?: string; json?: boolean }) => {
-    const settings = resolveSettings();
-    const character = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
-    if (!character) {
-      console.error('error: no characters found');
-      process.exit(1);
-    }
-    const save = parseGdc(readSave(characterSavePath(character, settings.saveDir)));
-    const db = settings.gameDir
-      ? await loadGameDb({ gameDir: settings.gameDir, locale: settings.locale })
-      : undefined;
-    const masteries = characterMasteries(save, db);
-    if (opts.json) {
-      console.log(JSON.stringify({ character, classRecord: save.classRecord, masteries }, null, 2));
-      return;
-    }
-    console.log(`${save.name} — ${db?.localize(save.classRecord) ?? save.classRecord}`);
-    for (const m of masteries) {
-      console.log(
-        `  ${(m.name ?? `class ${m.classNumber}`).padEnd(14)} bar rank ${String(m.barLevel).padStart(2)}  ` +
-          `${String(m.entryCount).padStart(2)} entries  ${String(m.pointsInvested).padStart(3)} points  ${m.record}`,
-      );
-    }
-    console.log('\nA mastery can only be removed once it is reset to the bar alone at rank 1.');
-  });
-
-program
-  .command('remove-mastery')
-  .description('remove a mastery from a character (prints the plan; --commit to write)')
-  .option('-c, --char <name>', 'character name')
-  .requiredOption('-m, --mastery <name>', 'mastery name, class number, or record path')
-  .option('--out <path>', 'write the edited save to this path instead of the character’s')
-  .option('--commit', 'replace the character’s save (a backup is kept first)')
-  .action(async (opts: { char?: string; mastery: string; out?: string; commit?: boolean }) => {
-    const settings = resolveSettings();
-    const character = opts.char ?? settings.activeCharacter ?? listCharacters(settings.saveDir)[0];
-    if (!character) {
-      console.error('error: no characters found');
-      process.exit(1);
-    }
-    // Never `snapshot.savePath`: that points at a rotation backup when the
-    // watcher fell back, and writing there would clobber the wrong file.
-    const savePath = characterSavePath(character, settings.saveDir);
-    const source = readSave(savePath);
-    const { save, transcript } = parseGdcRecording(source, { path: savePath });
-    const db = settings.gameDir
-      ? await loadGameDb({ gameDir: settings.gameDir, locale: settings.locale })
-      : undefined;
-
-    const plan = planMasteryRemoval({ character, save, transcript, source, db, mastery: opts.mastery });
-    printMasteryPlan(plan);
-
-    if (plan.refusals.length || !plan.output) process.exit(1);
-
-    if (opts.out) {
-      writeFileSync(opts.out, plan.output);
-      console.log(`\nwrote ${opts.out} (${plan.output.length} bytes, was ${source.length})`);
-      console.log('Nothing else was touched. Copy it over a save only after loading it in the game.');
-      return;
-    }
-    if (!opts.commit) {
-      console.log('\nDry run. Re-run with --out <path> to write a copy, or --commit to replace the save.');
-      console.log('Quit Grim Dawn first: the running game holds this character in memory and its next save overwrites the edit.');
-      return;
-    }
-
-    if (saveChangedOnDisk(savePath, source)) {
-      console.error(`\nerror: ${refusalText({ kind: 'save-changed-on-disk' })}`);
-      process.exit(1);
-    }
-    const backup = backupCharacterSave(savePath, character);
-    writeSaveAtomically(savePath, plan.output);
-    console.log(`\nbackup  ${backup}`);
-    console.log(`written ${savePath} (${plan.output.length} bytes, was ${source.length})`);
-    console.log('Nothing deletes that backup — copy it back over player.gdc to undo this.');
-  });
-
-/** `—` for an unboosted field: 0 is "no booster", not a multiplier of zero. */
-function boostText(v: number): string {
-  return v === 0 ? '—' : `×${v}`;
-}
-
-function boosterRow(kind: 'reputation' | 'nemesis', changes: BoosterChange[], unchanged: BoosterChange[]): string {
-  const change = changes.find((c) => c.kind === kind);
-  if (change) return `${boostText(change.from)} → ${boostText(change.to)}`;
-  const same = unchanged.find((c) => c.kind === kind);
-  return same ? `${boostText(same.to)} (already)` : '';
-}
-
-function printBoosterPlan(plan: BoosterPlan, clear: boolean, tree: SaveTree): void {
-  const all = [...plan.changes, ...plan.unchanged];
-  const slots = [...new Set(all.map((c) => c.slot))].sort((a, b) => a - b);
-
-  const who = tree === 'user' ? `${plan.character} (custom game)` : plan.character;
-  console.log(`${who}: ${clear ? 'clear every faction booster' : 'apply every faction booster the game sells'}`);
-  console.log(`  ${'faction'.padEnd(28)}${'reputation'.padEnd(18)}${'nemesis'.padEnd(18)}what the game sells for it`);
-  for (const slot of slots) {
-    const changes = plan.changes.filter((c) => c.slot === slot);
-    const unchanged = plan.unchanged.filter((c) => c.slot === slot);
-    const name = (changes[0] ?? unchanged[0])!.faction;
-    const sources = [...changes, ...unchanged].map((c) => c.source).join(' · ');
-    console.log(
-      `  ${name.padEnd(28)}${boosterRow('reputation', changes, unchanged).padEnd(18)}` +
-        `${boosterRow('nemesis', changes, unchanged).padEnd(18)}${sources}`,
-    );
-  }
-
-  const writs = plan.changes.filter((c) => c.kind === 'reputation').length;
-  const warrants = plan.changes.filter((c) => c.kind === 'nemesis').length;
-  console.log(`\n  ${plan.changes.length} change(s): ${writs} reputation, ${warrants} nemesis; ${plan.unchanged.length} already set`);
-  for (const s of plan.skipped) console.log(`  skipped  ${s.name}: ${s.reason}`);
-
-  if (!clear && warrants) {
-    console.log(
-      '\n  A warrant multiplies reputation *lost*. On a faction you are friendly with — Kymon’s Chosen,',
-    );
-    console.log('  the Order of Death’s Vigil, the Outcast, Barrowholm — that also triples what a wrong choice costs.');
-  }
-  if (plan.refusals.length) {
-    console.log('\nWill not write:');
-    for (const r of plan.refusals) console.log(`  ! ${boosterRefusalText(r)}`);
-  }
-}
-
-/**
- * Which character, in which save tree.
- *
- * The two trees are independent namespaces and a name can live in both, so a
- * name that is not in the chosen one but *is* in the other says so rather than
- * reporting a missing character — the whole difference is one flag.
- */
-function pickCharacter(saveDir: string, name: string | undefined, active: string | undefined, tree: SaveTree): string {
-  const here = listCharacters(saveDir, tree);
-  const other: SaveTree = tree === 'main' ? 'user' : 'main';
-  const character = name ?? (tree === 'main' ? (active ?? here[0]) : here[0]);
-  if (!character) {
-    console.error(`error: no ${tree === 'user' ? 'custom-game ' : ''}characters found under ${saveDir}/${tree}`);
-    process.exit(1);
-  }
-  if (here.includes(character)) return character;
-  if (listCharacters(saveDir, other).includes(character)) {
-    const fix = other === 'user' ? 'add --custom' : 'drop --custom';
-    console.error(`error: "${character}" is a ${other === 'user' ? 'custom-game' : 'campaign'} character — ${fix}`);
-  } else {
-    console.error(`error: no character "${character}" under ${saveDir}/${tree} (have: ${here.join(', ') || 'none'})`);
-  }
-  process.exit(1);
-}
-
-program
-  .command('boosters')
-  .description('apply every faction reputation booster the game sells (prints the plan; --commit to write)')
-  .option('-c, --char <name>', 'character name')
-  .option('--custom', 'a Custom Game character (save/user) rather than a campaign one (save/main)')
-  .option('--faction <name...>', 'only these factions (slot number, id, or name); default: all of them')
-  .option('--no-writs', 'leave the reputation-gain multiplier alone')
-  .option('--no-warrants', 'leave the hostile-faction multiplier alone')
-  .option('--clear', 'set the targeted multipliers back to 0')
-  .option('--out <path>', 'write the edited save to this path instead of the character’s')
-  .option('--commit', 'replace the character’s save (a backup is kept first)')
-  .action(
-    async (opts: {
-      char?: string;
-      custom?: boolean;
-      faction?: string[];
-      writs: boolean;
-      warrants: boolean;
-      clear?: boolean;
-      out?: string;
-      commit?: boolean;
-    }) => {
-      const settings = resolveSettings();
-      const tree: SaveTree = opts.custom ? 'user' : 'main';
-      const character = pickCharacter(settings.saveDir, opts.char, settings.activeCharacter, tree);
-      if (!settings.gameDir) {
-        console.error('error: no game directory — the booster multipliers are read from the installed game');
-        process.exit(1);
-      }
-      // Never `snapshot.savePath`: that points at a rotation backup when the
-      // watcher fell back, and writing there would clobber the wrong file.
-      const savePath = characterSavePath(character, settings.saveDir, tree);
-      const source = readSave(savePath);
-      const { save, transcript } = parseGdcRecording(source, { path: savePath });
-      const db = await loadGameDb({ gameDir: settings.gameDir, locale: settings.locale });
-
-      const plan = planFactionBoosters({
-        character,
-        save,
-        transcript,
-        source,
-        db,
-        writs: opts.writs,
-        warrants: opts.warrants,
-        ...(opts.faction ? { factions: opts.faction } : {}),
-        ...(opts.clear ? { clear: true } : {}),
-      });
-      printBoosterPlan(plan, opts.clear === true, tree);
-
-      if (plan.refusals.length) process.exit(1);
-      if (!plan.output) {
-        console.log('\nNothing to do — every targeted booster is already at that value.');
-        return;
-      }
-
-      if (opts.out) {
-        writeFileSync(opts.out, plan.output);
-        console.log(`\nwrote ${opts.out} (${plan.output.length} bytes, was ${source.length})`);
-        console.log('Nothing else was touched. Copy it over a save only after loading it in the game.');
-        return;
-      }
-      if (!opts.commit) {
-        console.log('\nDry run. Re-run with --out <path> to write a copy, or --commit to replace the save.');
-        console.log('Quit Grim Dawn first: the running game holds this character in memory and its next save overwrites the edit.');
-        return;
-      }
-
-      if (saveChangedOnDisk(savePath, source)) {
-        console.error(`\nerror: ${boosterRefusalText({ kind: 'save-changed-on-disk' })}`);
-        process.exit(1);
-      }
-      const backup = backupCharacterSave(savePath, character, tree);
-      writeSaveAtomically(savePath, plan.output);
-      console.log(`\nbackup  ${backup}`);
-      console.log(`written ${savePath} (${plan.output.length} bytes, was ${source.length})`);
-      console.log('Nothing deletes that backup — copy it back over player.gdc to undo this, or re-run with --clear.');
-    },
-  );
 
 program.parse();

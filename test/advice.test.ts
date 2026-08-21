@@ -41,16 +41,23 @@ import { verdictSlotKey, weaponSlotRef } from '../src/shared/slots.js';
 import { adviceMarks, staleIds } from '../src/shared/advice-marks.js';
 import { answerProse } from '../src/shared/answer.js';
 import type { AdvisorPlan } from '../src/core/ai/provider.js';
-import { MISSING_GAME_MESSAGE, MISSING_SAVES_MESSAGE, gameDb, haveGameInstall, haveSaves } from './paths.js';
+import {
+  MISSING_GAME_MESSAGE,
+  MISSING_SAVES_MESSAGE,
+  gameDb,
+  haveGameInstall,
+  haveLiveSaves,
+  primaryLiveCharacter,
+} from './paths.js';
 
 // ---------------------------------------------------------------------------
 // The envelope, from a real run through a fake model
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!haveGameInstall())(`the advice envelope (${MISSING_GAME_MESSAGE})`, () => {
-  it.skipIf(!haveSaves())(`validates against its own schema (${MISSING_SAVES_MESSAGE})`, async () => {
+  it.skipIf(!haveLiveSaves())(`validates against its own schema (${MISSING_SAVES_MESSAGE})`, async () => {
     const db = await gameDb();
-    const snap = loadSnapshot(db, resolveSettings(), { character: '_Suchka' });
+    const snap = loadSnapshot(db, resolveSettings(), { character: primaryLiveCharacter() });
 
     // An answer written against *this* dossier, so the ids in the plan are ids
     // the document really printed — which is what makes `verdictRows` resolve

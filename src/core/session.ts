@@ -16,11 +16,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 
 import { buildContextDoc, type ContextDoc, type ContextInput } from './context/builder.js';
-import type { GameDb } from './db/types.js';
+import type { GameDb } from '@grimdawn/core/db/types';
 import { aggregateCharacter, type CharacterAggregate } from './mechanics/aggregate.js';
-import { characterSavePath, formulasPath, reagentsPath, transferStashPath } from './paths.js';
-import { resolveCharacter, type AccountFiles, type ResolvedCharacter } from './resolve.js';
-import { parseGdc } from './save/gdc.js';
+import { characterSavePath, formulasPath, reagentsPath, transferStashPath } from '@grimdawn/core/paths';
+import { resolveCharacter, type AccountFiles, type ResolvedCharacter } from '@grimdawn/core/resolve';
+import { parseGdc } from '@grimdawn/core/save/gdc';
 import {
   parseFormulasFile,
   parseReagents,
@@ -28,9 +28,10 @@ import {
   type FormulasFile,
   type MaterialStore,
   type TransferStash,
-} from './save/gst.js';
-import { parseDifficulty, type CharacterSave, type Difficulty } from './save/types.js';
-import { listCharacters, type ResolvedSettings } from './settings.js';
+} from '@grimdawn/core/save/gst';
+import { parseDifficulty, type CharacterSave, type Difficulty } from '@grimdawn/core/save/types';
+import { listCharacters } from '@grimdawn/core/paths';
+import { type ResolvedSettings } from './settings.js';
 
 /** Why a snapshot could not be produced. `kind` is what a caller branches on. */
 export class SessionError extends Error {

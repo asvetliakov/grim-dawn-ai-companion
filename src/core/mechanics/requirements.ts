@@ -14,8 +14,8 @@
  * one equipped to reason about post-swap loadouts and enabler combos.
  */
 
-import type { StatValue } from '../db/types.js';
-import type { ItemRequirements, ResolvedItem } from '../resolve.js';
+import type { StatValue } from '@grimdawn/core/db/types';
+import type { ItemRequirements, ResolvedItem } from '@grimdawn/core/resolve';
 import { ATTR_KEYS, type AttrKey } from './stats.js';
 
 /** `Staff` and `Weapon2H` are defined by the engine but unused in shipped data. */

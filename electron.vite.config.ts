@@ -5,11 +5,20 @@ import { resolve } from 'node:path';
 /**
  * Three builds, one repo.
  *
- * `src/core` is bundled into the main process rather than externalized — it is
- * our own code and has no native dependencies, which is the whole reason this
- * project hand-wrote its `.arz`/`.arc`/DDS/PNG readers. The renderer never
- * touches any of it: it sees only `src/shared`, which is types and pure
- * functions.
+ * `src/core` and `@grimdawn/core` are bundled into the main process rather than
+ * externalized — both are our own code with no native dependencies, which is the
+ * whole reason this project hand-wrote its `.arz`/`.arc`/DDS/PNG readers. The
+ * renderer never touches any of it: it sees only `src/shared`, which is types
+ * and pure functions.
+ *
+ * The library is a `file:` dependency, so it lives in `node_modules` as a
+ * **symlink** to a sibling checkout. `externalizeDepsPlugin` externalizes
+ * anything listed in `dependencies`, and an externalized `@grimdawn/core` would
+ * be `require()`d at runtime from a symlink that electron-builder's `files`
+ * glob does not follow into the asar — the app would start, then die on its
+ * first import. Keeping it in `devDependencies` is what makes it bundle; the
+ * explicit `exclude` is the belt to that braces, so moving the entry between
+ * dependency sections cannot silently break a packaged build.
  *
  * Both the main process and the preload are emitted as CommonJS, and `.cjs` at
  * that, because this package is `"type": "module"`. Two independent reasons:
@@ -21,7 +30,7 @@ import { resolve } from 'node:path';
  */
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ['@grimdawn/core'] })],
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'src/main/index.ts'),
@@ -30,7 +39,7 @@ export default defineConfig({
     },
   },
   preload: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin({ exclude: ['@grimdawn/core'] })],
     build: {
       rollupOptions: {
         input: resolve(__dirname, 'src/preload/index.ts'),

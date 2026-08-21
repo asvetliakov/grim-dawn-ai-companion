@@ -16,16 +16,16 @@
 import { socketableObtain } from './context/builder.js';
 import { itemStatBlocks } from './context/filters.js';
 import { describeSlots, formatStats, num } from './context/statfmt.js';
-import type { DbItem, GameDb, StatValue } from './db/types.js';
-import { sackDims, type GridDims } from './grid.js';
-import type { IconService } from './icons/index.js';
+import type { DbItem, GameDb, StatValue } from '@grimdawn/core/db/types';
+import { sackDims, type GridDims } from '@grimdawn/core/grid';
+import type { IconService } from '@grimdawn/core/icons';
 import type { CharacterAggregate } from './mechanics/aggregate.js';
 import { checkRequirements, type CharacterStanding, type RequirementCheck } from './mechanics/requirements.js';
 import { RESIST_COLUMNS } from './mechanics/stats.js';
 import { skillLabel } from './mechanics/skills.js';
-import type { ItemPosition, ItemSource, ResolvedItem } from './resolve.js';
+import type { ItemPosition, ItemSource, ResolvedItem } from '@grimdawn/core/resolve';
 import type { CharacterSnapshot } from './session.js';
-import { EQUIP_SLOT_NAMES, type Difficulty } from './save/types.js';
+import { EQUIP_SLOT_NAMES, type Difficulty } from '@grimdawn/core/save/types';
 
 import type {
   UiGrid,

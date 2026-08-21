@@ -11,7 +11,7 @@
  * keeps both rules checkable.
  */
 
-import type { Difficulty, ItemPosition, ItemSource } from '../core/save/types.js';
+import type { Difficulty, ItemPosition, ItemSource } from '@grimdawn/core/save/types';
 
 export type { Difficulty, ItemPosition, ItemSource };
 

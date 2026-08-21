@@ -19,9 +19,9 @@
  * misleads, and the whole design here is to not do that again one level up.
  */
 
-import type { DbItem, DbSkill, GameDb, StatValue } from '../db/types.js';
-import { resolveItem, type ResolvedItem } from '../resolve.js';
-import { EQUIP_SLOT_NAMES, type CharacterSave, type Difficulty } from '../save/types.js';
+import type { DbItem, DbSkill, GameDb, StatValue } from '@grimdawn/core/db/types';
+import { resolveItem, type ResolvedItem } from '@grimdawn/core/resolve';
+import { EQUIP_SLOT_NAMES, type CharacterSave, type Difficulty } from '@grimdawn/core/save/types';
 import {
   addAttributes,
   addDamage,

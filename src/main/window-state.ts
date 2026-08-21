@@ -14,7 +14,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { appDataDir, ensureDir } from '../core/db/cache.js';
+import { appDataDir } from '../core/data-dir.js';
+import { ensureDir } from '@grimdawn/core/db/cache';
 import type { Bounds } from './window-size.js';
 
 export interface WindowState {
