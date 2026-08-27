@@ -2528,7 +2528,7 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line('Then give:');
   out.bullets([
     'a **HOLD** list — items to keep for a level or attribute threshold, naming the threshold',
-    'a **SELL/SALVAGE** list — only for items no plausible version of this build reaches',
+    'a **SELL/SALVAGE** line — a count and the kinds, for items no plausible version of this build reaches; the items themselves belong in the plan\'s `sell` array rather than in a prose bullet each',
     'the reasoning behind each non-obvious call, in one or two sentences',
   ]);
   out.line();
