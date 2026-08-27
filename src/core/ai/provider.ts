@@ -19,6 +19,13 @@ export interface AdvisorRequest {
   contextDoc: string;
   /** An extra user instruction, appended after the document. */
   question?: string;
+  /**
+   * This turn asks for a corrected plan and a note about what moved, not a
+   * whole answer — the repair round. It changes how the question is framed
+   * (see `buildUserTurn`), because the ordinary framing demands the full
+   * output format and a repair must not re-emit the analysis it is correcting.
+   */
+  planOnly?: boolean;
 }
 
 export interface AdvisorResult {

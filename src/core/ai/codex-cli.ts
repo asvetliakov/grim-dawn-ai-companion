@@ -147,7 +147,13 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
 
       const stream = codexReader(onActivity);
       const started = Date.now();
-      const proc = await run(args, buildUserTurn(req.contextDoc, req.question), timeoutMs, signal, stream.read);
+      const proc = await run(
+        args,
+        buildUserTurn(req.contextDoc, req.question, req.planOnly),
+        timeoutMs,
+        signal,
+        stream.read,
+      );
       const durationMs = Date.now() - started;
 
       if (proc.timedOut) {

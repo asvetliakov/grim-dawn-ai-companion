@@ -39,7 +39,7 @@ import { resolveSettings } from '../src/core/settings.js';
 import { loadoutDrift, type WornSlot } from '../src/renderer/src/advice.js';
 import { verdictSlotKey, weaponSlotRef } from '../src/shared/slots.js';
 import { adviceMarks, staleIds } from '../src/shared/advice-marks.js';
-import { answerProse } from '../src/shared/answer.js';
+import { answerProse, planBlock, replacePlanBlock } from '../src/shared/answer.js';
 import type { AdvisorPlan } from '../src/core/ai/provider.js';
 import {
   MISSING_GAME_MESSAGE,
@@ -329,6 +329,44 @@ describe('answerProse', () => {
 
   it('leaves an answer with no fences alone', () => {
     expect(answerProse('## Just prose\n')).toBe('## Just prose\n');
+  });
+});
+
+describe('planBlock', () => {
+  it('returns the trailing block with its fences, ready to splice', () => {
+    const answer = '## Prose\n\n```json\n{ "summary": "x" }\n```\n';
+    expect(planBlock(answer)).toBe('```json\n{ "summary": "x" }\n```');
+  });
+
+  it('agrees with answerProse about what is not a plan', () => {
+    // One decision, two callers: anything answerProse keeps as prose has no
+    // plan block to hand back, or the two would disagree about the same answer.
+    for (const answer of [
+      '## Prose\n\n```json\n{ "example": 1 }\n```\n\nAnd then more prose.\n',
+      '## Prose\n\n```text\nnot a plan\n```\n',
+      '## Prose\n\n```\nrecords/items/amulet.dbr  itemLevel=84\n```\n',
+      '## Just prose\n',
+    ]) {
+      expect(answerProse(answer)).toBe(answer);
+      expect(planBlock(answer)).toBeUndefined();
+    }
+  });
+});
+
+describe('replacePlanBlock', () => {
+  it('swaps the plan and keeps the prose', () => {
+    const answer = '## Reading the build\n\nA pierce build.\n\n```json\n{ "summary": "old" }\n```\n';
+    expect(replacePlanBlock(answer, '```json\n{ "summary": "new" }\n```')).toBe(
+      '## Reading the build\n\nA pierce build.\n\n```json\n{ "summary": "new" }\n```\n',
+    );
+  });
+
+  it('gives a plan to prose that has none', () => {
+    // The splice arrives here twice — prose alone, or prose plus the erratum's
+    // note — and both have to come out the same shape.
+    expect(replacePlanBlock('## Prose', '```json\n{ "summary": "x" }\n```')).toBe(
+      '## Prose\n\n```json\n{ "summary": "x" }\n```\n',
+    );
   });
 });
 

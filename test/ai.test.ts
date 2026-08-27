@@ -1628,6 +1628,9 @@ describe('adviseWithRepair', () => {
     expect(calls[1]!.question).toContain('unknown-id');
     expect(calls[1]!.question).toContain('nope99');
     expect(calls[1]!.question).toContain('Your previous answer');
+    // And it must ask for an erratum, not another answer — the whole saving.
+    expect(calls[1]!.planOnly).toBe(true);
+    expect(calls[1]!.question).toContain('Do not rewrite the analysis');
 
     expect(outcome.revised).toBe(true);
     expect(outcome.revisionRejected).toBe(false);
@@ -1635,6 +1638,47 @@ describe('adviseWithRepair', () => {
     expect(outcome.warnings).toEqual([]);
     expect(outcome.result.text).toContain('head01');
     expect(outcome.results).toHaveLength(2);
+  });
+
+  it('splices the corrected plan under the analysis the first call paid for', async () => {
+    const first = `## Reading the build\n\nA long and expensive pierce analysis.\n\n\`\`\`json\n${JSON.stringify(BAD_PLAN)}\n\`\`\`\n`;
+    const erratum = `Fixed the invented id.\n\n\`\`\`json\n${JSON.stringify(GOOD_PLAN)}\n\`\`\`\n`;
+    const provider = createMockProvider({ answers: [first, erratum] });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world());
+
+    expect(outcome.warnings).toEqual([]);
+    // The analysis survives, the note joins it, the plan is the corrected one.
+    expect(outcome.result.text).toContain('A long and expensive pierce analysis.');
+    expect(outcome.result.text).toContain('Fixed the invented id.');
+    expect(outcome.result.text).toContain('head01');
+    expect(outcome.result.text).not.toContain('nope99');
+    // Text and plan must agree: the checks join them, so a stale `structured`
+    // would be the one inconsistency nothing downstream could catch.
+    expect(outcome.result.structured?.verdicts[0]?.itemId).toBe('head01');
+  });
+
+  it('takes a revision whole when the model rewrote the answer anyway', async () => {
+    // The escape hatch: a backend that will not follow the shorter contract
+    // costs what it always did, rather than getting its answer mangled.
+    const first = `## Short\n\n\`\`\`json\n${JSON.stringify(BAD_PLAN)}\n\`\`\`\n`;
+    const rewrite = `## Reading the build\n\nA whole new and much longer analysis, rewritten in full.\n\n\`\`\`json\n${JSON.stringify(GOOD_PLAN)}\n\`\`\`\n`;
+    const provider = createMockProvider({ answers: [first, rewrite] });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world());
+
+    expect(outcome.result.text).toBe(rewrite);
+    expect(outcome.result.text).not.toContain('## Short');
+    expect(outcome.warnings).toEqual([]);
+  });
+
+  it('lets an erratum with no plan block stand on its own', async () => {
+    const first = `## Reading the build\n\nThe original analysis, which is quite long indeed.\n\n\`\`\`json\n${JSON.stringify(BAD_PLAN)}\n\`\`\`\n`;
+    const provider = createMockProvider({ answers: [first, 'I cannot fix that: the id is in the dossier.'] });
+    const outcome = await adviseWithRepair(provider, { contextDoc: 'doc' }, world());
+
+    // Nothing to splice, so nothing is spliced — and with no plan there are no
+    // warnings against it, which loses to the original's one and is discarded.
+    expect(outcome.revisionRejected).toBe(true);
+    expect(outcome.result.text).toBe(first);
   });
 
   it('never loops: one revision, then it reports', async () => {

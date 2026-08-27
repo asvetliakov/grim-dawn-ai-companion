@@ -16,6 +16,12 @@
  * presenters — the window's Full answer tab and the CLI's printed answer — can
  * share one implementation.
  *
+ * The same seam serves the repair loop, which asks for a corrected plan instead
+ * of a second answer and splices it under the analysis the first call already
+ * paid for — so the three functions here are one piece of knowledge (where the
+ * plan block ends and the prose begins) with three uses, and `locatePlan` is
+ * the single place that decides it.
+ *
  * Pure and dependency-free: it is in the renderer's type graph.
  */
 
@@ -34,7 +40,51 @@ const FENCE = /^```(\w*)\s*$/;
  */
 export function answerProse(answer: string): string {
   const lines = answer.split('\n');
+  const plan = locatePlan(lines);
+  if (!plan) return answer;
+  return lines.slice(0, plan.open).join('\n').trimEnd();
+}
 
+/**
+ * The trailing plan block, fences and all, or `undefined` when the answer ends
+ * on something else.
+ *
+ * The exact bytes rather than the parsed object, because the caller is splicing
+ * one answer's plan onto another answer's prose and the result has to look like
+ * something a model wrote — `parseAdvice` reads the spliced text again on the
+ * way through, and re-serializing a parsed plan would quietly drop any field the
+ * schema does not model.
+ */
+export function planBlock(answer: string): string | undefined {
+  const lines = answer.split('\n');
+  const plan = locatePlan(lines);
+  if (!plan) return undefined;
+  const end = plan.close === undefined ? lines.length : plan.close + 1;
+  return lines.slice(plan.open, end).join('\n').trimEnd();
+}
+
+/**
+ * `answer` with its trailing plan block replaced by `plan`.
+ *
+ * The repair path's splice: an errata call returns a corrected plan and a note
+ * about what moved, and the answer the user reads is the original argument with
+ * that plan on the end. An answer with no plan block of its own simply gains
+ * one, which is what makes the two-step splice (prose + note, then the plan)
+ * come out the same whether or not the errata had a note.
+ */
+export function replacePlanBlock(answer: string, plan: string): string {
+  return `${answerProse(answer).trimEnd()}\n\n${plan.trim()}\n`;
+}
+
+/** Where the trailing plan block sits, when the answer ends on one. */
+interface PlanLocation {
+  /** The opening fence's line index. */
+  open: number;
+  /** The closing fence's line index; absent when the block never closed. */
+  close?: number;
+}
+
+function locatePlan(lines: readonly string[]): PlanLocation | undefined {
   // Every fence, in order. Pairing them from the top is the only way to tell
   // "prose after a closed block" from "inside a block that never closed" — a
   // backwards scan cannot, because the closing fence of a block and the opening
@@ -43,17 +93,11 @@ export function answerProse(answer: string): string {
   for (let i = 0; i < lines.length; i++) {
     if (FENCE.test(lines[i]!)) fences.push(i);
   }
-  if (fences.length === 0) return answer;
+  if (fences.length === 0) return undefined;
 
   const unclosed = fences.length % 2 === 1;
   const open = fences[unclosed ? fences.length - 1 : fences.length - 2]!;
-
-  // A closed final block only counts as trailing if nothing but whitespace
-  // follows it. An unclosed one runs to the end by definition.
-  if (!unclosed) {
-    const close = fences[fences.length - 1]!;
-    if (lines.slice(close + 1).some((line) => line.trim() !== '')) return answer;
-  }
+  const info = lines[open]!.match(FENCE)?.[1] ?? '';
 
   // Whether this block is *the plan*, decided by looking inside it rather than by
   // its info string alone. `parseAdvice` accepts a bare fence as well as a `json`
@@ -62,11 +106,15 @@ export function answerProse(answer: string): string {
   // the reader wants. An unclosed block cannot be parsed, so there the `json` tag
   // is all there is to go on: a truncated answer ending mid-object is the one case
   // where showing the raw text helps nobody.
-  const info = lines[open]!.match(FENCE)?.[1] ?? '';
-  if (unclosed) return info === 'json' ? lines.slice(0, open).join('\n').trimEnd() : answer;
-  if (info !== 'json' && info !== '') return answer;
-  if (!isPlanBlock(lines.slice(open + 1, fences[fences.length - 1]!).join('\n'))) return answer;
-  return lines.slice(0, open).join('\n').trimEnd();
+  if (unclosed) return info === 'json' ? { open } : undefined;
+
+  // A closed final block only counts as trailing if nothing but whitespace
+  // follows it. An unclosed one runs to the end by definition.
+  const close = fences[fences.length - 1]!;
+  if (lines.slice(close + 1).some((line) => line.trim() !== '')) return undefined;
+  if (info !== 'json' && info !== '') return undefined;
+  if (!isPlanBlock(lines.slice(open + 1, close).join('\n'))) return undefined;
+  return { open, close };
 }
 
 /**

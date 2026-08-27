@@ -161,7 +161,13 @@ export function createClaudeCliProvider(opts: ClaudeCliOptions = {}): AdvisorPro
       const readActivity = activityReader(track, (n) => {
         reportedThinking = n;
       });
-      const proc = await run(args, buildUserTurn(req.contextDoc, req.question), timeoutMs, signal, readActivity);
+      const proc = await run(
+        args,
+        buildUserTurn(req.contextDoc, req.question, req.planOnly),
+        timeoutMs,
+        signal,
+        readActivity,
+      );
       const thinkingTokens = reportedThinking ?? estimatedThinking;
 
       if (proc.timedOut) {

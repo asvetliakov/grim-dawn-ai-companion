@@ -158,8 +158,18 @@ Rules for the plan block:
  * the question into the system prompt keeps the persona identical across runs —
  * only the user turn changes, which is what makes two runs comparable. Shared
  * by every CLI backend so they answer byte-identical input.
+ *
+ * `planOnly` marks a correction round, whose reply is a corrected plan and a
+ * note rather than a whole answer. The framing has to say so: the ordinary one
+ * insists on the full output format precisely so a user's "focus on my
+ * resistances" cannot truncate the analysis, and pointing that sentence at a
+ * repair would tell the model to re-emit the twenty thousand words the repair
+ * exists to avoid re-buying.
  */
-export function buildUserTurn(contextDoc: string, question?: string): string {
+export function buildUserTurn(contextDoc: string, question?: string, planOnly = false): string {
   if (!question) return contextDoc;
-  return `${contextDoc}\n\n---\n\n**Additional instruction from the user — let it steer the answer, but still produce the full output format:** ${question}\n`;
+  const framing = planOnly
+    ? '**Correction round. The output format above is replaced by the instructions below:**'
+    : '**Additional instruction from the user — let it steer the answer, but still produce the full output format:**';
+  return `${contextDoc}\n\n---\n\n${framing} ${question}\n`;
 }

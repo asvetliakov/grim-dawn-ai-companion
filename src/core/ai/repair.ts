@@ -20,9 +20,31 @@
  * runs spent a full second Opus call — six minutes and two dollars each — on
  * nothing but `ambiguous-stat`, and one of those revisions then failed to fix
  * it. Prose-only warnings are reported to the user and left standing.
+ *
+ * **The call asks for an erratum, not a second answer.** Wall time is output
+ * tokens — 83 to 87 a second on opus, in every one of twelve stored runs — so
+ * "produce a corrected full answer, every section", which is what this used to
+ * say, spent five minutes re-streaming an analysis to fix two lines. The plan
+ * is the only thing the checks are decided against and the only thing a fix can
+ * move, so that is all the model is asked for, and `spliceRevision` puts it
+ * back under the prose the first call already paid for.
+ *
+ * The trade is real and accepted: a fix that changes a verdict can leave the
+ * original prose arguing for the old one, which is why the erratum's own note
+ * is kept and shown. A prose `ambiguous-stat` also survives a repair now, since
+ * the prose is not rewritten — but a prose-only warning never buys a call in
+ * the first place, so what survives is a passenger on a structural fix, never
+ * the reason the call was made.
  */
 
-import type { ActivityListener, AdvisorProvider, AdvisorRequest, AdvisorResult } from './provider.js';
+import { answerProse, planBlock, replacePlanBlock } from '../../shared/answer.js';
+import {
+  parseAdvice,
+  type ActivityListener,
+  type AdvisorProvider,
+  type AdvisorRequest,
+  type AdvisorResult,
+} from './provider.js';
 import { checkPlan, type PlanCheckInput, type PlanWarning, type PlanWarningKind } from './verify.js';
 
 /** Warning kinds that are wording, not structure — never worth a second call. */
@@ -59,22 +81,65 @@ export interface RepairOutcome {
   results: AdvisorResult[];
 }
 
-/** How the follow-up asks for a correction. */
+/**
+ * How the follow-up asks for a correction: an **erratum**, not a second answer.
+ *
+ * The call used to demand "a corrected full answer — every section", which on a
+ * live run means re-streaming some twenty-eight thousand tokens to fix two
+ * lines. Wall time is output tokens (measured at 83–87/s on opus across twelve
+ * stored runs), so that phrasing is most of why a repaired run costs eleven
+ * minutes instead of six. The plan is the only thing the checks are decided
+ * against and the only thing a fix can move; the analysis is already written,
+ * already correct about everything the checks did not name, and gets spliced
+ * back on by `spliceRevision`.
+ */
 export function repairRequest(req: AdvisorRequest, answer: string, warnings: readonly PlanWarning[]): AdvisorRequest {
   const list = warnings.map((w) => `- [${w.kind}] ${w.message}`).join('\n');
   return {
     ...req,
+    planOnly: true,
     question:
       `${req.question ? `${req.question}\n\n` : ''}` +
       'You have already answered this dossier once. Your previous answer is below, followed by the mechanical ' +
       'checks it failed. These checks are decided against the dossier, not opinions: an id that is not in the ' +
       'document does not exist, a use-on restriction is not negotiable, an extracted host is destroyed, and a ' +
       'bare damage-type name is ambiguous.\n\n' +
-      'Produce a **corrected full answer** in the same format — every section, and one trailing JSON plan. Fix ' +
-      'exactly what the checks name and keep every other conclusion you reached; if a check is wrong about the ' +
-      'dossier, say so in one line and leave that part as it was.\n\n' +
+      '**Do not rewrite the analysis.** The tool keeps the prose you already wrote and splices your corrected ' +
+      'plan onto it, so re-emitting those sections spends thousands of tokens on text that is thrown away. ' +
+      'Reply with exactly two things and nothing else:\n\n' +
+      '1. **What changed** — a few sentences naming which checks you fixed and how. If a check is wrong about ' +
+      'the dossier, say so here in one line and leave that part of the plan as it was. This paragraph is shown ' +
+      'to the reader under your original analysis.\n' +
+      '2. The **corrected plan**, as one fenced json block and the final element of your reply. It must be ' +
+      'complete and standalone — every field it carried before, not a diff — with exactly the checked faults ' +
+      'fixed and every other conclusion kept.\n\n' +
+      'The plan still has to agree with the analysis you already wrote, since the two are shown together. Where ' +
+      'a fix genuinely contradicts something the prose argued, say so in **What changed**.\n\n' +
       `## Checks failed\n\n${list}\n\n## Your previous answer\n\n${answer}`,
   };
+}
+
+/**
+ * The original's analysis, the erratum's note, and the erratum's plan.
+ *
+ * Two ways out, both deliberate. A reply with **no** plan block cannot be
+ * spliced onto anything, so it stands as its own answer — which is also what a
+ * refusal or an error message should look like. And a reply whose prose is
+ * *longer* than the analysis it was correcting is a rewrite rather than an
+ * erratum: the model ignored the instruction and answered afresh, so it is
+ * taken whole, exactly as it was before this existed. That rule is what keeps
+ * the change safe against a backend that will not follow the shorter contract —
+ * the worst case is the old cost, not a mangled answer.
+ */
+export function spliceRevision(original: string, revision: string): string {
+  const plan = planBlock(revision);
+  if (!plan) return revision;
+
+  const prose = answerProse(original).trimEnd();
+  const note = answerProse(revision).trim();
+  if (!prose || note.length >= prose.length) return revision;
+
+  return replacePlanBlock(note ? `${prose}\n\n${note}` : prose, plan);
 }
 
 export interface AdviseAndRepairOptions {
@@ -120,13 +185,30 @@ export async function adviseWithRepair(
   if (firstWarnings.length === 0 || opts.repair === false || !worthRepairing(firstWarnings)) return base;
 
   opts.onRepair?.(firstWarnings);
-  const second = await (opts.repairProvider ?? provider).advise(
+  const erratum = await (opts.repairProvider ?? provider).advise(
     repairRequest(req, first.text, firstWarnings),
     opts.signal,
     opts.onActivity,
   );
+
+  // The answer to judge is the spliced one, so the checks run against exactly
+  // what the user would be shown — the original argument carrying the corrected
+  // plan. `structured` is re-parsed from the spliced text rather than carried
+  // over from the erratum, because every check downstream joins the two and a
+  // plan that disagreed with its own answer would be the one inconsistency
+  // nothing here could catch.
+  const text = spliceRevision(first.text, erratum.text);
+  const second: AdvisorResult =
+    text === erratum.text ? erratum : { ...erratum, text, structured: parseAdvice(text) };
   const secondWarnings = warningsFor(second, check);
-  const improved = secondWarnings.length < firstWarnings.length;
+
+  // A revision with no plan at all is not an improvement, however few warnings
+  // can be counted against it. `warningsFor` reports nothing for an answer it
+  // cannot parse — the right answer for a *first* call, which degrades to prose
+  // — but here that reads as a perfect score and would hand the user a refusal
+  // sentence in place of the plan they asked for. Only reachable when the first
+  // call did produce a plan, since a run with no warnings never gets this far.
+  const improved = second.structured !== undefined && secondWarnings.length < firstWarnings.length;
 
   return {
     result: improved ? second : first,
