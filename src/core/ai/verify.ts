@@ -292,6 +292,11 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     if (!h.slot?.trim()) missing.push('which slot it is for');
     if (!h.beats?.trim()) missing.push('which item it would replace');
     if (!h.gains?.length) missing.push('what it gains over that item');
+    // A hold without an exit condition is "keep this" — a stash decision, not
+    // a plan. The condition is a level, attribute points, or the kind of drop
+    // that would cover what putting the item on opens today; any of them is a
+    // sentence, and the UI shows it beside the item.
+    if (!h.until?.trim()) missing.push('until when it is held');
     if (missing.length) {
       warn(
         'unjustified-hold',

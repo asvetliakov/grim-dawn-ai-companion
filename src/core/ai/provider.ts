@@ -406,12 +406,21 @@ export const advisorPlanSchema = z.object({
         beats: z.string().optional(),
         gains: z.array(z.string()).optional(),
         reason: z.string().default(''),
-        /** "level 84", "42 more spirit" — the threshold that ends the hold. */
+        /**
+         * What ends the hold: "level 84", "42 more spirit" — or, for an item
+         * wearable today whose single swap opens a cost nothing in the dossier
+         * covers yet, the *kind* of drop that would close it: "a Chest or Head
+         * carrying ≥30% Aether Resistance", "the third Deathmarked piece".
+         * Optional in the schema for older stored answers; `checkPlan` reports
+         * its absence, because a hold with no exit condition is a stash
+         * decision, not a plan.
+         */
         until: z.string().optional(),
         /**
          * The same threshold, machine-readable, so the UI can sort holds by
          * what they cost instead of parsing `until`. Optional: an older answer
-         * that only carries the free text still validates.
+         * that only carries the free text still validates, and a hold waiting
+         * on a drop rather than a level or points has nothing to put here.
          */
         needs: z
           .object({

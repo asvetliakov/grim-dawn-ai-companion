@@ -247,7 +247,24 @@ export interface CandidateSelection {
 
 /** Over-level candidates matter because "HOLD until level N" is worth saying. */
 const LEVEL_WINDOW_ABOVE = 10;
+/**
+ * Epics and legendaries reach further up. Endgame gear sits at level 94 and a
+ * character starts finding it from the mid-70s, so the +10 window hid exactly
+ * the items an ARPG player stashes for later: on the live level-78 character,
+ * ten level-94 legendaries in the transfer stash — one of them the second piece
+ * of the set it is wearing — were never shown to the model, and its answer
+ * said no threshold was worth committing to. A rare fifteen levels up is junk
+ * by the time it is wearable; a legendary is the target. Rarity-gated so the
+ * wider reach costs blues and greens nothing.
+ */
+const LEVEL_WINDOW_ABOVE_ENDGAME = 20;
 const LEVEL_WINDOW_BELOW = 25;
+
+/** How far above the character's level a candidate may sit and still be shown. */
+export function levelWindowAbove(rarity: string | undefined): number {
+  return rarity === 'Legendary' || rarity === 'Epic' ? LEVEL_WINDOW_ABOVE_ENDGAME : LEVEL_WINDOW_ABOVE;
+}
+export const LEVEL_WINDOW = { above: LEVEL_WINDOW_ABOVE, aboveEndgame: LEVEL_WINDOW_ABOVE_ENDGAME, below: LEVEL_WINDOW_BELOW } as const;
 /** Below this level a Common is still plausibly the best thing on hand. */
 const COMMON_CUTOFF_LEVEL = 30;
 
@@ -270,7 +287,7 @@ export function selectCandidates(items: readonly ResolvedItem[], ctx: CandidateC
     if (!group || !item.base) continue;
 
     const level = item.requirements?.level ?? item.base.levelReq;
-    if (level > ctx.level + LEVEL_WINDOW_ABOVE || level < ctx.level - LEVEL_WINDOW_BELOW) {
+    if (level > ctx.level + levelWindowAbove(item.base.rarity) || level < ctx.level - LEVEL_WINDOW_BELOW) {
       outOfWindow++;
       continue;
     }

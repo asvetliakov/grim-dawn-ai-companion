@@ -339,6 +339,28 @@ describe('selectCandidates', () => {
     expect(result.outOfWindow).toBe(2);
   });
 
+  /**
+   * Endgame gear is level 94 and a character starts finding it from the
+   * mid-70s. On the live level-78 character the +10 window hid ten level-94
+   * legendaries in the transfer stash — one of them the second piece of the
+   * set it was wearing — so the answer said no threshold was worth committing
+   * to. Epics and legendaries reach +20; a rare fifteen levels up is still junk
+   * by the time it is wearable.
+   */
+  it('reaches further up the level range for epics and legendaries', () => {
+    const result = selectCandidates(
+      [
+        candidate('purple-soon', { rarity: 'Legendary' }, ctx.level + 15),
+        candidate('blue-soon', { rarity: 'Epic' }, ctx.level + 20),
+        candidate('green-soon', { rarity: 'Rare' }, ctx.level + 15),
+        candidate('purple-far', { rarity: 'Legendary' }, ctx.level + 21),
+      ],
+      ctx,
+    );
+    expect(result.byGroup.get('Head')?.map((c) => c.item.display).sort()).toEqual(['blue-soon', 'purple-soon']);
+    expect(result.outOfWindow).toBe(2);
+  });
+
   it('keeps a Common only when it covers a current resistance shortfall', () => {
     const result = selectCandidates(
       [

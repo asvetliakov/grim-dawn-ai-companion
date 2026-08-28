@@ -808,11 +808,38 @@ describe('checkPlan', () => {
           { slot: 'Ring 1', itemId: 'ring01', verdict: 'EQUIP', target: 'ring02', enablers: ['head01'], reason: 'r' },
         ],
         hold: [
-          { itemId: 'ring02', slot: 'Ring 2', beats: 'ring01', gains: ['+12% Fire Resistance'], reason: 'r' },
+          { itemId: 'ring02', slot: 'Ring 2', beats: 'ring01', gains: ['+12% Fire Resistance'], reason: 'r', until: 'level 84' },
         ],
         sell: [],
       },
       w,
+    );
+    expect(warnings).toEqual([]);
+  });
+
+  /**
+   * A hold waiting on a drop rather than a level: wearable now, a real upgrade,
+   * but its swap opens a gap nothing in the dossier covers yet. `until` names
+   * the kind of drop; `needs` has nothing to say. Exactly as justified as a
+   * level hold — the condition is a sentence either way.
+   */
+  it('accepts a hold whose condition is a drop rather than a threshold', () => {
+    const warnings = checkPlan(
+      {
+        verdicts: [],
+        hold: [
+          {
+            itemId: 'ring02',
+            slot: 'Ring 2',
+            beats: 'ring01',
+            gains: ['+12% Fire Resistance'],
+            reason: 'drops Aether Resistance 30 under cap and no lever covers it',
+            until: 'a Chest or Head carrying ≥30% Aether Resistance',
+          },
+        ],
+        sell: [],
+      },
+      world(),
     );
     expect(warnings).toEqual([]);
   });
@@ -835,12 +862,13 @@ describe('checkPlan', () => {
     expect(warnings[0]!.message).toContain('which slot it is for');
     expect(warnings[0]!.message).toContain('which item it would replace');
     expect(warnings[0]!.message).toContain('what it gains over that item');
+    expect(warnings[0]!.message).toContain('until when it is held');
   });
 
   it('names the missing halves of a partly-justified hold', () => {
     const w = world();
     const warnings = checkPlan(
-      { verdicts: [], hold: [{ itemId: 'ring02', slot: 'Ring 2', reason: 'r' }], sell: [] },
+      { verdicts: [], hold: [{ itemId: 'ring02', slot: 'Ring 2', reason: 'r', until: 'level 84' }], sell: [] },
       w,
     );
     expect(warnings.map((x) => x.kind)).toEqual(['unjustified-hold']);
@@ -853,7 +881,7 @@ describe('checkPlan', () => {
     const self = checkPlan(
       {
         verdicts: [],
-        hold: [{ itemId: 'ring02', slot: 'Ring 2', beats: 'ring02', gains: ['+5% Fire Resistance'], reason: 'r' }],
+        hold: [{ itemId: 'ring02', slot: 'Ring 2', beats: 'ring02', gains: ['+5% Fire Resistance'], reason: 'r', until: 'level 84' }],
         sell: [],
       },
       w,
@@ -864,7 +892,7 @@ describe('checkPlan', () => {
     const ghost = checkPlan(
       {
         verdicts: [],
-        hold: [{ itemId: 'ring02', slot: 'Ring 2', beats: 'nope99', gains: ['+5% Fire Resistance'], reason: 'r' }],
+        hold: [{ itemId: 'ring02', slot: 'Ring 2', beats: 'nope99', gains: ['+5% Fire Resistance'], reason: 'r', until: 'level 84' }],
         sell: [],
       },
       w,

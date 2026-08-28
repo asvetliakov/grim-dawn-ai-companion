@@ -47,6 +47,7 @@ import {
   estimateTokens,
   EQUIP_GROUPS,
   itemStatBlocks,
+  LEVEL_WINDOW,
   selectCandidates,
   type Candidate,
   type CandidateSelection,
@@ -1813,7 +1814,7 @@ function candidatesSection(
   components: ReadonlyMap<string, CensusEntry>,
 ): void {
   out.h(2, '7. Candidates — everything not worn, by slot');
-  out.line('Ranked by: covers a resistance shortfall > matches the build focus (post-conversion, counting the item\'s own conversion and armor piercing) > rarity > level proximity. A failing requirement is **not** a rejection — decide between an enabler combination, HOLD-until, and discard.');
+  out.line('Ranked by: covers a resistance shortfall > matches the build focus (post-conversion, counting the item\'s own conversion and armor piercing) > rarity > level proximity. A failing requirement is **not** a rejection — decide between an enabler combination, HOLD-until, and discard. Nor is a gain the loadout cannot absorb today: an item that is a real upgrade on one axis and opens a cost — a resistance under cap, a broken set, the last dual-wield enabler — that nothing in this document covers yet is a HOLD with a stated condition (§11), not a discard.');
 
   if (ctx.projections.size) {
     out.line();
@@ -1846,7 +1847,7 @@ function candidatesSection(
   }
   if (selection.outOfWindow) {
     out.line();
-    out.line(`*(${selection.outOfWindow} further item(s) fell outside the level window of −25/+10 around level ${ctx.aggregate.level}, or were Common rarity covering nothing. The carried ones are named below; stored ones are omitted.)*`);
+    out.line(`*(${selection.outOfWindow} further item(s) fell outside the level window around level ${ctx.aggregate.level} — −${LEVEL_WINDOW.below} below it, +${LEVEL_WINDOW.above} above it (+${LEVEL_WINDOW.aboveEndgame} for Epic and Legendary) — or were Common rarity covering nothing. The carried ones are named below; stored ones are omitted.)*`);
   }
   if (fodder.length) {
     out.line();
@@ -2801,7 +2802,7 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line('Then give:');
   out.bullets([
-    'a **HOLD** list — items to keep for a level or attribute threshold, naming the threshold',
+    'a **HOLD** list — items to keep for a stated condition, naming it: a level, attribute points, or the *kind* of drop that would cover what putting the item on opens today (a swap the loadout cannot absorb yet is a hold with a condition, not a sell). Each hold names its slot, the item it would replace, what it gains, and until when',
     'a **SELL/SALVAGE** line — a count and the kinds, for items no plausible version of this build reaches; the items themselves belong in the plan\'s `sell` array rather than in a prose bullet each',
     'the reasoning behind each non-obvious call, in one or two sentences',
   ]);
