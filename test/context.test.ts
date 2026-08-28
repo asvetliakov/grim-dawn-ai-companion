@@ -585,6 +585,34 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     expect(doc.markdown).not.toContain('**weapon payload index** is the yardstick');
   });
 
+  it('states sustain with its sources, the rule for it, and a skill’s own leech on the skill', async () => {
+    const input = await context('_Suchka');
+    const doc = buildContextDoc(input);
+    const d = input.aggregate.defense;
+
+    // §2 carries the mechanics; §3 the number — in the game's own phrase, so
+    // the model's vocabulary matches the item lines — and every source, so a
+    // swap's sustain cost is computable the way a resistance's is.
+    expect(section(doc.markdown, 2)).toContain('**Attack damage converted to health is sustain');
+    const line = section(doc.markdown, 3)
+      .split('\n')
+      .find((l) => l.startsWith('- sustain: '));
+    expect(line).toBeDefined();
+    if (d.lifeLeechPercent) {
+      expect(line).toContain(`${d.lifeLeechPercent.toFixed(1)}% of Attack Damage converted to Health`);
+      for (const source of d.lifeLeechSources) expect(line).toContain(`${source.slot}: ${source.label}`);
+    } else {
+      expect(line).toContain('from any permanent source');
+    }
+    // A skill-scoped figure is marked as the skill's alone, wherever one exists.
+    for (const s of input.aggregate.damage.skillDamage) {
+      if (!s.lifeLeechPercent) continue;
+      expect(section(doc.markdown, 4)).toContain(
+        `${s.lifeLeechPercent}% of Attack Damage converted to Health *(this skill only, on its whole damage)*`,
+      );
+    }
+  });
+
   it('renders the resistance matrix with exactly the aggregate’s numbers', async () => {
     const input = await context('_Suchka');
     const doc = buildContextDoc(input);
@@ -831,6 +859,54 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     expect([...kinds].some((k) => k.startsWith('auto-cast'))).toBe(true);
     expect([...kinds]).not.toContain('unknown activation');
     expect(section(doc.markdown, 2)).toContain('**Granted skills.**');
+  });
+
+  it('projects every candidate when asked, in lines that obey its own stat rule, and prints none by default', async () => {
+    const input = await context('_Suchka');
+    const plain = buildContextDoc(input);
+    expect(plain.projections.size).toBe(0);
+    expect(plain.markdown).not.toContain('projected in ');
+    expect(plain.markdown).not.toContain('**Projected swaps.**');
+
+    const doc = buildContextDoc(input, { projections: true });
+    expect(doc.trimmed).toEqual([]);
+    const seven = section(doc.markdown, 7);
+    expect(seven).toContain('**Projected swaps.**');
+    expect(seven).toContain('**Levers per resistance**');
+
+    // Every §7 candidate has a projection per target: a figure, or a reason.
+    for (const id of doc.candidateIds) {
+      const item = doc.itemsById.get(id)!;
+      if (item.source !== 'inventory' && item.source !== 'stash' && item.source !== 'transfer') continue;
+      const projection = doc.projections.get(id);
+      if (!projection) continue; // carried-but-unranked fodder is not projected
+      expect(projection.targets.length).toBeGreaterThan(0);
+      for (const target of projection.targets) {
+        expect(target.projection !== undefined || target.skipped !== undefined, `${item.display} in ${target.slot}`).toBe(true);
+      }
+    }
+    // Everything ranked was projected: the ids §7 listed under a group all carry one.
+    const ranked = [...doc.candidateIds].filter((id) => seven.includes(`\`#${id}\`\n`));
+    for (const id of ranked) expect(doc.projections.has(id), id).toBe(true);
+    expect(doc.projections.size).toBeGreaterThan(0);
+
+    // A lever bullet names at most six, each a socketable the document offers,
+    // and a free component is one the empty-socket check would accept.
+    const levers = seven.split('\n').filter((l) => /^- \*\*[A-Za-z ]+ Resistance\*\*: /.test(l));
+    expect(levers.length).toBeGreaterThan(0);
+    for (const line of levers) {
+      const ids = [...line.matchAll(/`#([0-9a-z]+)`/g)].map((m) => m[1]!);
+      expect(ids.length).toBeLessThanOrEqual(6);
+      for (const id of ids) expect(doc.socketablesById.has(id), id).toBe(true);
+    }
+
+    // The projection lines hold to the qualified-stat rule the answer is held to.
+    const bare = new Map<string, string>();
+    for (const line of seven.split('\n')) {
+      if (!/^- (projected in|worn in|not projected|\*\*[A-Za-z ]+ Resistance\*\*:)/.test(line)) continue;
+      for (const hit of ambiguousStats(line)) if (!bare.has(hit)) bare.set(hit, line.slice(0, 160));
+    }
+    expect([...bare], 'bare stat references in projection lines').toEqual([]);
   });
 
   it('obeys the qualified-stat rule it imposes on the answer', async () => {

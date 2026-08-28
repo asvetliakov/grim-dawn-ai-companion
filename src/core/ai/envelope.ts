@@ -146,6 +146,8 @@ export const planProjectionSchema = z.object({
         flat: z.object({ before: z.number(), after: z.number() }),
         percent: z.object({ before: z.number(), after: z.number() }),
       }),
+      /** Global `% of Attack Damage converted to Health`. Optional: runs before it was tracked. */
+      sustain: z.object({ before: z.number(), after: z.number() }).optional(),
       /** Attribute totals — base + gear/skill flats, × (1 + %). */
       attributes: z.object({
         physique: z.object({ before: z.number(), after: z.number() }),

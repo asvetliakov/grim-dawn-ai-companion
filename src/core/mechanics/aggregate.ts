@@ -92,7 +92,9 @@ export type SourceKind =
   | 'augment'
   | 'set'
   | 'skill'
-  | 'devotion';
+  | 'devotion'
+  /** A skill an equipped part grants outright, and that is always on. */
+  | 'granted';
 
 export interface MatrixRow {
   /** Equipment slot, or the group name for a set / skill / devotion row. */
@@ -172,6 +174,8 @@ export interface SkillDamage {
   conversions: Conversion[];
   /** True for a default-attack replacer (`Skill_WeaponPool_*`). */
   isDefaultAttack: boolean;
+  /** The skill's own `% of Attack Damage converted to Health` at that rank — applies to its whole damage, this skill only. */
+  lifeLeechPercent?: number;
 }
 
 /**
@@ -247,6 +251,12 @@ export interface DefenseSummary extends DefenseFields {
   /** True when a shield is equipped — block numbers mean nothing without one. */
   hasShield: boolean;
   armorClasses: string[];
+  /**
+   * Every permanent source of `lifeLeechPercent`, so a swap's sustain cost is
+   * attributable the way a resistance's is. Attack skills' own leech is not
+   * here — it scopes to that skill (`SkillDamage.lifeLeechPercent`).
+   */
+  lifeLeechSources: { slot: string; label: string; value: number }[];
 }
 
 export interface SkillModifierNote {
@@ -402,7 +412,15 @@ export interface CharacterAggregate {
   /** Buffs counted in the maintainable band, so the reader can see the price. */
   maintained: { name: string; rank: number; duration?: number; cooldown?: number }[];
   /** Skills granted by equipped items — named, not summed. */
-  grantedSkills: { item: string; skill: string }[];
+  grantedSkills: {
+    /** The part granting it — a component's skill leaves with the component. */
+    item: string;
+    skill: string;
+    /** True when its stats are summed: an always-on passive or a toggle. */
+    counted: boolean;
+    /** `always on`, `toggle`, or why it is not counted. */
+    activation: string;
+  }[];
   /** Item skill modifiers — named, not summed. */
   skillModifiers: SkillModifierNote[];
   attributes: AttributeSummary;
@@ -507,8 +525,8 @@ export function equippedSlots(save: CharacterSave, db: GameDb): EquippedSlot[] {
   return out;
 }
 
-const MELEE_1H = /^WeaponMelee_(Sword|Axe|Mace|Dagger|Scepter)$/;
-const RANGED_1H = 'WeaponHunting_Ranged1h';
+export const MELEE_1H = /^WeaponMelee_(Sword|Axe|Mace|Dagger|Scepter)$/;
+export const RANGED_1H = 'WeaponHunting_Ranged1h';
 
 /**
  * How the held weapons are configured, and — for the dual-wield modes — what
@@ -551,14 +569,10 @@ function wieldingSummary(slots: EquippedSlot[], save: CharacterSave, db: GameDb)
       if (!ENABLER_PASSIVE.has(statRecord(skill, db).class)) continue;
       enablers.push({ name: skillLabel(skill, db), source: 'skill' });
     }
-    for (const { item } of slots) {
-      for (const part of [item.base, item.component, item.augment]) {
-        const granted = part?.grantedSkill;
-        if (!granted) continue;
-        const skill = db.getSkill(granted.record);
-        if (!skill || dualWieldFlag(skill, db) !== family) continue;
-        enablers.push({ name: granted.name, source: `granted by ${item.base?.name ?? item.record}` });
-      }
+    for (const granted of grantedSkillRefs(slots, db)) {
+      const skill = db.getSkill(granted.record);
+      if (!skill || dualWieldFlag(skill, db) !== family) continue;
+      enablers.push({ name: granted.name, source: `granted by ${granted.part}` });
     }
   }
 
@@ -686,6 +700,7 @@ export function aggregateCharacter(
   const maxResist: ResistVector = {};
   const secondary = new Map<string, number>();
   const defense = emptyDefense();
+  const leechSources: DefenseSummary['lifeLeechSources'] = [];
   // Speed bands separately: Veil of Shadow's -12% Total Speed is permanent and
   // Pneumatic Burst's +5% is not, so a single number would be wrong twice.
   const speedPermanent = emptySpeed();
@@ -698,6 +713,9 @@ export function aggregateCharacter(
   const excludedReasons = new Set<string>();
   const attrSums = emptyAttributes();
   const reductions = emptyReductions();
+  // Declared here rather than beside the invested-skill loop because gear can
+  // grant a maintainable buff too, and that fold runs first.
+  const maintained: CharacterAggregate['maintained'] = [];
 
   const fold = (
     slot: string,
@@ -723,6 +741,11 @@ export function aggregateCharacter(
         if (rating !== undefined) armorPieces.set(armorPart, (armorPieces.get(armorPart) ?? 0) + resolve(rating));
       }
       addDefense(defense, stats, resolve, { protectionIsPieceRating: armorPart !== undefined });
+      const leech = stats['offensiveLifeLeechMin'];
+      if (leech !== undefined) {
+        const value = resolve(leech);
+        if (value) leechSources.push({ slot, label, value });
+      }
       addDamage(damage, stats, resolve);
       addAttributes(attrSums, stats, resolve);
       addReqReductions(reductions, stats, resolve, label);
@@ -754,9 +777,68 @@ export function aggregateCharacter(
     fold(c.slot, c.label, c.kind, 'permanent', c.stats, c.resolve, c.note, c.armorPart);
   }
 
+  // --- skills granted by gear ---------------------------------------------
+  //
+  // A granted skill is banded exactly as an invested one, because it is the
+  // same mechanic: a passive or a toggle is on, so it is summed on its own
+  // attributable row, and a proc, an activated attack or a pet skill is named
+  // and left out. Lumping all six kinds under "named, not summed" cost real
+  // advice — a relic whose aura carries +125% Cold Damage read as its own
+  // +36% line, so swapping it away looked like a damage gain.
+  //
+  // None of these is in `save.skills` (the game does not persist a granted
+  // skill as a character skill), but one that somehow is stays with the
+  // invested fold rather than being counted twice.
+  const investedRecords = new Set(save.skills.filter((s) => s.level > 0).map((s) => s.record));
+  const grantedSkills: CharacterAggregate['grantedSkills'] = [];
+  for (const g of grantedSkillRefs(slots, db)) {
+    const skill = db.getSkill(g.record);
+    if (!skill || investedRecords.has(g.record)) continue;
+    const stats = statRecord(skill, db);
+    // The activator carries the toggled class; the buff it points at is a
+    // plain passive, so asking the buff would call every aura "always on".
+    const toggle = /Toggled/.test(skill.class) || /Toggled/.test(stats.class);
+    const { band, reason } = classify(skill, db);
+    // Every granting part counts, including a second copy of the same one:
+    // two Vicious Spikes are two buffs, and so are two Coldstones. That is
+    // the opposite of the set-bonus rule, where a duplicate member adds
+    // nothing — both are in-game facts, neither is in the data.
+    const counted = band === 'permanent' || band === 'maintainable';
+    grantedSkills.push({
+      item: g.part,
+      skill: g.name,
+      counted,
+      activation: counted ? (toggle ? 'toggle' : 'always on') : (reason ?? 'cast or triggered'),
+    });
+    if (!counted) {
+      excludedReasons.add(reason ?? 'grantedActive');
+      continue;
+    }
+    // A toggle's energy reservation is the cost of having it on, and the one
+    // reason a reader might discount the row — so the row says it.
+    const reserve = stats.stats['characterManaLimitReserve'];
+    const reserved = typeof reserve === 'number' && reserve ? `, reserves ${reserve}% energy` : '';
+    fold(
+      g.slot,
+      g.name,
+      'granted',
+      band,
+      stats.stats,
+      atRank(g.rank),
+      `granted by ${g.part}, ${toggle ? 'toggle' : 'always on'}${reserved}`,
+    );
+    if (band === 'maintainable' && stats.duration) {
+      maintained.push({
+        name: g.name,
+        rank: g.rank,
+        duration: stats.duration,
+        ...(stats.cooldown ? { cooldown: stats.cooldown } : {}),
+      });
+    }
+  }
+
   // --- skills -------------------------------------------------------------
 
-  const maintained: CharacterAggregate['maintained'] = [];
   const attackRows = new Map<string, AttackRow>();
   for (const entry of save.skills) {
     const skill = db.getSkill(entry.record);
@@ -909,11 +991,11 @@ export function aggregateCharacter(
       secondary: [...secondary].map(([label, value]) => ({ label, value })).sort((a, b) => b.value - a.value),
     },
     damage: damageProfile(damage, conversionRows, attackRows, rrRows, ranks, save, db),
-    defense: defenseSummary(defense, armorPieces, slots, db.armorAbsorptionBase(), db.combatFormulas().hitChances),
+    defense: defenseSummary(defense, armorPieces, slots, db.armorAbsorptionBase(), db.combatFormulas().hitChances, leechSources),
     speed: speedSummary(speedPermanent, speedMaintainable, slots, db),
     ranks: [...ranks.values()].sort((a, b) => b.invested - a.invested),
     maintained,
-    grantedSkills: grantedSkills(slots),
+    grantedSkills,
     skillModifiers: skillModifiers(slots, db),
     attributes,
     requirementReductions: reductions,
@@ -955,6 +1037,7 @@ interface AttackRow {
   ownTotalPercent: number;
   conversions: Conversion[];
   isDefaultAttack: boolean;
+  lifeLeechPercent: number;
 }
 
 /**
@@ -999,6 +1082,7 @@ function collectAttackDamage(
     ownTotalPercent: 0,
     conversions: [],
     isDefaultAttack: false,
+    lifeLeechPercent: 0,
   };
   row.invested += entry.level;
   if (!isModifierNode) {
@@ -1017,6 +1101,10 @@ function collectAttackDamage(
     if (amount) row.ownPercent[dmgKey] = (row.ownPercent[dmgKey] ?? 0) + amount;
   }
   row.ownTotalPercent += own.totalPercent;
+  // A skill's own leech applies to that skill's whole damage — the one case
+  // where attack-damage-to-health is not about the weapon share — and it
+  // scopes to the skill, so it never joins the global `defense` figure.
+  row.lifeLeechPercent += read(stats.stats['offensiveLifeLeechMin'] ?? 0);
   row.conversions.push(...conversions(stats.stats, read));
   // On-hit RR carried on the attack skill's record (or its modifier node) —
   // this branch is its only reader, since attack skills never reach the fold.
@@ -1085,6 +1173,7 @@ function damageProfile(
       record: row.record,
       rank: row.rank || 1,
       ...(row.weaponDamagePct ? { weaponDamagePct: Math.round(row.weaponDamagePct) } : {}),
+      ...(row.lifeLeechPercent ? { lifeLeechPercent: Math.round(row.lifeLeechPercent * 10) / 10 } : {}),
       flat: (Object.entries(row.flat) as [DamageKey, number][])
         .map(([dmgKey, amount]) => ({
           key: dmgKey,
@@ -1152,6 +1241,7 @@ function defenseSummary(
   slots: EquippedSlot[],
   absorptionBase: number,
   hitChances: Record<string, number>,
+  lifeLeechSources: DefenseSummary['lifeLeechSources'],
 ): DefenseSummary {
   const armorClasses = new Set<string>();
   let hasShield = false;
@@ -1187,6 +1277,7 @@ function defenseSummary(
     absorptionBase,
     hasShield,
     armorClasses: [...armorClasses],
+    lifeLeechSources,
   };
 }
 
@@ -1327,15 +1418,64 @@ function speedSummary(
   };
 }
 
-function grantedSkills(slots: EquippedSlot[]): { item: string; skill: string }[] {
-  const out: { item: string; skill: string }[] = [];
-  const add = (source: DbItem | undefined): void => {
-    if (source?.grantedSkill) out.push({ item: source.name, skill: source.grantedSkill.name });
-  };
-  for (const { item } of slots) {
-    add(item.base);
-    add(item.component);
-    add(item.augment);
+/** A skill an equipped part grants outright, located on the part that carries it. */
+interface GrantedSkillRef {
+  slot: string;
+  /** The part the grant rides on — a component's skill leaves with the component. */
+  part: string;
+  record: string;
+  name: string;
+  /** The rank the item grants it at (`itemSkillLevel`); 1 unless the record says otherwise. */
+  rank: number;
+}
+
+/** The two fields an item states a grant with, as `statfmt` reads them. */
+const GRANT_FIELDS = ['itemSkillName', 'skillName'] as const;
+
+/**
+ * Every skill the loadout grants, by the part granting it.
+ *
+ * Read off the stat blocks rather than from `DbItem.grantedSkill`, which is
+ * set only when the *activator* record has a name of its own — and a toggled
+ * aura's name lives on the buff it points at, so `grantedSkill` is undefined
+ * for exactly the kind that matters most. `skillLabel` follows that hop.
+ */
+function grantedSkillRefs(slots: EquippedSlot[], db: GameDb): GrantedSkillRef[] {
+  const out: GrantedSkillRef[] = [];
+  for (const { slot, item } of slots) {
+    const parts: [string, { stats: Record<string, StatValue>; grantedSkill?: { record: string } } | undefined][] = [
+      [item.base?.name ?? item.record, item.base],
+      [item.prefixName ?? 'prefix', item.prefix],
+      [item.suffixName ?? 'suffix', item.suffix],
+      [item.modifierName ?? 'crafting bonus', item.modifier],
+      ['completion bonus', item.completion],
+      [item.component?.name ?? 'component', item.component],
+      [item.augment?.name ?? 'augment', item.augment],
+    ];
+    for (const [partName, part] of parts) {
+      if (!part) continue;
+      // The stat fields are the authority — `grantedSkill` is a build-time
+      // convenience that goes missing on exactly the toggled auras — but read
+      // both, so a part carrying only the indexed form is still seen.
+      const records = new Set<string>();
+      for (const field of GRANT_FIELDS) {
+        const value = part.stats[field];
+        if (typeof value === 'string' && value) records.add(value);
+      }
+      if (part.grantedSkill?.record) records.add(part.grantedSkill.record);
+      for (const record of records) {
+        const skill = db.getSkill(record);
+        if (!skill) continue;
+        const level = part.stats['itemSkillLevel'];
+        out.push({
+          slot,
+          part: partName,
+          record,
+          name: skillLabel(skill, db),
+          rank: typeof level === 'number' && level > 0 ? level : 1,
+        });
+      }
+    }
   }
   return out;
 }
@@ -1378,7 +1518,9 @@ function skillModifiers(slots: EquippedSlot[], db: GameDb): SkillModifierNote[] 
 function exclusionList(reasons: Set<string>): string[] {
   const out = [...reasons].map((key) => EXCLUSION_REASONS[key] ?? key);
   out.push(
-    'skills granted by items (named above, stats not summed)',
+    // Item-granted passives and toggles *are* counted now, on their own rows —
+    // so what is left out here is only the conditional kinds.
+    'item-granted procs, activated skills and pet skills (named above, stats not summed — an always-on passive or toggle is counted, on its own row)',
     'item skill modifiers (named above, stats not summed)',
     'attack and retaliation damage, which depend on what is being hit',
     'permanent global conversions are folded into the flat damage figures; skill-scoped conversion is listed on the skill it converts and folded nowhere',

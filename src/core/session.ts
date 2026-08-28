@@ -156,7 +156,9 @@ export function loadSnapshot(
   const account = accountFiles(settings.saveDir);
   const resolved = resolveCharacter(save, account, db);
   const aggregate = aggregateCharacter(save, db, difficulty);
-  const input: ContextInput = { save, aggregate, resolved, db };
+  const input: ContextInput = { save, aggregate, resolved, db, account };
+  // No projections here: this runs on every watcher tick and its document
+  // only feeds ids to the window. `adviceScope` builds the one the model reads.
   const doc = buildContextDoc(input, {
     ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
     ...(opts.perGroup !== undefined ? { perGroup: opts.perGroup } : {}),
@@ -181,13 +183,36 @@ export function loadSnapshot(
  * hash of the item itself, not of its position in the list — the only wobble is
  * the disambiguating suffix on byte-identical duplicates, which can shift a mark
  * between two copies of the same thing.
+ *
+ * This is also the one place the **candidate projections** are switched on:
+ * the document the model reads carries the projected swap under every §7
+ * candidate, and the snapshot's own document (built on every watcher tick)
+ * does not. So the stash-included branch rebuilds too — every existing line
+ * comes out byte-identical, the ids being hashes of the items — and the result
+ * is memoised per snapshot, because the context viewer and the run both ask
+ * for it and a hundred aggregates need not run twice.
  */
 export function adviceScope(
   snapshot: CharacterSnapshot,
   includeStash: boolean,
+  opts: { projections?: boolean } = {},
 ): { input: ContextInput; doc: ContextDoc } {
-  if (includeStash) return { input: snapshot.input, doc: snapshot.doc };
-  const items = snapshot.resolved.items.filter((i) => i.source !== 'stash' && i.source !== 'transfer');
-  const input: ContextInput = { ...snapshot.input, resolved: { ...snapshot.resolved, items } };
-  return { input, doc: buildContextDoc(input) };
+  const projections = opts.projections ?? true;
+  const key = `${includeStash ? 'stash' : 'no-stash'}:${projections ? 'projected' : 'plain'}`;
+  const cached = scopeCache.get(snapshot) ?? new Map<string, Scope>();
+  const hit = cached.get(key);
+  if (hit) return hit;
+
+  let input = snapshot.input;
+  if (!includeStash) {
+    const items = snapshot.resolved.items.filter((i) => i.source !== 'stash' && i.source !== 'transfer');
+    input = { ...snapshot.input, resolved: { ...snapshot.resolved, items } };
+  }
+  const scope = { input, doc: buildContextDoc(input, { projections }) };
+  cached.set(key, scope);
+  scopeCache.set(snapshot, cached);
+  return scope;
 }
+
+type Scope = { input: ContextInput; doc: ContextDoc };
+const scopeCache = new WeakMap<CharacterSnapshot, Map<string, Scope>>();

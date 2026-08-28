@@ -120,7 +120,41 @@ const SOCKET_VERDICT_KINDS: Readonly<Partial<Record<Verdict, 'component' | 'augm
   'BUY-AUGMENT': 'augment',
 };
 
+export type PlanVerdict = AdvisorPlan['verdicts'][number];
+
+/** A projection with the two aggregates it was diffed from. */
+export interface Projected {
+  projection: PlanProjection;
+  before: CharacterAggregate;
+  after: CharacterAggregate;
+}
+
+/** A two-handed weapon class: `WeaponMelee_Sword2h`, `WeaponHunting_Ranged2h`, the spear. */
+const TWO_HANDED = /2h$/i;
+
+/** The whole plan: its verdicts projected, plus where the model's own tally disagrees. */
 export function projectPlan(plan: AdvisorPlan, input: ProjectionInput): PlanProjection | undefined {
+  const result = projectVerdicts(plan.verdicts, input);
+  if (!result) return undefined;
+  noteModelDisagreements(plan, result.projection);
+  return result.projection;
+}
+
+/**
+ * Any list of verdicts against the save the run saw — the plan's, or a single
+ * synthetic `EQUIP` when the context builder projects one candidate swap.
+ *
+ * `opts.before` is the aggregate to diff against when the caller already holds
+ * it; the builder projects a hundred candidates against one loadout and must
+ * not recompute that loadout a hundred times. Absent, it is recomputed here so
+ * before and after are guaranteed to be the same arithmetic over the same
+ * inputs.
+ */
+export function projectVerdicts(
+  verdicts: readonly PlanVerdict[],
+  input: ProjectionInput,
+  opts: { before?: CharacterAggregate } = {},
+): Projected | undefined {
   const { save, account, db, difficulty, itemsById, socketablesById } = input;
 
   const skipped: PlanProjection['skipped'] = [];
@@ -131,9 +165,7 @@ export function projectPlan(plan: AdvisorPlan, input: ProjectionInput): PlanProj
 
   let before: CharacterAggregate;
   try {
-    // Recomputed rather than taken from the snapshot, so before and after are
-    // guaranteed to be the same arithmetic over the same inputs.
-    before = aggregateCharacter(save, db, difficulty);
+    before = opts.before ?? aggregateCharacter(save, db, difficulty);
   } catch {
     return undefined;
   }
@@ -165,7 +197,13 @@ export function projectPlan(plan: AdvisorPlan, input: ProjectionInput): PlanProj
     }
   };
 
-  for (const verdict of plan.verdicts) {
+  /** The class of whatever a weapon slot holds right now, in the mutated save. */
+  const heldClass = (ref: SlotRef): string | undefined => {
+    const inst = slotInstance(mutated, ref);
+    return inst ? db.getItem(inst.baseName)?.slot : undefined;
+  };
+
+  for (const verdict of verdicts) {
     try {
       applyVerdict(verdict);
     } catch (err) {
@@ -173,7 +211,7 @@ export function projectPlan(plan: AdvisorPlan, input: ProjectionInput): PlanProj
     }
   }
 
-  function applyVerdict(verdict: AdvisorPlan['verdicts'][number]): void {
+  function applyVerdict(verdict: PlanVerdict): void {
     const ref = slotRef(verdict.slot, activeSet);
     if (!ref) {
       skipped.push({ slot: verdict.slot, verdict: verdict.verdict, reason: 'unrecognized slot label' });
@@ -210,6 +248,31 @@ export function projectPlan(plan: AdvisorPlan, input: ProjectionInput): PlanProj
         if (!inst) {
           skipped.push({ slot: verdict.slot, verdict: 'EQUIP', reason: `no saved instance found for ${target.display}` });
           break;
+        }
+        // Hands are not independent slots. A two-hander takes both, so the off
+        // hand empties with it; and nothing goes *into* the off hand while a
+        // two-hander is held — that is a pairing the plan has to make as one
+        // move with a one-hander in the main hand.
+        if (ref.kind === 'weapon') {
+          const incoming2h = TWO_HANDED.test(target.base?.slot ?? '');
+          const mainRef: SlotRef = { kind: 'weapon', set: ref.set, hand: 0 };
+          const offRef: SlotRef = { kind: 'weapon', set: ref.set, hand: 1 };
+          if (ref.hand === 1 && incoming2h) {
+            skipped.push({ slot: verdict.slot, verdict: 'EQUIP', reason: 'a two-hander cannot go in the off hand' });
+            break;
+          }
+          if (ref.hand === 1 && TWO_HANDED.test(heldClass(mainRef) ?? '')) {
+            skipped.push({ slot: verdict.slot, verdict: 'EQUIP', reason: 'a two-hander is held; pair it with a one-hander in the main hand as one move' });
+            break;
+          }
+          if (ref.hand === 0 && incoming2h) {
+            const off = slotInstance(mutated, offRef);
+            if (off) {
+              const name = db.getItem(off.baseName)?.name ?? off.baseName;
+              setSlotInstance(mutated, offRef, null);
+              note(`${target.display} takes both hands: ${name} leaves the loadout with the off hand`);
+            }
+          }
         }
         // Wearing it in this slot must not leave a second copy where it came
         // from — a Ring 1 ↔ Ring 2 shuffle would otherwise count it twice.
@@ -261,7 +324,33 @@ export function projectPlan(plan: AdvisorPlan, input: ProjectionInput): PlanProj
     return undefined;
   }
 
-  return diff(before, after, plan, skipped, notes);
+  return { projection: diff(before, after, skipped, notes), before, after };
+}
+
+/**
+ * Where the model also projected a resistance, disagreement is worth a line —
+ * display-only here: the one disagreement that is a plan error rather than a
+ * reporting choice (tally claims capped, computed lands under cap) is
+ * `overstated-cap` in verify.ts, which projects through the same code inside
+ * the repair loop. A figure matching *either* band within ±2 is a
+ * reporting-band choice, not a disagreement: the first live A/B produced
+ * three notes that were all opus stating the permanent band, and a note that
+ * fires on that means nothing.
+ */
+function noteModelDisagreements(plan: AdvisorPlan, projection: PlanProjection): void {
+  for (const row of projection.resistances) {
+    const modelValue = modelResistance(plan, row.label);
+    if (
+      modelValue !== undefined &&
+      Math.abs(modelValue - row.after) > 2 &&
+      Math.abs(modelValue - (row.afterPermanent ?? row.after)) > 2
+    ) {
+      projection.notes.push(
+        `the model projected ${row.label} Resistance at ${modelValue}; the computed figure is ${row.after} ` +
+          `(${row.afterPermanent} permanent-band)`,
+      );
+    }
+  }
 }
 
 function applyFit(
@@ -277,7 +366,6 @@ function applyFit(
 function diff(
   before: CharacterAggregate,
   after: CharacterAggregate,
-  plan: AdvisorPlan,
   skipped: PlanProjection['skipped'],
   notes: string[],
 ): PlanProjection {
@@ -294,28 +382,6 @@ function diff(
     ),
     capAfter: round(after.resistances.caps[column.key] ?? 0),
   }));
-
-  // Where the model also projected a resistance, disagreement is worth a line —
-  // display-only here: the one disagreement that is a plan error rather than a
-  // reporting choice (tally claims capped, computed lands under cap) is
-  // `overstated-cap` in verify.ts, which projects through the same code inside
-  // the repair loop. A figure matching *either* band within ±2 is a
-  // reporting-band choice, not a disagreement: the first live A/B produced
-  // three notes that were all opus stating the permanent band, and a note that
-  // fires on that means nothing.
-  for (const row of resistances) {
-    const modelValue = modelResistance(plan, row.label);
-    if (
-      modelValue !== undefined &&
-      Math.abs(modelValue - row.after) > 2 &&
-      Math.abs(modelValue - row.afterPermanent) > 2
-    ) {
-      notes.push(
-        `the model projected ${row.label} Resistance at ${modelValue}; the computed figure is ${row.after} ` +
-          `(${row.afterPermanent} permanent-band)`,
-      );
-    }
-  }
 
   const speeds: PlanProjection['speeds'] = (
     [
@@ -376,6 +442,7 @@ function diff(
       flat: pair(before.defense.health, after.defense.health),
       percent: pair(before.defense.healthPercent, after.defense.healthPercent),
     },
+    sustain: pair(before.defense.lifeLeechPercent, after.defense.lifeLeechPercent),
     attributes: {
       physique: pair(before.attributes.physique.total, after.attributes.physique.total),
       cunning: pair(before.attributes.cunning.total, after.attributes.cunning.total),

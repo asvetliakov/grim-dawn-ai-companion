@@ -451,6 +451,7 @@ const stats: UiStats = {
   armorBonus: { flat: 482, percent: 17 },
   absorption: 89.6,
   absorptionBase: 70,
+  sustain: 11,
   speeds: [
     {
       label: 'Attack',
@@ -809,6 +810,8 @@ export function fixtureAdvice(snapshot: UiSnapshot): AdviseEnvelope {
           flat: { before: 4320, after: 4720 },
           percent: { before: 18, after: 18 },
         },
+        // The gloves swap takes their component's leech with it.
+        sustain: { before: 11, after: 6 },
         attributes: {
           physique: { before: 593, after: 593 },
           cunning: { before: 1384, after: 1402 },

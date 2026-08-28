@@ -206,9 +206,20 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
    * a stash and always ships, because it is the component census.
    */
   it('leaves the stashes out of the dossier when asked', () => {
-    expect(adviceScope(snapshot, true).doc).toBe(snapshot.doc);
+    // Stage 12: the advice document is a rebuild of the snapshot's, carrying
+    // the candidate projections the watcher-tick build deliberately skips —
+    // same ids, same lines, plus the projections — and it is memoised, because
+    // the context viewer and the run both ask for it.
+    const full = adviceScope(snapshot, true);
+    expect(full.doc).not.toBe(snapshot.doc);
+    expect(adviceScope(snapshot, true).doc).toBe(full.doc);
+    expect([...full.doc.itemsById.keys()]).toEqual([...snapshot.doc.itemsById.keys()]);
+    expect(snapshot.doc.projections.size).toBe(0);
+    expect(full.doc.projections.size).toBeGreaterThan(0);
+    expect(full.doc.markdown).toContain('- projected in ');
 
     const filtered = adviceScope(snapshot, false);
+    expect(filtered.doc.projections.size).toBeGreaterThan(0);
     expect(filtered.doc.itemsById.size).toBeLessThan(snapshot.doc.itemsById.size);
     for (const item of filtered.doc.itemsById.values()) {
       expect(item.source).not.toBe('stash');

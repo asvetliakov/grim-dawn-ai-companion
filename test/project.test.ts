@@ -2,7 +2,9 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { adviseEnvelopeSchema } from '../src/core/ai/envelope.js';
-import { projectPlan, type ProjectionInput } from '../src/core/ai/project.js';
+import { projectPlan, projectVerdicts, type ProjectionInput } from '../src/core/ai/project.js';
+import { candidateProjections } from '../src/core/context/projections.js';
+import { selectCandidates, type CandidateContext } from '../src/core/context/filters.js';
 import type { AdvisorPlan } from '../src/core/ai/provider.js';
 import { buildContextDoc } from '../src/core/context/builder.js';
 import type { DbItem, DbSkill, GameDb } from '@grimdawn/core/db/types';
@@ -18,6 +20,7 @@ import {
   type EquippedItem,
   type ItemInstance,
   type ItemPosition,
+  type PositionedItem,
 } from '@grimdawn/core/save/types';
 import {
   FORMULAS_PATH,
@@ -184,10 +187,19 @@ const MAINT_BUFF = 'records/skills/playerclass04/buff1.dbr';
 
 const db = stubDb({
   items: {
-    [HELM]: item(HELM, { name: 'Old Helm', slot: 'ArmorProtective_Head', stats: { defensiveFire: 20 } }),
+    // The old helm carries the world's only leech, so replacing it costs sustain.
+    // …and a level-requirement reduction, so the equip-time check of what
+    // replaces it differs from the as-dressed check.
+    [HELM]: item(HELM, {
+      name: 'Old Helm',
+      slot: 'ArmorProtective_Head',
+      stats: { defensiveFire: 20, offensiveLifeLeechMin: 4, characterLevelReqReduction: 12 },
+    }),
     [BETTER_HELM]: item(BETTER_HELM, {
       name: 'Better Helm',
       slot: 'ArmorProtective_Head',
+      levelReq: 60,
+      rarity: 'Epic',
       stats: {
         defensiveFire: 35,
         offensiveColdModifier: 40,
@@ -465,6 +477,9 @@ describe('projectPlan', () => {
     expect(d.attributes.cunning.before).toBe(d.attributes.cunning.after);
     expect(d.armorMean.before).toBe(d.armorMean.after);
     expect(d.absorption).toEqual({ before: 70, after: 70 });
+    // The outgoing helm's leech leaves with it — a defensive cost the block
+    // states rather than leaving to the prose.
+    expect(d.sustain).toEqual({ before: 4, after: 0 });
   });
 
   it('never mutates the save it was given', () => {
@@ -619,5 +634,165 @@ describe.skipIf(!canRunLive)(`projection vs an independent mutation (${canRunLiv
       expect(row?.flatAfter, `${entry.label} flat`).toBe(entry.flat);
     }
     expect(projection.payload?.after).toBe(after.damage.payloadIndex);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Candidate projections: the swap arithmetic §7 prints under each candidate
+// ---------------------------------------------------------------------------
+
+describe('candidate projections', () => {
+  const WORSE_HELM = 'records/items/worsehelm.dbr';
+  const BETTER_RING = 'records/items/betterring.dbr';
+  const GREATAXE = 'records/items/greataxe.dbr';
+  const SHIELD = 'records/items/shield.dbr';
+
+  const sceneDb = stubDb({
+    items: {
+      [HELM]: db.getItem(HELM)!,
+      [BETTER_HELM]: db.getItem(BETTER_HELM)!,
+      [RING]: db.getItem(RING)!,
+      [SHOULDERS]: db.getItem(SHOULDERS)!,
+      [WEAPON]: db.getItem(WEAPON)!,
+      [COMPONENT]: db.getItem(COMPONENT)!,
+      [AUGMENT]: db.getItem(AUGMENT)!,
+      // Strictly worse on every tracked figure, and carrying nothing the projection cannot see.
+      [WORSE_HELM]: item(WORSE_HELM, { name: 'Worse Helm', slot: 'ArmorProtective_Head', rarity: 'Epic', levelReq: 50, stats: { defensiveFire: 5 } }),
+      [BETTER_RING]: item(BETTER_RING, { name: 'Better Ring', slot: 'ArmorJewelry_Ring', rarity: 'Epic', levelReq: 50, stats: { defensivePierce: 20 } }),
+      [GREATAXE]: item(GREATAXE, {
+        name: 'Test Greataxe',
+        slot: 'WeaponMelee_Axe2h',
+        rarity: 'Epic',
+        levelReq: 50,
+        stats: { offensivePhysicalMin: 40, offensivePhysicalMax: 60 },
+      }),
+      [SHIELD]: item(SHIELD, { name: 'Test Shield', slot: 'WeaponArmor_Shield', rarity: 'Epic', levelReq: 50, stats: { defensiveBlockChance: 20 } }),
+    },
+    skills: { [PASSIVE]: db.getSkill(PASSIVE)!, [MAINT_BUFF]: db.getSkill(MAINT_BUFF)! },
+  });
+
+  interface Scene {
+    bag: PositionedItem[];
+    main?: EquippedItem | null;
+    off?: EquippedItem | null;
+  }
+
+  /** A save with the old helm and the plain ring worn, the given bag, and the given hands. */
+  function scene(over: Scene) {
+    const theSave = save({
+      equipment: (() => {
+        const eq: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+        eq[0] = instance({ baseName: HELM });
+        eq[7] = instance({ baseName: RING, seed: 3 });
+        return eq;
+      })(),
+      weaponSet1: [over.main === undefined ? instance({ baseName: WEAPON, seed: 11 }) : over.main, over.off ?? null],
+      inventorySacks: [over.bag],
+      skills: [characterSkill(PASSIVE, 2)],
+    });
+    const account: AccountFiles = {};
+    const resolved = resolveCharacter(theSave, account, sceneDb);
+    const aggregate = aggregateCharacter(theSave, sceneDb);
+    const ctx: CandidateContext = {
+      level: aggregate.level,
+      standing: {
+        level: aggregate.level,
+        attributes: {
+          physique: aggregate.attributes.physique.total,
+          cunning: aggregate.attributes.cunning.total,
+          spirit: aggregate.attributes.spirit.total,
+        },
+        reductions: aggregate.requirementReductions,
+      },
+      shortfalls: new Set(RESIST_COLUMNS.filter((c) => (aggregate.resistances.effective[c.key] ?? 0) < 80).map((c) => c.key)),
+      topDamage: new Set(aggregate.damage.ranked.slice(0, 2).map((e) => e.key)),
+      unspentPoints: 0,
+      attributePerPoint: { physique: 8, cunning: 8, spirit: 8 },
+      perGroup: 40,
+    };
+    const candidates = [...selectCandidates(resolved.items, ctx).byGroup.values()].flat();
+    const projections = candidateProjections(candidates, {
+      save: theSave,
+      account,
+      db: sceneDb,
+      aggregate,
+      resolved,
+      ids: new Map(resolved.items.map((i) => [i, i.id])),
+      obtain: new Map(),
+    });
+    const of = (record: string) => {
+      const candidate = candidates.find((c) => c.item.record === record);
+      expect(candidate, `${record} is a candidate`).toBeDefined();
+      return { candidate: candidate!, projection: projections.get(candidate!.item)! };
+    };
+    return { save: theSave, aggregate, resolved, candidates, projections, of };
+  }
+
+  const bag = (baseName: string, x: number, seed = 1): PositionedItem => ({ ...instance({ baseName, seed }), x, y: 0 });
+
+  it('projects a helm swap against the worn helm, with the outgoing leech and the equip-time requirement check', () => {
+    const { of, aggregate } = scene({ bag: [bag(BETTER_HELM, 0, 7)] });
+    const { candidate, projection } = of(BETTER_HELM);
+    expect(projection.targets.map((t) => t.slot)).toEqual(['Head']);
+    const head = projection.targets[0]!;
+    expect(head.outgoing?.display).toBe('Old Helm');
+    expect(head.skipped).toBeUndefined();
+    const fire = head.projection!.resistances.find((r) => r.label === 'Fire')!;
+    expect(fire).toMatchObject({ before: 20, after: 35 });
+    expect(head.projection!.defense?.sustain).toEqual({ before: 4, after: 0 });
+    expect(head.noTrackedGain).toBe(false);
+    expect(head.identical).toBe(false);
+    // As dressed, the old helm's −12 levels make a level-60 helm wearable at
+    // 50; the game checks the incoming item with the outgoing one already off,
+    // and that check fails — which is the line §7 prints.
+    expect(candidate.check.meets).toBe(true);
+    expect(head.postSwap?.meets).toBe(false);
+    expect(head.postSwap?.gaps.map((g) => g.attr)).toEqual(['level']);
+    expect(aggregate.level).toBe(50);
+  });
+
+  it('flags a candidate that improves nothing the projection tracks, and never one that does', () => {
+    const { of } = scene({ bag: [bag(WORSE_HELM, 0), bag(BETTER_HELM, 2, 7)] });
+    expect(of(WORSE_HELM).projection.noTrackedGain).toBe(true);
+    expect(of(BETTER_HELM).projection.noTrackedGain).toBe(false);
+  });
+
+  it('projects a ring into both fingers, and an empty slot is not a swap', () => {
+    const { of } = scene({ bag: [bag(BETTER_RING, 0)] });
+    const { projection } = of(BETTER_RING);
+    expect(projection.targets.map((t) => t.slot)).toEqual(['Ring 1', 'Ring 2']);
+    const [ring1, ring2] = projection.targets;
+    expect(ring1!.outgoing).toBeUndefined();
+    expect(ring2!.outgoing?.display).toBe('Plain Ring');
+    const pierce = (t: typeof ring1) => t!.projection!.resistances.find((r) => r.label === 'Pierce')!;
+    expect(pierce(ring1)).toMatchObject({ before: 10, after: 30 });
+    expect(pierce(ring2)).toMatchObject({ before: 10, after: 20 });
+    expect(projection.noTrackedGain).toBe(false);
+  });
+
+  it('lets a two-hander displace the off hand, and refuses an off-hand while a two-hander is held', () => {
+    const shield = instance({ baseName: SHIELD, seed: 5 });
+    const held = scene({ bag: [bag(GREATAXE, 0)], off: shield });
+    const { projection } = held.of(GREATAXE);
+    expect(projection.targets.map((t) => t.slot)).toEqual(['Weapon set 1 main']);
+    const main = projection.targets[0]!;
+    expect(main.skipped).toBeUndefined();
+    expect(main.alsoCleared.map((i) => i.display)).toEqual(['Test Shield']);
+    expect(main.projection!.notes.join('\n')).toMatch(/takes both hands: Test Shield leaves the loadout/);
+
+    const twoHanded = scene({ bag: [bag(SHIELD, 0, 5)], main: instance({ baseName: GREATAXE, seed: 9 }) });
+    const off = twoHanded.of(SHIELD).projection.targets[0]!;
+    expect(off.slot).toBe('Weapon set 1 off');
+    expect(off.projection).toBeUndefined();
+    expect(off.skipped).toMatch(/a two-hander is held/);
+  });
+
+  it('is the same arithmetic as the whole-plan projection', () => {
+    const { input } = world();
+    const verdicts: AdvisorPlan['verdicts'] = [{ slot: 'Head', itemId: '', verdict: 'EQUIP', targetId: 'cand-helm', reason: '' }];
+    const whole = projectPlan(plan({ verdicts }), input)!;
+    const single = projectVerdicts(verdicts, input, { before: aggregateCharacter(input.save, input.db, input.difficulty) })!;
+    expect(single.projection).toEqual(whole);
+    expect(single.after.defense.lifeLeechPercent).toBe(0);
   });
 });

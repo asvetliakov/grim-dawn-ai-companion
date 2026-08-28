@@ -770,7 +770,9 @@ describe('resistanceMatrix', () => {
   });
 
   it('names every category it left out', () => {
-    expect(aggregate.exclusions.join('\n')).toMatch(/granted by items/);
+    // Item-granted *conditional* skills are the exclusion; an always-on one is
+    // counted on its own row, and the sentence has to say which is which.
+    expect(aggregate.exclusions.join('\n')).toMatch(/item-granted procs, activated skills and pet skills/);
     expect(aggregate.exclusions.join('\n')).toMatch(/jitter/);
   });
 });
@@ -1298,6 +1300,126 @@ describe('resistance reduction collection', () => {
     ]);
     // …and never as a hole in the player's own matrix.
     expect(agg.resistances.rows).toEqual([]);
+  });
+});
+
+describe('skills granted by gear', () => {
+  const RELIC = 'records/items/gearrelic/relic.dbr';
+  const HELM = 'records/items/helm.dbr';
+  const SWORD = 'records/items/sword.dbr';
+  const AURA_ACT = 'records/skills/itemskills/relics/aura.dbr';
+  const AURA_BUFF = 'records/skills/itemskills/relics/aura_buff.dbr';
+  const PROC = 'records/skills/itemskills/nova.dbr';
+
+  const db = stubDb({
+    items: {
+      // The Deathchill shape: the relic's own small line, and an aura carrying
+      // four times as much — the aura is the reason to wear it.
+      [RELIC]: item(RELIC, {
+        name: 'Test Relic',
+        slot: 'ItemArtifact',
+        stats: { offensiveColdModifier: 36, itemSkillName: AURA_ACT },
+      }),
+      // A second item granting the *same* aura. Both apply.
+      [SWORD]: item(SWORD, { name: 'Test Sword', slot: 'WeaponMelee_Sword', stats: { itemSkillName: AURA_ACT } }),
+      [HELM]: item(HELM, { name: 'Test Helm', slot: 'ArmorProtective_Head', stats: { itemSkillName: PROC } }),
+    },
+    skills: {
+      // The two-record shape: a nameless toggled activator pointing at the buff
+      // that carries the name and every stat.
+      [AURA_ACT]: skill(AURA_ACT, { class: 'Skill_BuffRadiusToggled', buffRecord: AURA_BUFF }),
+      [AURA_BUFF]: skill(AURA_BUFF, {
+        name: 'Test Aura',
+        class: 'SkillBuff_Passive',
+        stats: { offensiveColdModifier: 125, defensiveCold: 20, characterManaLimitReserve: 150 },
+      }),
+      [PROC]: skill(PROC, { name: 'Test Nova', class: 'Skill_AttackRadius', stats: { offensiveColdMin: 280 } }),
+    },
+  });
+
+  const worn = (): (EquippedItem | null)[] => {
+    const eq: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+    eq[0] = instance({ baseName: HELM });
+    eq[11] = instance({ baseName: RELIC });
+    return eq;
+  };
+  const agg = aggregateCharacter(save({ equipment: worn() }), db);
+  const twice = aggregateCharacter(
+    save({ equipment: worn(), weaponSet1: [instance({ baseName: SWORD }), null] }),
+    db,
+  );
+
+  it('sums an always-on grant, naming it through the activator→buff hop', () => {
+    // 36 (the relic's own line) + 125 (the aura it grants) — the whole point:
+    // reading the relic's line alone makes swapping it away look like a gain.
+    expect(agg.damage.ranked.find((d) => d.key === 'cold')?.percent).toBe(161);
+    expect(agg.resistances.permanent.cold).toBe(20);
+    const row = agg.resistances.rows.find((r) => r.kind === 'granted');
+    expect(row).toMatchObject({ slot: 'Relic', label: 'Test Aura', band: 'permanent' });
+    // The energy it reserves is the one reason to discount the row, so it says so.
+    expect(row?.note).toBe('granted by Test Relic, toggle, reserves 150% energy');
+  });
+
+  it('counts every granting item, because two copies of a component are two buffs', () => {
+    // In-game behaviour, and the opposite of the set-bonus rule where a second
+    // copy of a member adds nothing. Not derivable from the data either way.
+    expect(twice.grantedSkills.filter((g) => g.skill === 'Test Aura').map((g) => g.counted)).toEqual([true, true]);
+    expect(twice.damage.ranked.find((d) => d.key === 'cold')?.percent).toBe(36 + 125 * 2);
+    expect(twice.resistances.permanent.cold).toBe(40);
+    expect(twice.resistances.rows.filter((r) => r.kind === 'granted')).toHaveLength(2);
+  });
+
+  it('leaves the conditional kinds named but unsummed', () => {
+    const nova = agg.grantedSkills.find((g) => g.skill === 'Test Nova');
+    expect(nova).toMatchObject({ item: 'Test Helm', counted: false });
+    // The proc's 280 flat cold is an attack, and stays out of the pools.
+    expect(agg.damage.ranked.find((d) => d.key === 'cold')?.flat ?? 0).toBe(0);
+    expect(agg.exclusions.join('\n')).toMatch(/item-granted procs, activated skills and pet skills/);
+  });
+});
+
+describe('sustain: attack damage converted to health', () => {
+  const GLOVES = 'records/items/gloves.dbr';
+  const SEAL = 'records/items/materia/inscription.dbr';
+  const FOX = 'records/skills/devotion/fox1.dbr';
+  const DRAIN = 'records/skills/class/drain1.dbr';
+
+  const db = stubDb({
+    items: {
+      [GLOVES]: item(GLOVES, { name: 'Test Gloves', slot: 'ArmorProtective_Hands', stats: { defensiveProtection: 300 } }),
+      [SEAL]: item(SEAL, { name: 'Test Inscription', slot: 'ItemRelic', stats: { offensiveLifeLeechMin: 5 } }),
+    },
+    skills: {
+      [FOX]: skill(FOX, { name: 'Test Fox', maxLevel: 1, stats: { offensiveLifeLeechMin: 6 } }),
+      // An attack skill's own leech applies to that skill's whole damage and
+      // scopes to it — it must land on the skill's row, never on the character.
+      [DRAIN]: skill(DRAIN, {
+        name: 'Test Drain',
+        class: 'Skill_AttackRadius',
+        stats: { weaponDamagePct: [60, 70], offensiveLifeLeechMin: [12, 15] },
+      }),
+    },
+  });
+
+  const equipment: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
+  equipment[5] = instance({ baseName: GLOVES, relicName: SEAL });
+  const agg = aggregateCharacter(
+    save({ equipment, devotions: [characterSkill(FOX, 1)], skills: [characterSkill(DRAIN, 2)] }),
+    db,
+  );
+
+  it('sums the global figure and attributes every source, like a resistance', () => {
+    expect(agg.defense.lifeLeechPercent).toBe(11);
+    expect(agg.defense.lifeLeechSources).toEqual([
+      { slot: 'Hands', label: 'Test Inscription', value: 5 },
+      { slot: 'Devotion', label: 'Test Fox', value: 6 },
+    ]);
+  });
+
+  it('keeps an attack skill’s own leech on the skill, at its rank, and out of the global figure', () => {
+    const row = agg.damage.skillDamage.find((s) => s.skill === 'Test Drain');
+    expect(row?.lifeLeechPercent).toBe(15);
+    expect(agg.defense.lifeLeechSources.map((s) => s.label)).not.toContain('Test Drain');
   });
 });
 

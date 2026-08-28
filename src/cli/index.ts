@@ -908,8 +908,10 @@ function printAggregate(agg: CharacterAggregate, caps: SpeedCaps): void {
     }
   }
   if (agg.grantedSkills.length) {
-    console.log('\nGranted skills (named, not summed)');
-    for (const g of agg.grantedSkills) console.log(`  ${g.item} → ${g.skill}`);
+    console.log('\nGranted skills (an always-on one is counted above, on its own row)');
+    for (const g of agg.grantedSkills) {
+      console.log(`  ${g.item} → ${g.skill}  [${g.counted ? `counted, ${g.activation}` : `not summed — ${g.activation}`}]`);
+    }
   }
   if (agg.skillModifiers.length) {
     console.log('\nItem skill modifiers (named, not summed)');
@@ -987,6 +989,7 @@ function contextFor(
   db: GameDb,
   opts: DocRequest,
   includeStash = true,
+  projections = true,
 ): {
   name: string;
   input: ContextInput;
@@ -1005,7 +1008,7 @@ function contextFor(
   );
   // `adviceScope` filters the stashes out of the document when asked; with them
   // included it hands back the snapshot's own pair untouched.
-  const scope = adviceScope(snap, includeStash);
+  const scope = adviceScope(snap, includeStash, { projections });
   // The loadout the document describes, so a stored envelope can later say
   // whether it is still describing the save in front of the reader.
   return {
@@ -1037,12 +1040,14 @@ program
       refresh?: boolean;
     }) => {
       await withDb({ refresh: opts.refresh, quiet: opts.out === undefined }, (db) => {
+        const started = performance.now();
         const { doc } = contextFor(db, {
           char: opts.char,
           difficulty: opts.difficulty,
           maxTokens: Number(opts.maxTokens),
           perGroup: Number(opts.candidates),
         });
+        const buildMs = Math.round(performance.now() - started);
 
         if (opts.out) {
           writeFileSync(opts.out, doc.markdown);
@@ -1052,6 +1057,9 @@ program
         }
         // Trimming and the estimate go to stderr so `context > doc.md` stays clean.
         console.error(`~${doc.tokenEstimate.toLocaleString('en-US')} tokens (budget ${Number(opts.maxTokens).toLocaleString('en-US')})`);
+        // The projections are the one part of the build that scales with the
+        // stash — one aggregate per candidate — so the cost is stated.
+        console.error(`  built in ${buildMs.toLocaleString('en-US')} ms, incl. the save read and resolution (${doc.projections.size} candidate projections)`);
         for (const note of doc.trimmed) console.error(`  trimmed: ${note}`);
         if (doc.trimmed.length) {
           console.error('  raise --max-tokens to keep them — the untrimmed document is bounded by the candidate level window, not by this budget');
@@ -1205,6 +1213,7 @@ program
   .option('--dry-run', 'build and report the document without calling the provider')
   .option('--no-repair', 'do not spend a second call correcting a plan that fails the checks')
   .option('--no-stash', 'leave the personal and transfer stash out of the dossier (materials always ship)')
+  .option('--no-projections', 'leave the projected swap lines out of §7 (the pre-Stage-11 document; the A/B control arm)')
   .option('--no-fast', 'codex only: skip fast mode (service_tier=fast), trading speed for a lower credit burn')
   .option('--refresh', 'rebuild the database first')
   .action(
@@ -1223,6 +1232,7 @@ program
       dryRun?: boolean;
       repair?: boolean;
       stash?: boolean;
+      projections?: boolean;
       fast?: boolean;
       refresh?: boolean;
     }) => {
@@ -1285,6 +1295,7 @@ program
             maxTokens: Number(opts.maxTokens),
           },
           includeStash,
+          opts.projections !== false,
         );
 
         console.error(

@@ -199,6 +199,8 @@ export interface UiStats {
   armorBonus: { flat: number; percent: number };
   absorption: number;
   absorptionBase: number;
+  /** Global `% of Attack Damage converted to Health` — permanent sources only. */
+  sustain: number;
   block?: { chance: number; amount: number };
   speeds: UiSpeedLine[];
   damage: UiDamage;

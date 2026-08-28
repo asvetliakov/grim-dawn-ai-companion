@@ -42,6 +42,7 @@ export const EXCLUSION_REASONS: Readonly<Record<string, string>> = {
   pet: 'pet bonuses and pet-only skills',
   party: 'party buffs cast by other players',
   dualWield: 'dual-wield-only skills — this loadout does not dual wield, so their stats are inert',
+  grantedActive: 'item-granted attacks and skills you have to cast (the always-on ones are counted)',
 };
 
 const TOGGLED = new Set([

@@ -38,7 +38,8 @@ import {
   type ResistReductionRow,
   type ResistVector,
 } from '../mechanics/stats.js';
-import { shortHash, type ResolvedCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
+import { shortHash, type AccountFiles, type ResolvedCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
+import { candidateProjections, type CandidateProjection, type SlotProjection } from './projections.js';
 import { factionSlot, factionTier } from '@grimdawn/core/save/factions';
 import { EQUIP_SLOT_NAMES, type CharacterSave } from '@grimdawn/core/save/types';
 import {
@@ -60,6 +61,13 @@ export interface ContextInput {
   /** Everything the character can reach, plus the account's blueprints. */
   resolved: ResolvedCharacter;
   db: GameDb;
+  /**
+   * The account-wide files as parsed. Optional because the resolved items
+   * already carry everything they hold; a candidate projection needs it only
+   * to find a transfer-stash item's saved instance, and degrades to "not
+   * projected" without it.
+   */
+  account?: AccountFiles | undefined;
 }
 
 export interface ContextOptions {
@@ -67,6 +75,13 @@ export interface ContextOptions {
   maxTokens?: number;
   /** Candidates per equipment group before tightening. */
   perGroup?: number;
+  /**
+   * Project every §7 candidate against the worn loadout and print the delta
+   * under it (see `projections.ts`). Off by default: it costs one aggregate
+   * per candidate, and the snapshot built on every watcher tick only feeds ids
+   * to the window — `adviceScope` turns it on for the document the model reads.
+   */
+  projections?: boolean;
 }
 
 /**
@@ -125,6 +140,12 @@ export interface ContextDoc {
    * destroys the host and proposing that is a judgement call, not a free fill.
    */
   freeComponentIds: Set<string>;
+  /**
+   * The projected swap under each §7 candidate, by dossier id. Empty unless
+   * `ContextOptions.projections` asked for them (or the token gate gave them
+   * up — `trimmed` says so).
+   */
+  projections: Map<string, CandidateProjection>;
 }
 
 /**
@@ -141,7 +162,11 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
   // Progressive tightening, cheapest loss first. The matrix, the skills and the
   // equipped blocks are never touched — they are the parts a swap is judged on.
   const tightest = CAP_LADDER[CAP_LADDER.length - 1] ?? 3;
+  const projections = opts.projections ?? false;
   const ladder: Trim[] = [
+    // A projection is derivable from the rest of the document; a dropped
+    // candidate is not. So the projections go first, before any candidate does.
+    ...(projections ? [{ perGroup: startCap, projections: false, note: 'candidate projections omitted' }] : []),
     ...CAP_LADDER.filter((cap) => cap < startCap).map((cap) => ({
       perGroup: cap,
       note: `candidates capped at ${cap} per slot`,
@@ -158,10 +183,13 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
   ];
 
   const trimmed: string[] = [];
-  let doc = render(input, { perGroup: startCap, note: 'nothing trimmed' });
+  // Projections are computed once and shared across the trim rungs — a rung
+  // only ever shrinks the candidate set, so nothing new is ever needed.
+  const projectionCache = new Map<ResolvedItem, CandidateProjection>();
+  let doc = render(input, { perGroup: startCap, projections, note: 'nothing trimmed' }, projectionCache);
   for (const step of ladder) {
     if (estimateTokens(doc.text) <= maxTokens) break;
-    doc = render(input, step);
+    doc = render(input, step, projectionCache);
     trimmed.push(step.note);
   }
 
@@ -184,11 +212,14 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
     socketablesById,
     candidateIds: doc.candidateIds,
     freeComponentIds: doc.freeComponentIds,
+    projections: doc.projections,
   };
 }
 
 interface Trim {
   perGroup: number;
+  /** Print the projected swap under each candidate. */
+  projections?: boolean;
   compressRecipes?: boolean;
   compressCensus?: boolean;
   /** Last resort: §4's rank-by-rank skill tables go, with a line saying so. */
@@ -255,7 +286,8 @@ function assignSocketableIds(items: readonly DbItem[], reserved: ReadonlySet<str
 function render(
   input: ContextInput,
   trim: Trim,
-): { text: string; candidateIds: Set<string>; freeComponentIds: Set<string> } {
+  projectionCache: Map<ResolvedItem, CandidateProjection>,
+): { text: string; candidateIds: Set<string>; freeComponentIds: Set<string>; projections: Map<string, CandidateProjection> } {
   const { save, resolved } = input;
   const ids = assignIds(resolved.items);
   const out = new Writer();
@@ -268,6 +300,7 @@ function render(
     ...input,
     ids,
     socketableIds,
+    projections: trim.projections ? projectionCache : new Map(),
     equipped,
     invested,
     ranks: new Map(input.aggregate.ranks.map((r) => [r.record, r])),
@@ -282,9 +315,24 @@ function render(
   equippedSection(out, ctx);
   const selection = candidateSelection(ctx, trim.perGroup);
   const fodder = bagFodder(ctx, selection);
-  setStatus(out, ctx);
-  candidatesSection(out, ctx, selection, fodder);
   const components = componentCensus(ctx, selection);
+  if (trim.projections) {
+    const pending = [...selection.byGroup.values()].flat().filter((c) => !projectionCache.has(c.item));
+    if (pending.length) {
+      const computed = candidateProjections(pending, {
+        save,
+        account: input.account,
+        db: input.db,
+        aggregate: input.aggregate,
+        resolved,
+        ids,
+        obtain: socketableObtain(input, recipes),
+      });
+      for (const [item, projection] of computed) projectionCache.set(item, projection);
+    }
+  }
+  setStatus(out, ctx);
+  candidatesSection(out, ctx, selection, fodder, components);
   census(out, ctx, components, trim);
   factionAugments(out, ctx);
   blueprints(out, ctx, selection, trim);
@@ -314,11 +362,24 @@ function render(
     }
   }
 
-  return { text: out.toString(), candidateIds, freeComponentIds };
+  const projections = new Map<string, CandidateProjection>();
+  if (trim.projections) {
+    for (const list of selection.byGroup.values()) {
+      for (const c of list) {
+        const id = ctx.ids.get(c.item);
+        const projection = projectionCache.get(c.item);
+        if (id && projection) projections.set(id, projection);
+      }
+    }
+  }
+
+  return { text: out.toString(), candidateIds, freeComponentIds, projections };
 }
 
 interface RenderContext extends ContextInput {
   ids: Map<ResolvedItem, string>;
+  /** Projected swaps by candidate — empty when this render prints none. */
+  projections: ReadonlyMap<ResolvedItem, CandidateProjection>;
   /** Component/augment record path → its dossier id. */
   socketableIds: Map<string, string>;
   equipped: ResolvedItem[];
@@ -490,6 +551,11 @@ function gameRules(out: Writer, ctx: RenderContext): void {
 
   out.line();
   out.line(
+    '**Attack damage converted to health is sustain, and what it applies to depends on where it sits.** Community-established mechanics, not game data: a *global* `% of Attack Damage converted to Health` — from gear, components, augments, passives and devotions; §3 states the total and names every source — heals for that share of the damage dealt by weapon attacks and by the `% Weapon Damage` portion of a skill, so its worth is set by how much of the build\'s damage is weapon damage (§4\'s weapon-attack composition and each skill\'s `% weapon damage` say). A skill\'s *own* figure (§4 marks it *this skill only*) applies to that skill\'s whole damage. Damage over time and retaliation never leech. The heal is reduced by the **target\'s** Life Leech Resistance — a different thing from the character\'s own `Life Leech` entry among §3\'s other resistances, which is protection against *being* leeched.',
+  );
+
+  out.line();
+  out.line(
     `**Speed caps** (engine values): attack ${caps.attack}%, cast ${caps.cast}%, movement ${caps.run}%. \`+% speed\` past a cap is worth nothing — never trade a real stat for it on a build already at cap. ` +
       '**Attack speed is a multiplier on all damage throughput**, so it is not a minor stat below the cap and not a stat at all above it. ' +
       'It works like this: the character has a base rate in attacks per second, a weapon shifts that base by its own **additive delta in attacks/second** (never a percentage — a "Very Fast" weapon is about −0.02, "Very Slow" about −0.20), ' +
@@ -499,7 +565,7 @@ function gameRules(out: Writer, ctx: RenderContext): void {
   );
 
   out.line();
-  out.line('**Granted skills.** Wherever an item, component or augment reads `Grants: <skill>`, the skill\'s own stats follow it and the parenthetical says **how you get them**: `passive — always on` (simply true), `toggle` (true while held, at the energy reservation shown in its stats), `activated` (you have to cast it), `auto-cast <trigger>` (a proc — a chance per trigger, not a constant), or `weapon-pool proc` (a share of basic attacks). None of these is summed into §3; they are named and shown so you can weigh them yourself, and §3 lists them as an exclusion.');
+  out.line('**Granted skills.** Wherever an item, component or augment reads `Grants: <skill>`, the skill\'s own stats follow it and the parenthetical says **how you get them**: `passive — always on` (simply true), `toggle` (true while held, at the energy reservation shown in its stats), `activated` (you have to cast it), `auto-cast <trigger>` (a proc — a chance per trigger, not a constant), or `weapon-pool proc` (a share of basic attacks). **Whether it is summed follows its kind, because the kind is what says when it applies:** a `passive` and a `toggle` are on, so their stats *are* counted in §3 and §4, on their own attributable row named for the skill (a toggle\'s row states the energy it reserves, which is the one reason to discount it). An `activated`, `auto-cast`, `weapon-pool proc` or pet skill is **not** summed — it is conditional, and §3 lists it as an exclusion — but it is named and shown so you can weigh it yourself.');
 
   out.line();
   out.line('**Sockets.** An item holds up to **one component** and **one augment**, in independent sockets.');
@@ -680,7 +746,16 @@ function defenseBlock(out: Writer, ctx: RenderContext): void {
     ...(bonuses.length ? [`character-wide: ${bonuses.join(', ')}`] : []),
     `absorption ${d.absorption.toFixed(1)}% (${d.absorptionBase}% base${d.absorptionPercent ? ` × 1 + ${num(d.absorptionPercent)}%` : ', no bonuses'})`,
     ...(d.hasShield ? [`shield: ${num(d.blockChance)}% chance to block, ${num(d.blockAmount)} absorbed${d.blockAmountPercent ? ` (${signed(d.blockAmountPercent)}% blocked damage)` : ''}`] : ['no shield equipped — block numbers do not apply']),
-    ...(d.lifeLeechPercent ? [`sustain: ${d.lifeLeechPercent.toFixed(1)}% of attack damage converted to health`] : []),
+    // Per source, like the resistance rows: a swap that removes one is then a
+    // computable cost. §2 says what the figure applies to; the phrase is the
+    // game's own, as the item lines print it.
+    ...(d.lifeLeechPercent
+      ? [
+          `sustain: ${d.lifeLeechPercent.toFixed(1)}% of Attack Damage converted to Health (global — §2 says what it applies to) — from ${d.lifeLeechSources
+            .map((s) => `${s.slot}: ${s.label} ${num(s.value)}%`)
+            .join(', ')}`,
+        ]
+      : ['sustain: no `% of Attack Damage converted to Health` from any permanent source']),
     `health from gear and skills ${signed(d.health)}${d.healthPercent ? `, ${signed(d.healthPercent)}%` : ''}`,
   ]);
 }
@@ -1021,6 +1096,7 @@ function damageSection(out: Writer, ctx: RenderContext): void {
       d.skillDamage.map((s) => {
         const parts = [
           ...(s.weaponDamagePct ? [`${s.weaponDamagePct}% weapon damage`] : []),
+          ...(s.lifeLeechPercent ? [`${num(s.lifeLeechPercent)}% of Attack Damage converted to Health *(this skill only, on its whole damage)*`] : []),
           ...s.flat.map((f) => `${signed(f.amount)} ${f.label} Damage${f.overTime ? ' over time' : ''}`),
           ...s.ownPercent.map((p) => `${signed(p.percent)}% ${p.label} Damage *(this skill only)*`),
           ...(s.ownTotalPercent ? [`${signed(s.ownTotalPercent)}% Total Damage *(this skill only)*`] : []),
@@ -1266,6 +1342,7 @@ function skillRankTable(out: Writer, ctx: RenderContext, rank: EffectiveRank, ba
     resists: ResistVector;
     rr: Map<string, number>;
     mana: number;
+    lifeLeech: number;
   }
   const samples: RankSample[] = window.map((r) => {
     const read = atRank(r);
@@ -1279,7 +1356,9 @@ function skillRankTable(out: Writer, ctx: RenderContext, rank: EffectiveRank, ba
     for (const row of rrRows) rr.set(row.effect.replace(/[\d.]+/, 'N'), row.value);
     const wd = stats.stats['weaponDamagePct'];
     const mana = stats.stats['skillManaCost'];
+    const leech = stats.stats['offensiveLifeLeechMin'];
     return {
+      lifeLeech: leech === undefined ? 0 : read(leech),
       weaponDamage: wd === undefined ? 0 : read(wd),
       flat: own.flat,
       percent: own.percent,
@@ -1299,6 +1378,9 @@ function skillRankTable(out: Writer, ctx: RenderContext, rank: EffectiveRank, ba
   const cell = (n: number): string => (n ? num(n) : '·');
   if (samples.some((s) => s.weaponDamage)) {
     rows.push(['% Weapon Damage', ...samples.map((s) => cell(Math.round(s.weaponDamage)))]);
+  }
+  if (samples.some((s) => s.lifeLeech)) {
+    rows.push(['% of Attack Damage converted to Health (this skill only)', ...samples.map((s) => cell(Math.round(s.lifeLeech * 10) / 10))]);
   }
   for (const type of DAMAGE_TYPES) {
     if (samples.some((s) => s.flat[type.key])) {
@@ -1728,9 +1810,23 @@ function candidatesSection(
   ctx: RenderContext,
   selection: CandidateSelection,
   fodder: readonly { item: ResolvedItem; group: EquipGroup }[],
+  components: ReadonlyMap<string, CensusEntry>,
 ): void {
   out.h(2, '7. Candidates — everything not worn, by slot');
   out.line('Ranked by: covers a resistance shortfall > matches the build focus (post-conversion, counting the item\'s own conversion and armor piercing) > rarity > level proximity. A failing requirement is **not** a rejection — decide between an enabler combination, HOLD-until, and discard.');
+
+  if (ctx.projections.size) {
+    out.line();
+    out.line(
+      '**Projected swaps.** Under each candidate, `projected in <slot>` is the tool\'s own arithmetic for that one swap against the loadout §3 and §5 describe: the save with the candidate in that slot — sockets exactly as saved, so an empty socket is a further gain it does not count — re-aggregated and diffed. Use it in place of your own subtraction. It sees exactly what §3 counts and **nothing on §3\'s exclusion list**: procs, granted skills, on-hit effects and set-completion *potential* are for you to weigh. **Projections do not add**: each is one swap against today\'s loadout, so a joint move is yours to sum from §3\'s rows, and past a cap the sum is not the sum of the parts. `no tracked figure improves` means exactly that and is **not a disposition** — a carried item still needs `hold` or `sell`, and a stored item is never sold. A ring, and a one-hander on a dual-wielder, is projected into each slot it could take.',
+    );
+    const levers = resistanceLevers(ctx, components);
+    if (levers.length) {
+      out.line();
+      out.line('**Levers per resistance** — what is reachable to raise each one, so the gap a swap opens can be costed. Build-independent: a table of what exists, not a recommendation. Free components first (loose on hand, or craftable now per §8), then §9\'s augments, largest first; each names the slots it may go in.');
+      out.bullets(levers);
+    }
+  }
 
   for (const group of EQUIP_GROUPS) {
     const list = selection.byGroup.get(group);
@@ -1738,6 +1834,11 @@ function candidatesSection(
     const dropped = selection.dropped.get(group) ?? 0;
     out.line();
     out.line(`### ${group}${dropped ? ` *(${dropped} lower-ranked candidate${dropped === 1 ? '' : 's'} not shown)*` : ''}`);
+    const worn = groupWornLines(ctx, list);
+    if (worn.length) {
+      out.line();
+      out.bullets(worn);
+    }
     for (const candidate of list) {
       out.line();
       candidateBlock(out, ctx, candidate);
@@ -1813,6 +1914,179 @@ function candidateBlock(out: Writer, ctx: RenderContext, candidate: Candidate): 
   }
   if (candidate.outOfReach) notes.push('attribute gap exceeds what unspent points plus plausible gear support could close — a stat-stick for this character unless the loadout changes around it');
   out.bullets(notes.map((n) => `note: ${n}`));
+
+  const projection = ctx.projections.get(item);
+  if (projection) out.bullets(projection.targets.flatMap((target) => projectionLines(ctx, candidate, target)));
+}
+
+// ---------------------------------------------------------------------------
+// 7 — projected swaps and resistance levers
+// ---------------------------------------------------------------------------
+
+const readScalar = (value: StatValue): number => (typeof value === 'number' ? value : 0);
+
+/** `+12% Fire Resistance, +12% Acid Resistance` — a resist vector as typed stat text. */
+function resistText(vector: ResistVector): string {
+  return RESIST_COLUMNS.filter((c) => vector[c.key])
+    .map((c) => `+${num(vector[c.key]!)}% ${c.label} Resistance`)
+    .join(', ');
+}
+
+/** The +20 the community targets past the cap on an endgame Ultimate character (§2). */
+const OVERCAP_TARGET = 20;
+
+/**
+ * The bullets under a candidate for one target slot. Type-first and
+ * ` · `-separated throughout, so the document's own qualified-stat rule holds
+ * on every figure; non-zero changes only, and the trailing clause says so.
+ */
+function projectionLines(ctx: RenderContext, candidate: Candidate, target: SlotProjection): string[] {
+  const { item } = candidate;
+  const lines: string[] = [];
+  const replacing = target.outgoing
+    ? `replacing ${target.outgoing.display} \`#${ctx.ids.get(target.outgoing) ?? target.outgoing.id}\``
+    : 'the slot is empty';
+
+  if (!target.projection) {
+    lines.push(`not projected in ${target.slot} (${replacing}): ${target.skipped ?? 'no reason recorded'}`);
+    return lines;
+  }
+  const p = target.projection;
+  const parts: string[] = [];
+  const endgame = overcapEndgame(ctx);
+
+  for (const r of p.resistances) {
+    if (r.after === r.before) continue;
+    // Physical is exempt from the cap rule (§2): its figure moves, its alarm does not.
+    let flag = '';
+    if (r.label === 'Physical') flag = '';
+    else if (r.after < r.capAfter) flag = ` (**${num(r.capAfter - r.after)} under cap**)`;
+    else if (endgame && r.after < r.capAfter + OVERCAP_TARGET) flag = ` (${num(r.capAfter + OVERCAP_TARGET - r.after)} short of the §2 overcap target)`;
+    parts.push(`${r.label} Resistance ${num(r.before)} → ${num(r.after)}${flag}`);
+  }
+
+  const focus = new Set(ctx.aggregate.damage.ranked.slice(0, 2).map((e) => e.key));
+  for (const d of p.damage) {
+    if (!focus.has(d.key as DamageKey)) continue;
+    if (d.percentAfter !== d.percentBefore) parts.push(`${d.label} Damage +${num(d.percentBefore)}% → +${num(d.percentAfter)}%`);
+    if (d.flatAfter !== d.flatBefore) parts.push(`${d.label} Damage ${num(d.flatBefore)} → ${num(d.flatAfter)} flat`);
+  }
+  if (p.payload && p.payload.before > 0 && p.payload.after !== p.payload.before) {
+    const pct = ((p.payload.after - p.payload.before) / p.payload.before) * 100;
+    parts.push(`weapon payload index ${signed(Math.round(pct * 10) / 10)}%`);
+  }
+  for (const s of p.speeds) {
+    if (s.after !== s.before) parts.push(`${s.label.toLowerCase()} speed ${num(s.before)}% → ${num(s.after)}%`);
+  }
+  const d = p.defense;
+  if (d) {
+    const delta = (label: string, pair: { before: number; after: number }, suffix = ''): void => {
+      if (pair.after !== pair.before) parts.push(`${label} ${signed(Math.round((pair.after - pair.before) * 10) / 10)}${suffix}`);
+    };
+    delta('Offensive Ability', d.offensiveAbility.flat);
+    delta('Offensive Ability', d.offensiveAbility.percent, '%');
+    delta('Defensive Ability', d.defensiveAbility.flat);
+    delta('Defensive Ability', d.defensiveAbility.percent, '%');
+    delta('Health', d.health.flat);
+    delta('Health', d.health.percent, '%');
+    if (d.armorMean.after !== d.armorMean.before) parts.push(`armour (hit-weighted mean) ${num(d.armorMean.before)} → ${num(d.armorMean.after)}`);
+    if (d.absorption.after !== d.absorption.before) parts.push(`absorption ${num(d.absorption.before)}% → ${num(d.absorption.after)}%`);
+    if (d.sustain && d.sustain.after !== d.sustain.before) {
+      parts.push(`sustain ${num(d.sustain.before)}% → ${num(d.sustain.after)}% of Attack Damage converted to Health`);
+    }
+    for (const key of ATTR_KEYS) {
+      const pair = d.attributes[key];
+      if (Math.round(pair.after) !== Math.round(pair.before)) parts.push(`${key} ${Math.round(pair.before)} → ${Math.round(pair.after)}`);
+    }
+  }
+  for (const r of p.skillRanks) parts.push(`${r.skill} rank ${r.before} → ${r.after}`);
+  // A set bonus starts at two pieces, so 1 → 0 moves nothing worth a clause.
+  for (const s of target.setPieces) {
+    if (s.before >= 2 || s.after >= 2) parts.push(`${s.set} set ${s.before} → ${s.after} pieces`);
+  }
+  for (const s of target.departing) {
+    if (s.kind === 'component' && s.refits !== undefined) parts.push(`${s.item.name} ${s.refits ? 'refits' : 'does not refit'}`);
+  }
+  if (target.unworn.length) parts.push(`un-wears ${target.unworn.join(', ')}`);
+  if (target.postSwap) {
+    parts.push(`requirements once ${target.outgoing?.display ?? 'the slot'} leaves: ${requirementText(item, target.postSwap)}`);
+  }
+  for (const note of target.notes) parts.push(note);
+
+  const body = target.identical
+    ? 'every tracked figure holds still'
+    : `${parts.join(' · ')}${parts.length ? ' · ' : ''}unchanged: everything not listed`;
+  lines.push(`projected in ${target.slot} (${replacing}): ${body}`);
+  if (target.noTrackedGain) lines.push('no tracked figure improves — see the §7 preamble for exactly what that does and does not mean');
+  return lines;
+}
+
+/**
+ * What every candidate of a group is up against: the worn item in each slot
+ * the group maps to, and the socketables that leave with it. Stated once
+ * under the group heading rather than under each candidate — the outgoing
+ * item is the same for all of them; only whether its component *refits* is
+ * per candidate, and that clause is on the projection line.
+ */
+function groupWornLines(ctx: RenderContext, list: readonly Candidate[]): string[] {
+  const first = list[0] && ctx.projections.get(list[0].item);
+  if (!first) return [];
+  return first.targets
+    .filter((t) => t.outgoing)
+    .map((t) => {
+      const worn = t.outgoing!;
+      const departing = t.departing.map((s) => {
+        const id = ctx.socketableIds.get(s.item.record) ?? shortHash(s.item.record);
+        const stats = resistText(s.resist) || 'no resistance lines';
+        return s.kind === 'component'
+          ? `component ${s.item.name} \`#${id}\` (${stats}) — recovering it destroys ${worn.display}`
+          : `augment ${s.item.name} \`#${id}\` (${stats}) — lost${s.rebuy ? `; re-buy ${s.rebuy}` : '; no vendor reached sells it'}`;
+      });
+      return `worn in ${t.slot}: ${worn.display} \`#${ctx.ids.get(worn) ?? worn.id}\`${departing.length ? ` — leaves with it: ${departing.join(' · ')}` : ''}`;
+    });
+}
+
+/** One bullet per cappable resistance: the free components and buyable augments that raise it, largest first. */
+function resistanceLevers(ctx: RenderContext, components: ReadonlyMap<string, CensusEntry>): string[] {
+  const free = [...components.values()].filter((e) => e.loose.size > 0 || (e.craft && e.craft.plan.missing.length === 0));
+  const stock = vendorStock(ctx.save, ctx.db, ctx.aggregate.level);
+  const LEVERS_SHOWN = 6;
+  const lines: string[] = [];
+  for (const column of RESIST_COLUMNS) {
+    if (column.key === 'physical') continue;
+    const entries: { text: string; value: number; order: number }[] = [];
+    for (const e of free) {
+      const value = resistContributions(e.item.stats, readScalar)[column.key] ?? 0;
+      if (value <= 0) continue;
+      const loose = [...e.loose.values()].reduce((a, b) => a + b, 0);
+      entries.push({
+        value,
+        order: loose ? 0 : 1,
+        text: `${e.item.name} \`#${socketableId(ctx, e.item)}\` +${num(value)}% (${describeSlots(e.item.allowedSlots)}; ${loose ? `loose ${loose}×` : 'craftable now'})`,
+      });
+    }
+    const seen = new Set<string>();
+    for (const s of stock) {
+      for (const a of s.augments) {
+        if (seen.has(a.record)) continue;
+        const value = resistContributions(a.stats, readScalar)[column.key] ?? 0;
+        if (value <= 0) continue;
+        seen.add(a.record);
+        const cost = a.stats['itemCost'];
+        entries.push({
+          value,
+          order: 2,
+          text: `${a.name} \`#${socketableId(ctx, a)}\` +${num(value)}% (${describeSlots(a.allowedSlots)}; ${s.factionName} ${s.tier}, ${typeof cost === 'number' ? cost.toLocaleString('en-US') : '?'} iron)`,
+        });
+      }
+    }
+    if (!entries.length) continue;
+    entries.sort((x, y) => y.value - x.value || x.order - y.order);
+    const shown = entries.slice(0, LEVERS_SHOWN);
+    const more = entries.length - shown.length;
+    lines.push(`**${column.label} Resistance**: ${shown.map((e) => e.text).join(' · ')}${more ? ` · ${more} smaller in §8/§9` : ''}`);
+  }
+  return lines;
 }
 
 // ---------------------------------------------------------------------------

@@ -205,6 +205,15 @@ export function StatsPanel({
         {stats.block && (
           <Row label="Block" value={`${round(stats.block.chance)}%`} detail={`${round(stats.block.amount)} absorbed`} />
         )}
+        <Row
+          label="Sustain"
+          labelClass="stat-health"
+          value={`${stats.sustain.toFixed(1)}%`}
+          // Global attack-damage-to-health: weapon attacks and the % weapon
+          // damage share of skills. A skill's own leech is on the skill.
+          detail="of attack damage to health · weapon attacks, % weapon damage"
+          {...afterProp(projection?.defense?.sustain, stats.sustain, (v) => `${v.toFixed(1)}%`)}
+        />
       </section>
 
       <section className="stats-section">

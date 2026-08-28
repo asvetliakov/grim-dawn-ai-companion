@@ -507,6 +507,7 @@ function buildStats(snap: CharacterSnapshot, db: GameDb): UiStats {
     armorBonus: { flat: d.bonusArmor, percent: d.armorPercent },
     absorption: d.absorption,
     absorptionBase: d.absorptionBase,
+    sustain: d.lifeLeechPercent,
     speeds: [
       speedLine(agg.speed.attack, 'attacks/s'),
       speedLine(agg.speed.cast, 'casts/s'),
