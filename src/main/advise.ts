@@ -389,6 +389,8 @@ export function planCheckInput(scope: { input: ContextInput; doc: ContextDoc }):
     socketablesById: scope.doc.socketablesById,
     candidateIds: scope.doc.candidateIds,
     freeComponentIds: scope.doc.freeComponentIds,
+    freeAugmentIds: scope.doc.freeAugmentIds,
+    candidateProjections: scope.doc.projections,
   };
 }
 

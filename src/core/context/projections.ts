@@ -27,7 +27,21 @@ import type { DbItem, GameDb, StatValue } from '@grimdawn/core/db/types';
 import type { AccountFiles, ResolvedCharacter, ResolvedItem } from '@grimdawn/core/resolve';
 import { EQUIP_SLOT_NAMES, type CharacterSave } from '@grimdawn/core/save/types';
 import type { PlanProjection } from '../ai/envelope.js';
-import { projectVerdicts, type PlanVerdict } from '../ai/project.js';
+import { COMPLETION_NOTE, projectVerdicts, type PlanVerdict } from '../ai/project.js';
+import type { SocketFit } from '../ai/provider.js';
+import {
+  ARMOUR_SLOTS,
+  findClosable,
+  openedGaps,
+  targets as resistTargets,
+  type ArmourSocket,
+  type AugmentOption,
+  type ClosableWitness,
+  type ComponentOption,
+  type ComponentSocket,
+  type OpenedGap,
+} from './closable.js';
+import { RESIST_COLUMNS } from '../mechanics/stats.js';
 import { aggregateCharacter, MELEE_1H, RANGED_1H, type CharacterAggregate } from '../mechanics/aggregate.js';
 import { checkRequirements, type CharacterStanding, type RequirementCheck } from '../mechanics/requirements.js';
 import { resistContributions, type ResistVector } from '../mechanics/stats.js';
@@ -45,6 +59,25 @@ export interface DepartingSocketable {
   rebuy?: string;
 }
 
+/**
+ * A socketable the projection put into the candidate's empty socket: the
+ * outgoing item's own, where it legally fits and can be had.
+ *
+ * This is what makes the comparison like-for-like. A worn item is compared
+ * *with* its component and augment; a drop has neither — and on a character
+ * whose resistances live in its sockets, projecting the drop bare printed the
+ * socket package's loss as the drop's own cost. The live run this fixes held
+ * a pair of boots for "a 13-point Acid Resistance gap" that was two augments
+ * it already owned.
+ */
+export interface CarriedSocketable {
+  item: DbItem;
+  /** How the copy in the candidate's socket is had — `salvage` destroys the outgoing item to recover it. */
+  via: 'loose' | 'craftable' | 'salvage' | 'rebuy';
+  /** For `rebuy`: the vendor line as §9 prints it. */
+  rebuy?: string;
+}
+
 /** One candidate projected into one slot. */
 export interface SlotProjection {
   /** The slot label the verdict would carry: `Ring 1`, `Weapon set 1 main`. */
@@ -57,6 +90,23 @@ export interface SlotProjection {
   /** Why there is no projection, when there is none. */
   skipped?: string;
   departing: DepartingSocketable[];
+  /**
+   * What the projection carried into the candidate's sockets, and why the rest
+   * was not carried. A socket the candidate already holds stays as saved.
+   */
+  carried: { component?: CarriedSocketable; augment?: CarriedSocketable; notCarried: string[] };
+  /** Cappable resistances the like-for-like swap leaves short of where they have to be. */
+  gaps: OpenedGap[];
+  /**
+   * One re-assignment of the armour augment sockets and the incoming component
+   * socket that closes every gap — verified against a real aggregate before it
+   * is claimed. A witness that it can be done, not the way to do it.
+   */
+  closable?: ClosableWitness;
+  /** Set instead of `closable` when the gaps are real and no such assignment exists. */
+  notClosable?: string;
+  /** Meets its requirements at equip time — the post-swap check where that differs, else the as-dressed one. */
+  wearable: boolean;
   /** No figure the projection tracks moves up. An annotation, never a disposition. */
   noTrackedGain: boolean;
   /** Every tracked figure holds still. */
@@ -92,7 +142,23 @@ export interface ProjectionsInput {
   ids: ReadonlyMap<ResolvedItem, string>;
   /** Socketable record → its sourcing lines, as `socketableObtain` derives them. */
   obtain: ReadonlyMap<string, string[]>;
+  /**
+   * Socketable record → its dossier id (`ctx.socketableIds`). Without it no
+   * socketable can be carried over — the projection installs by id.
+   */
+  socketableIds?: ReadonlyMap<string, string>;
+  /**
+   * Component record → how a fresh copy is had for free (§8's census rule:
+   * loose on hand, or craftable now). A component absent here is carried only
+   * by salvaging the outgoing item.
+   */
+  freeComponents?: ReadonlyMap<string, 'loose' | 'craftable'>;
+  /** Every augment that can be had — loose on hand, or at a reached vendor tier — for the closable search. */
+  augments?: readonly AugmentOption[];
 }
+
+export const NOT_CLOSABLE = 'not closable by re-augmenting armour and the incoming socket';
+const CAPPABLE = RESIST_COLUMNS.filter((c) => c.key !== 'physical');
 
 const SCALAR = (value: StatValue): number => (typeof value === 'number' ? value : 0);
 const TWO_HANDED = /2h$/i;
@@ -268,13 +334,16 @@ export function candidateProjections(
   const account: AccountFiles = input.account ?? {};
   const itemsById = new Map<string, ResolvedItem>();
   for (const [item, id] of input.ids) itemsById.set(id, item);
+  const socketableIds = input.socketableIds ?? new Map<string, string>();
+  const socketablesById = new Map<string, { record: string }>();
+  for (const [record, id] of socketableIds) socketablesById.set(id, { record });
   const projectionInput = {
     save,
     account,
     db,
     difficulty: aggregate.difficulty,
     itemsById,
-    socketablesById: new Map<string, { record: string }>(),
+    socketablesById,
   };
 
   // The equip-time standing per emptied slot set, shared by every candidate
@@ -330,12 +399,51 @@ export function candidateProjections(
         });
       }
 
+      // Like-for-like: the outgoing socketables go into the candidate's empty
+      // sockets where they legally fit and can be had, so the figures on the
+      // line are the item's own delta and not the socket package's.
+      const fits: SocketFit[] = [];
+      const carried: SlotProjection['carried'] = { notCarried: [] };
+      const flag = useOnFlag(candidate.item.base?.slot);
+      if (outgoing?.component) {
+        const comp = outgoing.component;
+        const sid = socketableIds.get(comp.record);
+        const refits = departing.find((s) => s.kind === 'component')?.refits;
+        if (candidate.item.component) {
+          carried.notCarried.push(`${comp.name} not carried — the candidate already holds ${candidate.item.component.name}`);
+        } else if (refits === false) {
+          carried.notCarried.push(`${comp.name} does not refit`);
+        } else if (sid) {
+          carried.component = { item: comp, via: input.freeComponents?.get(comp.record) ?? 'salvage' };
+          fits.push({ kind: 'component', id: sid });
+        }
+      }
+      if (outgoing?.augment) {
+        const aug = outgoing.augment;
+        const sid = socketableIds.get(aug.record);
+        const rebuy = departing.find((s) => s.kind === 'augment')?.rebuy;
+        const legal = !aug.allowedSlots?.length || (flag !== undefined && aug.allowedSlots.includes(flag));
+        if (candidate.item.augment) {
+          carried.notCarried.push(`${aug.name} not carried — the candidate already holds ${candidate.item.augment.name}`);
+        } else if (!legal) {
+          carried.notCarried.push(`${aug.name} cannot go on ${flag ?? 'this class'}`);
+        } else if (!rebuy) {
+          carried.notCarried.push(`${aug.name} lost — no vendor reached sells it`);
+        } else if (sid) {
+          carried.augment = { item: aug, via: 'rebuy', rebuy };
+          fits.push({ kind: 'augment', id: sid });
+        }
+      }
+
       const leaving = [...(outgoing ? [outgoing] : []), ...alsoCleared];
       const base: SlotProjection = {
         slot,
         ...(outgoing ? { outgoing } : {}),
         alsoCleared,
         departing,
+        carried,
+        gaps: [],
+        wearable: candidate.check.meets,
         noTrackedGain: false,
         identical: false,
         unworn: [],
@@ -344,7 +452,7 @@ export function candidateProjections(
       };
       if (!id) return { ...base, skipped: 'the candidate has no dossier id' };
 
-      const verdict: PlanVerdict = { slot, verdict: 'EQUIP', targetId: id, itemId: '', reason: '' };
+      const verdict: PlanVerdict = { slot, verdict: 'EQUIP', targetId: id, itemId: '', reason: '', fits };
       const result = projectVerdicts([verdict], projectionInput, { before: aggregate });
       if (!result) return { ...base, skipped: 'the aggregate could not be recomputed' };
       const { projection, after } = result;
@@ -355,7 +463,9 @@ export function candidateProjections(
       const identical = pairs.every((p) => p.after === p.before);
       const noTrackedGain = !carriesUntracked(candidate.item) && pairs.every((p) => p.after <= p.before);
 
-      const notes = [...projection.notes];
+      // The completion-bonus note would now sit on every line that carried a
+      // component over; the §7 preamble states it once instead.
+      const notes = projection.notes.filter((n) => n !== COMPLETION_NOTE);
       if (
         after.wielding.mode.startsWith('dual-wield') &&
         after.wielding.enablers.length === 0 &&
@@ -371,9 +481,82 @@ export function candidateProjections(
       const standing = standingWithout(cleared);
       const postSwap = standing ? checkRequirements(candidate.item, standing) : undefined;
 
+      // Is what the swap opens closable by the loadout's own sockets? Decided
+      // here, on the like-for-like figures, and printed on the same line as
+      // the gap — the model was reading `33 under cap` as the item's verdict.
+      const gaps = openedGaps({ before: aggregate.resistances.effective, after: after.resistances.effective, caps: after.resistances.caps });
+      let closable: ClosableWitness | undefined;
+      let notClosable: string | undefined;
+      if (gaps.length) {
+        const sockets: ArmourSocket[] = [];
+        for (const label of ARMOUR_SLOTS) {
+          const isTarget = label === slot;
+          const worn = isTarget ? candidate.item : wornAt(label, resolved, aggregate);
+          if (!worn?.base) continue;
+          const augment = isTarget ? (carried.augment?.item ?? candidate.item.augment) : worn.augment;
+          sockets.push({ slot: label, flag: useOnFlag(worn.base.slot), ...(augment ? { augment } : {}) });
+        }
+        const target: ComponentSocket | undefined = candidate.item.component
+          ? undefined
+          : { slot, flag, ...(carried.component ? { current: carried.component.item } : {}) };
+        const components: ComponentOption[] = [];
+        for (const [record, source] of input.freeComponents ?? []) {
+          const item = db.getItem(record);
+          if (item) components.push({ item, source });
+        }
+        const witness = findClosable({
+          before: aggregate.resistances.effective,
+          after: after.resistances.effective,
+          caps: after.resistances.caps,
+          sockets,
+          ...(target ? { target } : {}),
+          augments: input.augments ?? [],
+          components,
+        });
+        const verified = witness
+          ? verifyWitness(witness, { slot, id, carried, targetRe: witness.reaugments.find((r) => r.slot === slot) })
+          : false;
+        if (witness && verified) closable = witness;
+        else notClosable = NOT_CLOSABLE;
+      }
+
+      /** The witness re-applied through the real projection: every cappable resistance must land where the arithmetic said. */
+      function verifyWitness(
+        witness: ClosableWitness,
+        at: { slot: string; id: string; carried: SlotProjection['carried']; targetRe?: { augment: AugmentOption } },
+      ): boolean {
+        const fitsV: SocketFit[] = [];
+        const component = witness.fill ? witness.fill.component.item : at.carried.component?.item;
+        const augment = at.targetRe ? at.targetRe.augment.item : at.carried.augment?.item;
+        for (const [kind, part] of [
+          ['component', component],
+          ['augment', augment],
+        ] as const) {
+          if (!part) continue;
+          const sid = socketableIds.get(part.record);
+          if (!sid) return false;
+          fitsV.push({ kind, id: sid });
+        }
+        const verdicts: PlanVerdict[] = [{ slot: at.slot, verdict: 'EQUIP', targetId: at.id, itemId: '', reason: '', fits: fitsV }];
+        for (const r of witness.reaugments) {
+          if (r.slot === at.slot) continue;
+          const aid = socketableIds.get(r.augment.item.record);
+          if (!aid) return false;
+          verdicts.push({ slot: r.slot, verdict: 'RE-AUGMENT', targetId: aid, itemId: '', reason: '' });
+        }
+        const result = projectVerdicts(verdicts, projectionInput, { before: aggregate });
+        if (!result || result.projection.skipped.length) return false;
+        const goal = resistTargets(aggregate.resistances.effective, result.after.resistances.caps);
+        return CAPPABLE.every((c) => (result.after.resistances.effective[c.key] ?? 0) >= (goal[c.key] ?? 0) - 0.05);
+      }
+
       return {
         ...base,
         projection,
+        gaps,
+        ...(closable ? { closable } : {}),
+        ...(notClosable ? { notClosable } : {}),
+        wearable: (postSwap ?? candidate.check).meets,
         noTrackedGain,
         identical,
         ...(postSwap && !sameCheck(postSwap, candidate.check) ? { postSwap } : {}),

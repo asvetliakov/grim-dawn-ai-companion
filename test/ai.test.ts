@@ -48,6 +48,10 @@ import {
 } from '../src/core/ai/index.js';
 import type { DbItem } from '@grimdawn/core/db/types';
 import type { ResolvedItem } from '@grimdawn/core/resolve';
+import type { CandidateProjection, SlotProjection } from '../src/core/context/projections.js';
+import type { PlanWarning } from '../src/core/ai/verify.js';
+import type { ClosableWitness } from '../src/core/context/closable.js';
+import type { PlanProjection } from '../src/core/ai/envelope.js';
 
 // ---------------------------------------------------------------------------
 // A fake `claude`
@@ -1418,6 +1422,184 @@ describe('checkPlan — empty component sockets', () => {
 
   it('runs only when the caller says which components are free', () => {
     expect(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, world())).toEqual([]);
+  });
+
+  it('checks a CRAFT that names a component for socket legality like any socket verdict', () => {
+    const warnings = checkPlan(
+      {
+        verdicts: [{ slot: 'Head', itemId: 'head01', verdict: 'CRAFT', target: 'Sanctified Bone', targetId: 'bone1', reason: 'r' }],
+        hold: [],
+        sell: [],
+      },
+      world(),
+    );
+    expect(warnings).toMatchObject([{ kind: 'illegal-socket' }]);
+    // A CRAFT of something the socketable index does not know is a blueprint, and owes no socket check.
+    expect(
+      checkPlan(
+        { verdicts: [{ slot: 'Relic', itemId: '', verdict: 'CRAFT', target: 'Some Relic', targetId: 'relic9', reason: 'r' }], hold: [], sell: [] },
+        world(),
+      ),
+    ).toEqual([]);
+  });
+});
+
+/**
+ * The two checks that make "KEEP everything, sell the bags" cost a sentence.
+ * The projections are built by hand with only the fields the checks read:
+ * whether the candidate improves anything, whether it is wearable, and whether
+ * the gap it opens was closable.
+ */
+describe('checkPlan — avoidable holds and unargued keeps', () => {
+  const target = (over: Partial<SlotProjection> = {}): SlotProjection => ({
+    slot: 'Ring 1',
+    alsoCleared: [],
+    departing: [],
+    carried: { notCarried: [] },
+    gaps: [],
+    wearable: true,
+    noTrackedGain: false,
+    identical: false,
+    unworn: [],
+    setPieces: [],
+    notes: [],
+    projection: {} as PlanProjection,
+    ...over,
+  });
+  const witness = (): ClosableWitness => ({
+    reaugments: [{ slot: 'Head', augment: { item: socketable('Fire Powder', []), source: 'loose', iron: 0 } }],
+    iron: 0,
+    predicted: {},
+  });
+  const gap = { key: 'acid' as const, label: 'Acid', short: 20 };
+  const projections = (...targets: SlotProjection[]): Map<string, CandidateProjection> =>
+    new Map([['bag01', { targets, noTrackedGain: false }]]);
+  const drop = { itemId: 'bag01', slot: 'Ring 1', beats: 'ring01', gains: ['+300 Health'], reason: 'r', until: 'a ring carrying ≥20% Acid Resistance' };
+  const kinds = (warnings: PlanWarning[], kind: PlanWarning['kind']): PlanWarning[] => warnings.filter((w) => w.kind === kind);
+
+  it('reports a drop hold whose gap the line marked closable, quoting the witness', () => {
+    const warnings = checkPlan(
+      { verdicts: [], hold: [drop], sell: [] },
+      { ...world(), candidateProjections: projections(target({ gaps: [gap], closable: witness() })) },
+    );
+    const hits = kinds(warnings, 'avoidable-hold');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.message).toContain('Rusty Band');
+    expect(hits[0]!.message).toContain('Acid Resistance 20 short');
+    expect(hits[0]!.message).toContain('Fire Powder on Head');
+    expect(worthRepairing(hits)).toBe(true);
+  });
+
+  it('leaves a threshold hold, a not-closable gap, a set break, a no-gain swap and a gapless swap alone', () => {
+    const check = (hold: typeof drop, t: SlotProjection) =>
+      kinds(checkPlan({ verdicts: [], hold: [hold], sell: [] }, { ...world(), candidateProjections: projections(t) }), 'avoidable-hold');
+    expect(check({ ...drop, needs: { levels: 4 } } as typeof drop, target({ gaps: [gap], closable: witness() }))).toEqual([]);
+    expect(check(drop, target({ gaps: [gap], notClosable: 'not closable' }))).toEqual([]);
+    expect(check(drop, target({ gaps: [gap], closable: witness(), setPieces: [{ set: 'S', before: 2, after: 1 }] }))).toEqual([]);
+    expect(check(drop, target({ gaps: [gap], closable: witness(), noTrackedGain: true }))).toEqual([]);
+    // A drop hold on a swap that opens no resistance gap may be waiting on sustain or a rank — not the projection's call.
+    expect(check(drop, target())).toEqual([]);
+    // And a hold whose slot the projection never targeted is silent, not misfired.
+    expect(check({ ...drop, slot: 'Neck' }, target({ gaps: [gap], closable: witness() }))).toEqual([]);
+  });
+
+  it('reports a KEEP that names none of the arguable candidates in its slot, as wording only', () => {
+    const keep = { slot: 'Ring 1', itemId: 'ring01', verdict: 'KEEP' as const, reason: 'attack speed wins' };
+    const warnings = checkPlan({ verdicts: [keep], hold: [], sell: [] }, { ...world(), candidateProjections: projections(target()) });
+    const hits = kinds(warnings, 'unargued-keep');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.message).toContain('Rusty Band');
+    expect(worthRepairing(hits)).toBe(false);
+  });
+
+  it('is satisfied by the candidate’s id or its name, and by a candidate that is not arguable', () => {
+    const run = (reason: string, t: SlotProjection = target()) =>
+      kinds(
+        checkPlan(
+          { verdicts: [{ slot: 'Ring 1', itemId: 'ring01', verdict: 'KEEP', reason }], hold: [], sell: [] },
+          { ...world(), candidateProjections: projections(t) },
+        ),
+        'unargued-keep',
+      );
+    expect(run('beats #bag01 on attack speed by 8 points')).toEqual([]);
+    expect(run('Rusty Band loses 8 points of attack speed')).toEqual([]);
+    expect(run('attack speed', target({ wearable: false }))).toEqual([]);
+    expect(run('attack speed', target({ noTrackedGain: true }))).toEqual([]);
+    expect(run('attack speed', target({ gaps: [gap], notClosable: 'not closable' }))).toEqual([]);
+    expect(run('attack speed', target({ gaps: [gap], closable: witness() }))).toHaveLength(1);
+  });
+
+  it('is satisfied by naming one arguable candidate among several, and never checks a SELL on its own', () => {
+    // Two arguable candidates for the same slot; the KEEP argues the stronger one.
+    const two = new Map<string, CandidateProjection>([
+      ['bag01', { targets: [target()], noTrackedGain: false }],
+      ['ring02', { targets: [target()], noTrackedGain: false }],
+    ]);
+    const argued = kinds(
+      checkPlan(
+        { verdicts: [{ slot: 'Ring 1', itemId: 'ring01', verdict: 'KEEP', reason: 'beats Spare Band by 8 attack speed' }], hold: [], sell: ['bag01'] },
+        { ...world(), candidateProjections: two },
+      ),
+      'unargued-keep',
+    );
+    expect(argued).toEqual([]);
+    // A sold arguable item with no KEEP at all in its slot is not reported by itself.
+    expect(
+      kinds(checkPlan({ verdicts: [], hold: [], sell: ['bag01'] }, { ...world(), candidateProjections: projections(target()) }), 'unargued-keep'),
+    ).toEqual([]);
+  });
+
+  it('runs only when the caller supplies the projections', () => {
+    expect(checkPlan({ verdicts: [], hold: [drop], sell: ['bag01'] }, world())).toEqual([]);
+  });
+});
+
+describe('checkPlan — empty augment sockets', () => {
+  const keepHead = { slot: 'Head', itemId: 'head01', verdict: 'KEEP' as const, reason: 'r' };
+  const powder = (allowed: string[]): DbItem => ({ ...socketable('Acid Powder', allowed), slot: 'ItemEnchantment', stats: { defensivePoison: 18 } });
+  const projected = (acidAfter: number, skipped: PlanProjection['skipped'] = []): PlanProjection =>
+    ({
+      resistances: [
+        { label: 'Acid', before: acidAfter, after: acidAfter, capAfter: 80 },
+        { label: 'Fire', before: 90, after: 90, capAfter: 80 },
+      ],
+      speeds: [],
+      damage: [],
+      totalDamagePercent: { before: 0, after: 0 },
+      skillRanks: [],
+      skipped,
+      notes: [],
+    }) as unknown as PlanProjection;
+  const input = (acidAfter: number, allowed = ['head'], skipped: PlanProjection['skipped'] = []) => {
+    const w = world();
+    w.socketablesById.set('powder1', powder(allowed));
+    return { ...w, freeAugmentIds: new Set(['powder1']), project: () => projected(acidAfter, skipped) };
+  };
+  const hits = (warnings: { kind: string; message: string }[]) => warnings.filter((w) => w.kind === 'unfilled-socket');
+
+  it('flags an empty augment socket while the plan leaves a resistance under cap that a reachable augment raises', () => {
+    const warnings = hits(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, input(60)));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.message).toContain('empty augment socket on Iron Helm');
+    expect(warnings[0]!.message).toContain('Acid Resistance 20 under cap');
+    expect(warnings[0]!.message).toContain('Acid Powder (+18% Acid Resistance)');
+  });
+
+  it('stays silent when everything is capped, when the projection is partial, when nothing legal helps, or when the socket is filled', () => {
+    expect(hits(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, input(85)))).toEqual([]);
+    expect(hits(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, input(60, ['head'], [{ slot: 'Relic', verdict: 'CRAFT', reason: 'x' }])))).toEqual([]);
+    expect(hits(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, input(60, ['ring'])))).toEqual([]);
+    expect(
+      hits(checkPlan({ verdicts: [{ ...keepHead, fits: [{ kind: 'augment', id: 'powder1' }] }], hold: [], sell: [] }, input(60))),
+    ).toEqual([]);
+    expect(
+      hits(
+        checkPlan(
+          { verdicts: [{ slot: 'Head', itemId: 'head01', verdict: 'BUY-AUGMENT', target: 'Acid Powder', targetId: 'powder1', reason: 'r' }], hold: [], sell: [] },
+          input(60),
+        ),
+      ),
+    ).toEqual([]);
   });
 });
 

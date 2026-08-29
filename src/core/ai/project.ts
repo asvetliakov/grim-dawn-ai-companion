@@ -122,6 +122,9 @@ const SOCKET_VERDICT_KINDS: Readonly<Partial<Record<Verdict, 'component' | 'augm
 
 export type PlanVerdict = AdvisorPlan['verdicts'][number];
 
+/** The note a projection carries when it installed a component: `relicSeed = 0` rolls no completion bonus. */
+export const COMPLETION_NOTE = 'freshly installed components are projected without a rolled completion bonus — a slight understatement';
+
 /** A projection with the two aggregates it was diffed from. */
 export interface Projected {
   projection: PlanProjection;
@@ -305,17 +308,34 @@ export function projectVerdicts(
         install(ref, verdict.slot, verdict.verdict, kind, id);
         break;
       }
-      case 'CRAFT':
+      case 'CRAFT': {
+        // A CRAFT that names a *component* is a socket install, not a
+        // transformed item — recognised by the target's class, not the verdict
+        // word. A live gpt-5.6 run wrote `CRAFT Runestone` on the head and the
+        // projection skipped it: the computed Acid Resistance landed 12 under
+        // the model's tally, and `overstated-cap` stood down on the skip.
+        const id = verdict.targetId ?? '';
+        const record = id ? socketablesById.get(id)?.record : undefined;
+        if (record && db.getItem(record)?.slot === 'ItemRelic') {
+          const inst = slotInstance(mutated, ref);
+          // Onto an occupied socket it is a SWAP: the augment goes with the old component.
+          if (inst?.relicName) {
+            inst.augmentName = '';
+            inst.augmentSeed = 0;
+          }
+          install(ref, verdict.slot, 'CRAFT', 'component', id);
+          note('a CRAFT naming a component is projected as installing that component');
+          break;
+        }
         skipped.push({ slot: verdict.slot, verdict: 'CRAFT', reason: 'the item is transformed; the result is not projectable' });
         break;
+      }
     }
 
     for (const fit of verdict.fits ?? []) applyFit(fit, ref, verdict.slot, verdict.verdict, install);
   }
 
-  if (componentInstalls) {
-    note('freshly installed components are projected without a rolled completion bonus — a slight understatement');
-  }
+  if (componentInstalls) note(COMPLETION_NOTE);
 
   let after: CharacterAggregate;
   try {

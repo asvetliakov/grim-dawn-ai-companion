@@ -40,6 +40,7 @@ import {
 } from '../mechanics/stats.js';
 import { shortHash, type AccountFiles, type ResolvedCharacter, type ResolvedItem } from '@grimdawn/core/resolve';
 import { candidateProjections, type CandidateProjection, type SlotProjection } from './projections.js';
+import type { AugmentOption, ClosableWitness } from './closable.js';
 import { factionSlot, factionTier } from '@grimdawn/core/save/factions';
 import { EQUIP_SLOT_NAMES, type CharacterSave } from '@grimdawn/core/save/types';
 import {
@@ -142,6 +143,13 @@ export interface ContextDoc {
    */
   freeComponentIds: Set<string>;
   /**
+   * Augments that can be had: loose on hand, or in the faction stock at a
+   * tier the character has reached — §9's list plus §8's loose ones, by
+   * dossier id. What the empty-augment check reads; bought rather than free,
+   * so the check fires only where the plan leaves a resistance under cap.
+   */
+  freeAugmentIds: Set<string>;
+  /**
    * The projected swap under each §7 candidate, by dossier id. Empty unless
    * `ContextOptions.projections` asked for them (or the token gate gave them
    * up — `trimmed` says so).
@@ -213,6 +221,7 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
     socketablesById,
     candidateIds: doc.candidateIds,
     freeComponentIds: doc.freeComponentIds,
+    freeAugmentIds: doc.freeAugmentIds,
     projections: doc.projections,
   };
 }
@@ -288,7 +297,13 @@ function render(
   input: ContextInput,
   trim: Trim,
   projectionCache: Map<ResolvedItem, CandidateProjection>,
-): { text: string; candidateIds: Set<string>; freeComponentIds: Set<string>; projections: Map<string, CandidateProjection> } {
+): {
+  text: string;
+  candidateIds: Set<string>;
+  freeComponentIds: Set<string>;
+  freeAugmentIds: Set<string>;
+  projections: Map<string, CandidateProjection>;
+} {
   const { save, resolved } = input;
   const ids = assignIds(resolved.items);
   const out = new Writer();
@@ -317,6 +332,7 @@ function render(
   const selection = candidateSelection(ctx, trim.perGroup);
   const fodder = bagFodder(ctx, selection);
   const components = componentCensus(ctx, selection);
+  const augments = augmentCensus(ctx);
   if (trim.projections) {
     const pending = [...selection.byGroup.values()].flat().filter((c) => !projectionCache.has(c.item));
     if (pending.length) {
@@ -328,13 +344,16 @@ function render(
         resolved,
         ids,
         obtain: socketableObtain(input, recipes),
+        socketableIds: ctx.socketableIds,
+        freeComponents: freeComponentSources(components),
+        augments: augmentUniverse(ctx, augments),
       });
       for (const [item, projection] of computed) projectionCache.set(item, projection);
     }
   }
   setStatus(out, ctx);
-  candidatesSection(out, ctx, selection, fodder, components);
-  census(out, ctx, components, trim);
+  candidatesSection(out, ctx, selection, fodder, components, augments);
+  census(out, ctx, components, augments, trim);
   factionAugments(out, ctx);
   blueprints(out, ctx, selection, trim);
   task(out, ctx);
@@ -362,6 +381,8 @@ function render(
       freeComponentIds.add(socketableId(ctx, e.item));
     }
   }
+  const freeAugmentIds = new Set<string>();
+  for (const a of augmentUniverse(ctx, augments)) freeAugmentIds.add(socketableId(ctx, a.item));
 
   const projections = new Map<string, CandidateProjection>();
   if (trim.projections) {
@@ -374,7 +395,7 @@ function render(
     }
   }
 
-  return { text: out.toString(), candidateIds, freeComponentIds, projections };
+  return { text: out.toString(), candidateIds, freeComponentIds, freeAugmentIds, projections };
 }
 
 interface RenderContext extends ContextInput {
@@ -1657,7 +1678,7 @@ export function acceptsComponent(item: ResolvedItem): boolean {
   return COMPONENT_SLOTS.test(item.base?.slot ?? '');
 }
 
-function acceptsAugment(item: ResolvedItem): boolean {
+export function acceptsAugment(item: ResolvedItem): boolean {
   return COMPONENT_SLOTS.test(item.base?.slot ?? '');
 }
 
@@ -1754,8 +1775,14 @@ const SOURCE_TAG: Readonly<Record<string, string>> = {
 function candidateSelection(ctx: RenderContext, perGroup: number): CandidateSelection {
   const { aggregate } = ctx;
   const r = aggregate.resistances;
+  // Physical is excluded here for the reason §3's under-cap list excludes it
+  // (see `under` in the defences section): no realistic loadout caps it, so
+  // it is always "short", and counting it as a shortfall handed every item
+  // with a Physical Resistance line the ranking's dominant term and a "covers
+  // a current resistance shortfall" note — the reading §2 tells the model to
+  // ignore, printed in the same document.
   const shortfalls = new Set<ResistKey>(
-    RESIST_COLUMNS.filter((c) => (r.effective[c.key] ?? 0) < (r.caps[c.key] ?? 0)).map((c) => c.key),
+    RESIST_COLUMNS.filter((c) => c.key !== 'physical' && (r.effective[c.key] ?? 0) < (r.caps[c.key] ?? 0)).map((c) => c.key),
   );
   const topDamage = new Set<DamageKey>(aggregate.damage.ranked.slice(0, 2).map((e) => e.key));
   const standing: CharacterStanding = {
@@ -1812,16 +1839,17 @@ function candidatesSection(
   selection: CandidateSelection,
   fodder: readonly { item: ResolvedItem; group: EquipGroup }[],
   components: ReadonlyMap<string, CensusEntry>,
+  augments: ReadonlyMap<string, CensusEntry>,
 ): void {
   out.h(2, '7. Candidates — everything not worn, by slot');
-  out.line('Ranked by: covers a resistance shortfall > matches the build focus (post-conversion, counting the item\'s own conversion and armor piercing) > rarity > level proximity. A failing requirement is **not** a rejection — decide between an enabler combination, HOLD-until, and discard. Nor is a gain the loadout cannot absorb today: an item that is a real upgrade on one axis and opens a cost — a resistance under cap, a broken set, the last dual-wield enabler — that nothing in this document covers yet is a HOLD with a stated condition (§11), not a discard.');
+  out.line('Ranked by: covers a resistance shortfall > matches the build focus (post-conversion, counting the item\'s own conversion and armor piercing) > rarity > level proximity. A failing requirement is **not** a rejection — decide between an enabler combination, HOLD-until, and discard. Nor is a gain the loadout cannot absorb today: an item that is a real upgrade on one axis and opens a cost — a resistance under cap its line marks `not closable`, a broken set, the last dual-wield enabler — that nothing in this document covers yet is a HOLD with a stated condition (§11), not a discard.');
 
   if (ctx.projections.size) {
     out.line();
     out.line(
-      '**Projected swaps.** Under each candidate, `projected in <slot>` is the tool\'s own arithmetic for that one swap against the loadout §3 and §5 describe: the save with the candidate in that slot — sockets exactly as saved, so an empty socket is a further gain it does not count — re-aggregated and diffed. Use it in place of your own subtraction. It sees exactly what §3 counts and **nothing on §3\'s exclusion list**: procs, granted skills, on-hit effects and set-completion *potential* are for you to weigh. **Projections do not add**: each is one swap against today\'s loadout, so a joint move is yours to sum from §3\'s rows, and past a cap the sum is not the sum of the parts. `no tracked figure improves` means exactly that and is **not a disposition** — a carried item still needs `hold` or `sell`, and a stored item is never sold. A ring, and a one-hander on a dual-wielder, is projected into each slot it could take.',
+      '**Projected swaps.** Under each candidate, `projected in <slot>` is the tool\'s own arithmetic for that one swap against the loadout §3 and §5 describe: the save with the candidate in that slot, re-aggregated and diffed. Its sockets are **carried over** where they legally can be: the outgoing item\'s component refitted (a loose or craftable copy, else by salvaging the outgoing item) and its augment re-bought where a reached vendor sells it — the `sockets:` clause says which, and what it costs, so the figures are the item\'s own delta and not the socket package\'s. A socket the candidate already holds stays as saved, and an empty socket it still has is a further gain not counted; a carried-over component is projected without a rolled completion bonus, a slight understatement. Use it in place of your own subtraction. Where the swap leaves a cappable resistance short, `closable:` is one re-assignment of the loadout\'s armour augment sockets and the incoming component socket that closes every gap the swap opens — verified by the tool, ids included, a witness that it can be done and not a recommendation of how; `not closable` means by those means alone, and leaves jewellery and weapon augments, other components and joint moves to you. It sees exactly what §3 counts and **nothing on §3\'s exclusion list**: procs, granted skills, on-hit effects and set-completion *potential* are for you to weigh. **Projections do not add**: each is one swap against today\'s loadout, so a joint move is yours to sum from §3\'s rows, and past a cap the sum is not the sum of the parts. `no tracked figure improves` means exactly that and is **not a disposition** — a carried item still needs `hold` or `sell`, and a stored item is never sold. A ring, and a one-hander on a dual-wielder, is projected into each slot it could take.',
     );
-    const levers = resistanceLevers(ctx, components);
+    const levers = resistanceLevers(ctx, components, augments);
     if (levers.length) {
       out.line();
       out.line('**Levers per resistance** — what is reachable to raise each one, so the gap a swap opens can be costed. Build-independent: a table of what exists, not a recommendation. Free components first (loose on hand, or craftable now per §8), then §9\'s augments, largest first; each names the slots it may go in.');
@@ -2005,8 +2033,26 @@ function projectionLines(ctx: RenderContext, candidate: Candidate, target: SlotP
   for (const s of target.setPieces) {
     if (s.before >= 2 || s.after >= 2) parts.push(`${s.set} set ${s.before} → ${s.after} pieces`);
   }
-  for (const s of target.departing) {
-    if (s.kind === 'component' && s.refits !== undefined) parts.push(`${s.item.name} ${s.refits ? 'refits' : 'does not refit'}`);
+  // What went into the candidate's sockets for this projection, so the reader
+  // can write it into `fits` — and what did not, so the figure is not read as
+  // including it.
+  const sockets: string[] = [];
+  const carried = target.carried;
+  if (carried.component) {
+    const via =
+      carried.component.via === 'loose'
+        ? 'a loose copy'
+        : carried.component.via === 'craftable'
+          ? 'craftable now'
+          : `by salvaging ${target.outgoing?.display ?? 'the outgoing item'} — destroys it; name it in componentFrom`;
+    sockets.push(`${carried.component.item.name} carried over (${via})`);
+  }
+  if (carried.augment) sockets.push(`${carried.augment.item.name} re-bought (${carried.augment.rebuy ?? 'see §9'})`);
+  sockets.push(...carried.notCarried);
+  if (sockets.length) parts.push(`sockets: ${sockets.join(', ')}`);
+  if (target.gaps.length) {
+    if (target.closable) parts.push(`closable: ${closableText(ctx, target, target.closable)}`);
+    else if (target.notClosable) parts.push(`${target.notClosable} — jewellery and weapon augments, other components and joint moves are yours`);
   }
   if (target.unworn.length) parts.push(`un-wears ${target.unworn.join(', ')}`);
   if (target.postSwap) {
@@ -2020,6 +2066,40 @@ function projectionLines(ctx: RenderContext, candidate: Candidate, target: SlotP
   lines.push(`projected in ${target.slot} (${replacing}): ${body}`);
   if (target.noTrackedGain) lines.push('no tracked figure improves — see the §7 preamble for exactly what that does and does not mean');
   return lines;
+}
+
+/** The resistance fields `resistContributions` reads — everything else on a socketable is a side line. */
+const RESIST_FIELDS = new Set<string>([...RESIST_COLUMNS.map((c) => c.field), 'defensiveElementalResistance', 'defensiveAllResistance']);
+
+/** A socketable's lines that are not resistances — what a re-assignment gives up besides the resistance it trades. */
+function sideLines(ctx: RenderContext, item: DbItem): string[] {
+  const stats = Object.fromEntries(Object.entries(item.stats).filter(([field]) => !RESIST_FIELDS.has(field)));
+  return formatStats(stats, { db: ctx.db, invested: ctx.invested });
+}
+
+/**
+ * The witness, as one clause: each re-augment with what it displaces and what
+ * that gives up, the component fill if one was needed, the iron, and the claim
+ * — every gap the swap opened, closed. Ids on every socketable so the plan
+ * can carry them into `fits` and `RE-AUGMENT` as they stand.
+ */
+function closableText(ctx: RenderContext, target: SlotProjection, witness: ClosableWitness): string {
+  const bits: string[] = [];
+  for (const r of witness.reaugments) {
+    const lost = r.replaces ? sideLines(ctx, r.replaces) : [];
+    const displaced = r.replaces ? ` in place of ${r.replaces.name}${lost.length ? ` (gives up ${lost.join(', ')})` : ''}` : '';
+    bits.push(`${r.augment.item.name} \`#${socketableId(ctx, r.augment.item)}\` on ${r.slot}${displaced}`);
+  }
+  if (witness.fill) {
+    const { component, displaces } = witness.fill;
+    const dropped = displaces ? formatStats(displaces.stats, { db: ctx.db, invested: ctx.invested }) : [];
+    bits.push(
+      `${component.item.name} \`#${socketableId(ctx, component.item)}\` in the ${target.slot} socket (${component.source === 'loose' ? 'a loose copy' : 'craftable now'})` +
+        (displaces ? ` instead of ${displaces.name}${dropped.length ? ` (drops ${dropped.join(', ')})` : ''}` : ''),
+    );
+  }
+  const iron = witness.iron ? `${witness.iron.toLocaleString('en-US')} iron` : 'no iron';
+  return `${bits.join(' · ')} — ${iron}; closes every gap the swap opens`;
 }
 
 /**
@@ -2047,28 +2127,37 @@ function groupWornLines(ctx: RenderContext, list: readonly Candidate[]): string[
     });
 }
 
-/** One bullet per cappable resistance: the free components and buyable augments that raise it, largest first. */
-function resistanceLevers(ctx: RenderContext, components: ReadonlyMap<string, CensusEntry>): string[] {
-  const free = [...components.values()].filter((e) => e.loose.size > 0 || (e.craft && e.craft.plan.missing.length === 0));
+/** One bullet per cappable resistance: the free components, loose augments and buyable augments that raise it, largest first. */
+function resistanceLevers(
+  ctx: RenderContext,
+  components: ReadonlyMap<string, CensusEntry>,
+  augments: ReadonlyMap<string, CensusEntry>,
+): string[] {
+  const free = [
+    ...[...components.values()].filter((e) => e.loose.size > 0 || (e.craft && e.craft.plan.missing.length === 0)),
+    ...augments.values(),
+  ];
   const stock = vendorStock(ctx.save, ctx.db, ctx.aggregate.level);
   const LEVERS_SHOWN = 6;
   const lines: string[] = [];
   for (const column of RESIST_COLUMNS) {
     if (column.key === 'physical') continue;
     const entries: { text: string; value: number; order: number }[] = [];
+    const seen = new Set<string>();
     for (const e of free) {
       const value = resistContributions(e.item.stats, readScalar)[column.key] ?? 0;
       if (value <= 0) continue;
       const loose = [...e.loose.values()].reduce((a, b) => a + b, 0);
+      if (loose) seen.add(e.item.record);
       entries.push({
         value,
         order: loose ? 0 : 1,
         text: `${e.item.name} \`#${socketableId(ctx, e.item)}\` +${num(value)}% (${describeSlots(e.item.allowedSlots)}; ${loose ? `loose ${loose}×` : 'craftable now'})`,
       });
     }
-    const seen = new Set<string>();
     for (const s of stock) {
       for (const a of s.augments) {
+        // A loose copy is already listed as free; the vendor line would be the same augment at a price.
         if (seen.has(a.record)) continue;
         const value = resistContributions(a.stats, readScalar)[column.key] ?? 0;
         if (value <= 0) continue;
@@ -2154,7 +2243,14 @@ function componentCensus(ctx: RenderContext, selection: CandidateSelection): Map
   return components;
 }
 
-function census(out: Writer, ctx: RenderContext, components: Map<string, CensusEntry>, trim: Trim): void {
+/**
+ * The loose augments on hand, by record. Same shape as the component census
+ * (`hosts` stays empty — an installed augment is never recoverable), so the
+ * levers table can list a loose augment beside a loose component: a Venomguard
+ * Powder already in the bag is the cheapest Acid lever there is, and for a
+ * while it was the one the table left out.
+ */
+function augmentCensus(ctx: RenderContext): Map<string, CensusEntry> {
   const augments = new Map<string, CensusEntry>();
   for (const item of ctx.resolved.items) {
     if (item.base?.slot !== AUGMENT_CLASS) continue;
@@ -2162,7 +2258,16 @@ function census(out: Writer, ctx: RenderContext, components: Map<string, CensusE
     e.loose.set(item.source, (e.loose.get(item.source) ?? 0) + Math.max(1, item.stackCount));
     augments.set(item.base.record, e);
   }
+  return augments;
+}
 
+function census(
+  out: Writer,
+  ctx: RenderContext,
+  components: Map<string, CensusEntry>,
+  augments: ReadonlyMap<string, CensusEntry>,
+  trim: Trim,
+): void {
   const materials = new Map<string, { name: string; count: number }>();
   for (const item of ctx.resolved.items) {
     if (!item.record.startsWith(MATERIAL_PREFIX)) continue;
@@ -2234,6 +2339,38 @@ function socketableId(ctx: RenderContext, item: DbItem): string {
   return ctx.socketableIds.get(item.record) ?? shortHash(item.record);
 }
 
+/**
+ * How each component can be had for free — the census rule `freeComponentIds`
+ * applies, keyed by record for the projections: a loose copy first, else a
+ * blueprint craftable right now.
+ */
+function freeComponentSources(components: ReadonlyMap<string, CensusEntry>): Map<string, 'loose' | 'craftable'> {
+  const out = new Map<string, 'loose' | 'craftable'>();
+  for (const e of components.values()) {
+    if (e.loose.size > 0) out.set(e.item.record, 'loose');
+    else if (e.craft && e.craft.plan.missing.length === 0) out.set(e.item.record, 'craftable');
+  }
+  return out;
+}
+
+/**
+ * Every augment the closable search may spend: loose on hand (free), else the
+ * faction stock at reached tiers, with its price. One entry per record — a
+ * loose copy wins over the same augment at a vendor.
+ */
+function augmentUniverse(ctx: RenderContext, loose: ReadonlyMap<string, CensusEntry>): AugmentOption[] {
+  const out = new Map<string, AugmentOption>();
+  for (const e of loose.values()) out.set(e.item.record, { item: e.item, source: 'loose', iron: 0 });
+  for (const s of vendorStock(ctx.save, ctx.db, ctx.aggregate.level)) {
+    for (const a of s.augments) {
+      if (out.has(a.record)) continue;
+      const cost = a.stats['itemCost'];
+      out.set(a.record, { item: a, source: `${s.factionName} ${s.tier}`, iron: typeof cost === 'number' ? cost : 0 });
+    }
+  }
+  return [...out.values()];
+}
+
 function onlyInstalled(entry: CensusEntry): boolean {
   return entry.hosts.length === 1 && entry.loose.size === 0 && entry.craft === undefined;
 }
@@ -2279,7 +2416,7 @@ interface VendorStock {
  * filters (faction unlocked, tier reached, level appropriate) is three chances
  * for them to drift apart.
  */
-function vendorStock(save: CharacterSave, db: GameDb, level: number): VendorStock[] {
+export function vendorStock(save: CharacterSave, db: GameDb, level: number): VendorStock[] {
   const out: VendorStock[] = [];
   for (const rep of save.factions) {
     if (!rep.unlocked) continue;
@@ -2791,18 +2928,18 @@ function task(out: Writer, ctx: RenderContext): void {
   out.line();
   out.line('For every equipment slot, give exactly one of:');
   out.bullets([
-    '`KEEP` — with the reason it beats the listed alternatives',
+    '`KEEP` — with the reason it beats the listed alternatives, and the number; name a candidate whose §7 line says `closable`',
     '`EQUIP <item id>` — the candidate to wear instead',
     '`RE-AUGMENT <augment name>` — replace the augment (cheap: only the new augment costs anything)',
     '`ADD-COMPONENT <component name>` — fill an empty component socket (free)',
     '`SWAP-COMPONENT <component name>` — replace an installed component (destroys the old one, costs an iron fee, and removes the augment)',
     '`BUY-AUGMENT <augment name>` — from a faction in §9, within the iron on hand',
-    '`CRAFT <blueprint>` — only when §10 marks it craftable now, or says exactly what is missing',
+    '`CRAFT <blueprint>` — only when §10 marks it craftable now, or says exactly what is missing; a component going into a socket is ADD-/SWAP-COMPONENT',
   ]);
   out.line();
   out.line('Then give:');
   out.bullets([
-    'a **HOLD** list — items to keep for a stated condition, naming it: a level, attribute points, or the *kind* of drop that would cover what putting the item on opens today (a swap the loadout cannot absorb yet is a hold with a condition, not a sell). Each hold names its slot, the item it would replace, what it gains, and until when',
+    'a **HOLD** list — items to keep for a stated condition, naming it: a level, attribute points, or the *kind* of drop that would cover what putting the item on opens today (a swap the loadout cannot absorb yet is a hold with a condition, not a sell; a drop hold is for a §7 line that says `not closable`). Each hold names its slot, the item it would replace, what it gains, and until when',
     'a **SELL/SALVAGE** line — a count and the kinds, for items no plausible version of this build reaches; the items themselves belong in the plan\'s `sell` array rather than in a prose bullet each',
     'the reasoning behind each non-obvious call, in one or two sentences',
   ]);

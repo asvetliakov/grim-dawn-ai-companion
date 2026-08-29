@@ -12,8 +12,10 @@
  * whoever tunes the prompt), not an error to swallow the answer over.
  */
 
-import { acceptsComponent } from '../context/builder.js';
-import type { DbItem } from '@grimdawn/core/db/types';
+import { acceptsAugment, acceptsComponent } from '../context/builder.js';
+import type { CandidateProjection, SlotProjection } from '../context/projections.js';
+import { RESIST_COLUMNS, resistContributions, type ResistKey } from '../mechanics/stats.js';
+import type { DbItem, StatValue } from '@grimdawn/core/db/types';
 import type { ResolvedItem } from '@grimdawn/core/resolve';
 import type { PlanProjection } from './envelope.js';
 import {
@@ -73,6 +75,19 @@ export interface PlanCheckInput {
    * `undefined` checks nothing — same posture as every other optional input.
    */
   project?: (plan: AdvisorPlan) => PlanProjection | undefined;
+  /**
+   * §7's projected swap under each candidate, by dossier id
+   * (`ContextDoc.projections`). What the hold and KEEP checks read: whether a
+   * candidate improves anything, and whether the gap it opens was `closable`.
+   * Both checks run only when this is given.
+   */
+  candidateProjections?: ReadonlyMap<string, CandidateProjection>;
+  /**
+   * Augment ids that can be had — loose on hand, or at a faction tier the
+   * character has reached (`ContextDoc.freeAugmentIds`). The empty-augment
+   * check runs only when this and `project` are given.
+   */
+  freeAugmentIds?: ReadonlySet<string>;
 }
 
 /**
@@ -269,6 +284,9 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     for (const enabler of v.enablers ?? []) known(enabler, `${where} enabler`);
     if (v.componentFrom) known(v.componentFrom, `${where} extraction host`);
     if (SOCKET_VERDICTS.includes(v.verdict)) checkSocket(v, input, warn);
+    // A CRAFT whose target is a component is a socket install by another name
+    // (the projection treats it as one), so its legality is checked the same way.
+    else if (v.verdict === 'CRAFT' && v.targetId && input.socketablesById?.get(v.targetId)) checkSocket(v, input, warn);
     // The extra sockets. Checked against the item the slot will actually hold —
     // for an `EQUIP` that is the candidate, and checking the outgoing item's
     // class instead would clear a component for the wrong kind of gear.
@@ -410,10 +428,131 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     }
   }
 
-  checkEmptySockets(plan, input, warn);
-  checkOverstatedCaps(plan, input, warn);
+  // One projection serves every check that needs one — it is a full
+  // re-aggregation, and it runs inside the repair loop on each candidate plan.
+  const projection = input.project?.(plan);
+  checkEmptySockets(plan, input, projection, warn);
+  checkOverstatedCaps(plan, projection, warn);
+  checkAvoidableHolds(plan, input, warn);
+  checkUnarguedKeeps(plan, input, warn);
   checkStatClarity(plan, opts.answer, warn);
   return warnings;
+}
+
+/** The projection of `item` into `slot`, tolerant of the label's case and spacing. */
+function projectionInto(
+  projections: ReadonlyMap<string, CandidateProjection>,
+  id: string,
+  slot: string | undefined,
+): SlotProjection | undefined {
+  const cp = projections.get(id);
+  if (!cp || !slot) return undefined;
+  const wanted = slot.trim().toLowerCase();
+  return cp.targets.find((t) => t.slot.toLowerCase() === wanted);
+}
+
+/**
+ * Whether the projection says the candidate is worth arguing about: wearable
+ * now, improves something the projection tracks, and whatever resistance it
+ * opens is closable by the loadout's own sockets. Not a judgement that it is
+ * better — that is the model's — only that "it opens a gap" is not the answer.
+ */
+function arguable(t: SlotProjection): boolean {
+  if (!t.projection || t.noTrackedGain || !t.wearable) return false;
+  if (t.gaps.length && !t.closable) return false;
+  return true;
+}
+
+/** The witness in a few words, for a warning that has to say what the line said. */
+function witnessSummary(t: SlotProjection): string {
+  const w = t.closable;
+  if (!w) return '';
+  const bits = w.reaugments.map((r) => `${r.augment.item.name} on ${r.slot}`);
+  if (w.fill) bits.push(`${w.fill.component.item.name} in the ${t.slot} socket`);
+  return bits.join(', ');
+}
+
+/**
+ * A hold waiting on a drop, on a candidate whose §7 line said the gap was
+ * closable. The drop hold exists for a cost nothing in the dossier covers —
+ * and this one was covered, with ids, on the line the hold quotes from. Only
+ * a hold with no level or attribute condition qualifies; a set the swap would
+ * break, or a dual-wield enabler it would remove, is a cost the witness does
+ * not address and keeps the hold legitimate. Restricted to gaps the tool
+ * closed: a hold on a swap that opens no gap at all may be waiting on sustain
+ * or a rank, which is a judgement the projection does not make.
+ */
+function checkAvoidableHolds(
+  plan: AdvisorPlan,
+  input: PlanCheckInput,
+  warn: (kind: PlanWarningKind, message: string) => void,
+): void {
+  const projections = input.candidateProjections;
+  if (!projections) return;
+  for (const h of plan.hold) {
+    if (h.needs?.levels || h.needs?.attributePoints) continue;
+    const t = projectionInto(projections, h.itemId, h.slot);
+    if (!t?.projection || t.noTrackedGain || !t.gaps.length || !t.closable) continue;
+    if (t.setPieces.some((s) => s.before >= 2 && s.after < s.before)) continue;
+    if (t.notes.some((n) => n.includes('dual-wield'))) continue;
+    const name = input.itemsById.get(h.itemId)?.display ?? `#${h.itemId}`;
+    const gaps = t.gaps.map((g) => `${g.label} Resistance ${g.short} short`).join(', ');
+    warn(
+      'avoidable-hold',
+      `HOLD on ${name} for ${t.slot} waits on a drop, but the gap its swap opens (${gaps}) is closable — ` +
+        `§7's line names the re-augment (${witnessSummary(t)}). Either EQUIP it with that re-augment (in \`fits\` and ` +
+        `RE-AUGMENT verdicts), or KEEP the worn item and say which axis it wins on, and by how much`,
+    );
+  }
+}
+
+/**
+ * A KEEP that names *none* of the candidates it is keeping over, where a
+ * candidate is wearable, improves a tracked figure and opens nothing the tool
+ * could not close. The check is on the naming: an id or a name in the
+ * verdict's reason, gains or costs. Naming one is enough — a weapon slot can
+ * have a dozen arguable candidates, and the first live run under this check
+ * argued the best of them and was told to argue the other ten, which is not
+ * the failure this exists for. What the worn item wins on is the model's
+ * judgement; that it said so about *something* is the tool's to check. A
+ * sold item is not checked on its own: a slot whose KEEP argues nothing
+ * already warns, and one whose KEEP argues its strongest rival has argued.
+ */
+function checkUnarguedKeeps(
+  plan: AdvisorPlan,
+  input: PlanCheckInput,
+  warn: (kind: PlanWarningKind, message: string) => void,
+): void {
+  const projections = input.candidateProjections;
+  if (!projections) return;
+
+  const named = (text: string, id: string, item: ResolvedItem | undefined): boolean =>
+    text.includes(`#${id}`) ||
+    (!!item && text.includes(normalizeName(item.display))) ||
+    (!!item?.base && text.includes(normalizeName(item.base.name)));
+  const list = (items: string[]): string => (items.length > 3 ? `${items.slice(0, 3).join(', ')} and ${items.length - 3} more` : andList(items));
+
+  for (const v of plan.verdicts) {
+    if (v.verdict !== 'KEEP') continue;
+    const text = normalizeName([v.reason, ...(v.gains ?? []), ...(v.costs ?? [])].join(' '));
+    const slot = v.slot.trim().toLowerCase();
+    const arguableHere: string[] = [];
+    let argued = false;
+    for (const [id, cp] of projections) {
+      const t = cp.targets.find((x) => x.slot.toLowerCase() === slot);
+      if (!t || !arguable(t)) continue;
+      const item = input.itemsById.get(id);
+      if (named(text, id, item)) argued = true;
+      arguableHere.push(`${item?.display ?? '?'} (\`#${id}\`)`);
+    }
+    if (arguableHere.length && !argued) {
+      warn(
+        'unargued-keep',
+        `KEEP on ${v.slot} names none of ${list(arguableHere)} — each is wearable now, improves a figure the projection tracks, ` +
+          `and opens no resistance gap the tool could not close; say which one the worn item beats, on which axis, and by how much`,
+      );
+    }
+  }
 }
 
 /**
@@ -432,13 +571,11 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
  */
 function checkOverstatedCaps(
   plan: AdvisorPlan,
-  input: PlanCheckInput,
+  projection: PlanProjection | undefined,
   warn: (kind: PlanWarningKind, message: string) => void,
 ): void {
   const tally = plan.projectedResistances;
-  if (!tally || !input.project) return;
-  const projection = input.project(plan);
-  if (!projection) return;
+  if (!tally || !projection) return;
   // A partial projection cannot indict the tally: a skipped verdict (a CRAFT,
   // an id that already warned as unknown) means the computed figure is missing
   // gains the model legitimately counted, and firing here would spend repair
@@ -481,30 +618,76 @@ function checkOverstatedCaps(
 function checkEmptySockets(
   plan: AdvisorPlan,
   input: PlanCheckInput,
+  projection: PlanProjection | undefined,
   warn: (kind: PlanWarningKind, message: string) => void,
 ): void {
   const free = input.freeComponentIds;
-  if (!free?.size || !input.socketablesById) return;
+  if (free?.size && input.socketablesById) {
+    for (const v of plan.verdicts) {
+      if (v.verdict === 'CRAFT' || v.verdict === 'ADD-COMPONENT' || v.verdict === 'SWAP-COMPONENT') continue;
+      if (v.fits?.some((f) => f.kind === 'component')) continue;
+      const hostId = v.verdict === 'EQUIP' ? v.target : v.itemId;
+      const host = hostId ? input.itemsById.get(hostId) : undefined;
+      if (!host || host.component || !acceptsComponent(host)) continue;
+      const flag = slotFlagForClass(host.base?.slot);
+      if (!flag) continue;
+
+      const fitting = [...free]
+        .map((id) => input.socketablesById?.get(id))
+        .filter((c): c is DbItem => !!c && (!c.allowedSlots?.length || c.allowedSlots.includes(flag)));
+      if (fitting.length === 0) continue;
+
+      const names = fitting.slice(0, 3).map((c) => c.name).join(', ');
+      warn(
+        'unfilled-socket',
+        `${v.slot} ends the plan with an empty component socket on ${host.display}, while a free component fits ` +
+          `(${names}${fitting.length > 3 ? ', …' : ''}) — fill it via a component verdict or \`fits\`, or say why it stays empty`,
+      );
+    }
+  }
+
+  // The augment socket, the same way — but only where the plan's own
+  // projection leaves a cappable resistance under cap and a reachable augment
+  // legal on the slot raises it. An augment is bought, not free, so an empty
+  // socket on a capped loadout is a choice; on an under-cap one it is the
+  // cheapest lever in the prompt's own ordering, walked past. Stands down on a
+  // partial projection, as `overstated-cap` does.
+  const augments = input.freeAugmentIds;
+  if (!augments?.size || !input.socketablesById || !projection || projection.skipped.length > 0) return;
+  const short = new Map<ResistKey, { label: string; by: number }>();
+  for (const row of projection.resistances) {
+    const column = RESIST_COLUMNS.find((c) => c.label === row.label);
+    if (!column || column.key === 'physical') continue;
+    if (row.after < row.capAfter) short.set(column.key, { label: row.label, by: Math.round(row.capAfter - row.after) });
+  }
+  if (short.size === 0) return;
+  const scalar = (value: StatValue): number => (typeof value === 'number' ? value : 0);
 
   for (const v of plan.verdicts) {
-    if (v.verdict === 'CRAFT' || v.verdict === 'ADD-COMPONENT' || v.verdict === 'SWAP-COMPONENT') continue;
-    if (v.fits?.some((f) => f.kind === 'component')) continue;
+    if (v.verdict === 'CRAFT' || v.verdict === 'RE-AUGMENT' || v.verdict === 'BUY-AUGMENT') continue;
+    if (v.fits?.some((f) => f.kind === 'augment')) continue;
     const hostId = v.verdict === 'EQUIP' ? v.target : v.itemId;
     const host = hostId ? input.itemsById.get(hostId) : undefined;
-    if (!host || host.component || !acceptsComponent(host)) continue;
+    if (!host || host.augment || !acceptsAugment(host)) continue;
     const flag = slotFlagForClass(host.base?.slot);
     if (!flag) continue;
 
-    const fitting = [...free]
-      .map((id) => input.socketablesById?.get(id))
-      .filter((c): c is DbItem => !!c && (!c.allowedSlots?.length || c.allowedSlots.includes(flag)));
+    const fitting: { name: string; lines: string[] }[] = [];
+    for (const id of augments) {
+      const a = input.socketablesById.get(id);
+      if (!a || (a.allowedSlots?.length && !a.allowedSlots.includes(flag))) continue;
+      const lines = resistContributions(a.stats, scalar);
+      const helps = [...short].filter(([key]) => (lines[key] ?? 0) > 0).map(([key, s]) => `+${lines[key]}% ${s.label} Resistance`);
+      if (helps.length) fitting.push({ name: a.name, lines: helps });
+    }
     if (fitting.length === 0) continue;
 
-    const names = fitting.slice(0, 3).map((c) => c.name).join(', ');
+    const gaps = [...short.values()].map((s) => `${s.label} Resistance ${s.by} under cap`).join(', ');
+    const named = fitting.slice(0, 3).map((f) => `${f.name} (${f.lines.join(', ')})`).join(', ');
     warn(
       'unfilled-socket',
-      `${v.slot} ends the plan with an empty component socket on ${host.display}, while a free component fits ` +
-        `(${names}${fitting.length > 3 ? ', …' : ''}) — fill it via a component verdict or \`fits\`, or say why it stays empty`,
+      `${v.slot} ends the plan with an empty augment socket on ${host.display} while the plan leaves ${gaps}, and a ` +
+        `reachable augment raises it (${named}${fitting.length > 3 ? ', …' : ''}) — fill it via BUY-AUGMENT or \`fits\`, or say why it stays empty`,
     );
   }
 }

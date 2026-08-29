@@ -48,7 +48,7 @@ import {
 import { checkPlan, type PlanCheckInput, type PlanWarning, type PlanWarningKind } from './verify.js';
 
 /** Warning kinds that are wording, not structure — never worth a second call. */
-const PROSE_ONLY: ReadonlySet<PlanWarningKind> = new Set(['ambiguous-stat']);
+const PROSE_ONLY: ReadonlySet<PlanWarningKind> = new Set(['ambiguous-stat', 'unargued-keep']);
 
 /** Whether these warnings justify spending a corrective call. */
 export function worthRepairing(warnings: readonly PlanWarning[]): boolean {

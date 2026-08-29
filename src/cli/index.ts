@@ -1330,6 +1330,8 @@ program
           socketablesById: doc.socketablesById,
           candidateIds: doc.candidateIds,
           freeComponentIds: doc.freeComponentIds,
+          freeAugmentIds: doc.freeAugmentIds,
+          candidateProjections: doc.projections,
           project: (p: AdvisorPlan) => projectPlan(p, projectionInput),
         };
 

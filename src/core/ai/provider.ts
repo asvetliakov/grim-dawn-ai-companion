@@ -178,6 +178,26 @@ export const PLAN_WARNING_KINDS = [
    * resistance was capped. Band choices stay notes; this buys a repair call.
    */
   'overstated-cap',
+  /**
+   * A hold waiting on a *drop* whose §7 projection line says the gap it opens
+   * is `closable` — the tool found a re-assignment of the armour augments and
+   * the incoming socket that caps everything, and printed it. The live run
+   * this is for held two items on exactly such gaps; the user equipped both
+   * and the next run closed the gaps with augments it already listed. A drop
+   * hold is for a cost nothing in the dossier covers; this one was covered on
+   * the line. Buys a repair call: the fix is an EQUIP with the re-augment, or
+   * a KEEP that argues the worn item's axis.
+   */
+  'avoidable-hold',
+  /**
+   * A KEEP on a slot with candidates that are wearable now, improve a tracked
+   * figure and open nothing that is not `closable`, whose reason names none of
+   * them — neither an id nor a name. "KEEP everything, sell the bags" was the
+   * one zero-work path through the checks; this makes it cost a sentence.
+   * Naming one is enough. Wording, not structure: reported, never a repair
+   * call.
+   */
+  'unargued-keep',
 ] as const;
 
 export type PlanWarningKind = (typeof PLAN_WARNING_KINDS)[number];

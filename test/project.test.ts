@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { adviseEnvelopeSchema } from '../src/core/ai/envelope.js';
 import { projectPlan, projectVerdicts, type ProjectionInput } from '../src/core/ai/project.js';
 import { candidateProjections } from '../src/core/context/projections.js';
+import type { AugmentOption } from '../src/core/context/closable.js';
 import { selectCandidates, type CandidateContext } from '../src/core/context/filters.js';
 import type { AdvisorPlan } from '../src/core/ai/provider.js';
 import { buildContextDoc } from '../src/core/context/builder.js';
@@ -340,6 +341,25 @@ describe('projectPlan', () => {
     expect(p.notes.some((n) => n.includes('completion bonus'))).toBe(true);
   });
 
+  it('projects a CRAFT that names a component as installing it, and still skips a real craft', () => {
+    const { input } = world();
+    // A live run wrote `CRAFT Runestone` on the head: a craftable component,
+    // and the projection skipped the slot as "transformed".
+    const p = projectPlan(
+      plan({ verdicts: [{ slot: 'Head', itemId: '', verdict: 'CRAFT', target: 'Component', targetId: 's-comp', reason: '' }] }),
+      input,
+    )!;
+    expect(p.skipped).toEqual([]);
+    expect(resist(p, 'Aether')).toMatchObject({ before: 12, after: 24 });
+    expect(p.notes.some((n) => n.includes('CRAFT naming a component'))).toBe(true);
+
+    const relic = projectPlan(
+      plan({ verdicts: [{ slot: 'Relic', itemId: '', verdict: 'CRAFT', target: 'Some Relic', targetId: 'bp-relic', reason: '' }] }),
+      input,
+    )!;
+    expect(relic.skipped).toMatchObject([{ verdict: 'CRAFT' }]);
+  });
+
   it('does not double-count a worn item equipped into its sibling slot', () => {
     const { input } = world();
     const p = projectPlan(
@@ -646,6 +666,11 @@ describe('candidate projections', () => {
   const BETTER_RING = 'records/items/betterring.dbr';
   const GREATAXE = 'records/items/greataxe.dbr';
   const SHIELD = 'records/items/shield.dbr';
+  const RING_ONLY = 'records/items/materia/ringstone.dbr';
+  const GAP_HELM = 'records/items/gaphelm.dbr';
+  const FIRE_POWDER = 'records/items/materia/firepowder.dbr';
+  const FIRE_STONE = 'records/items/materia/firestone.dbr';
+  const BUY = 'Test Faction Revered, 1,000 iron';
 
   const sceneDb = stubDb({
     items: {
@@ -667,6 +692,14 @@ describe('candidate projections', () => {
         stats: { offensivePhysicalMin: 40, offensivePhysicalMax: 60 },
       }),
       [SHIELD]: item(SHIELD, { name: 'Test Shield', slot: 'WeaponArmor_Shield', rarity: 'Epic', levelReq: 50, stats: { defensiveBlockChance: 20 } }),
+      // A component that only a ring accepts — worn on the helm, it cannot follow a helm swap.
+      [RING_ONLY]: item(RING_ONLY, { name: 'Ring Stone', slot: 'ItemRelic', stats: { defensiveAether: 12 }, allowedSlots: ['ring'] }),
+      // A helm that wins on health and loses the old helm's Fire Resistance: an upgrade that opens a gap.
+      [GAP_HELM]: item(GAP_HELM, { name: 'Gap Helm', slot: 'ArmorProtective_Head', rarity: 'Epic', levelReq: 50, stats: { characterLife: 500 } }),
+      // The levers: an armour augment with a side line, and a free component.
+      [FIRE_POWDER]: item(FIRE_POWDER, { name: 'Fire Powder', slot: 'ItemEnchantment', stats: { defensiveFire: 20, characterDefensiveAbility: 30 } }),
+      // …which also carries what the carried-over Test Seal did, so displacing that opens nothing.
+      [FIRE_STONE]: item(FIRE_STONE, { name: 'Fire Stone', slot: 'ItemRelic', stats: { defensiveFire: 20, defensiveAether: 12 } }),
     },
     skills: { [PASSIVE]: db.getSkill(PASSIVE)!, [MAINT_BUFF]: db.getSkill(MAINT_BUFF)! },
   });
@@ -675,6 +708,15 @@ describe('candidate projections', () => {
     bag: PositionedItem[];
     main?: EquippedItem | null;
     off?: EquippedItem | null;
+    /** The worn helm, when the plain one will not do — a socketed one, for the carry-over cases. */
+    helm?: EquippedItem;
+    /** Sourcing lines by socketable record, as `socketableObtain` would derive them. */
+    obtain?: Map<string, string[]>;
+    freeComponents?: Map<string, 'loose' | 'craftable'>;
+    /** Worn shoulders — a second armour augment socket for the closable cases. */
+    shoulders?: EquippedItem;
+    augments?: AugmentOption[];
+    db?: GameDb;
   }
 
   /** A save with the old helm and the plain ring worn, the given bag, and the given hands. */
@@ -682,8 +724,9 @@ describe('candidate projections', () => {
     const theSave = save({
       equipment: (() => {
         const eq: (EquippedItem | null)[] = Array.from({ length: 12 }, () => null);
-        eq[0] = instance({ baseName: HELM });
+        eq[0] = over.helm ?? instance({ baseName: HELM });
         eq[7] = instance({ baseName: RING, seed: 3 });
+        if (over.shoulders) eq[9] = over.shoulders;
         return eq;
       })(),
       weaponSet1: [over.main === undefined ? instance({ baseName: WEAPON, seed: 11 }) : over.main, over.off ?? null],
@@ -691,8 +734,9 @@ describe('candidate projections', () => {
       skills: [characterSkill(PASSIVE, 2)],
     });
     const account: AccountFiles = {};
-    const resolved = resolveCharacter(theSave, account, sceneDb);
-    const aggregate = aggregateCharacter(theSave, sceneDb);
+    const worldDb = over.db ?? sceneDb;
+    const resolved = resolveCharacter(theSave, account, worldDb);
+    const aggregate = aggregateCharacter(theSave, worldDb);
     const ctx: CandidateContext = {
       level: aggregate.level,
       standing: {
@@ -714,11 +758,20 @@ describe('candidate projections', () => {
     const projections = candidateProjections(candidates, {
       save: theSave,
       account,
-      db: sceneDb,
+      db: worldDb,
       aggregate,
       resolved,
       ids: new Map(resolved.items.map((i) => [i, i.id])),
-      obtain: new Map(),
+      obtain: over.obtain ?? new Map(),
+      socketableIds: new Map([
+        [COMPONENT, 's-comp'],
+        [AUGMENT, 's-aug'],
+        [RING_ONLY, 's-ringstone'],
+        [FIRE_POWDER, 's-fire'],
+        [FIRE_STONE, 's-stone'],
+      ]),
+      freeComponents: over.freeComponents ?? new Map(),
+      augments: over.augments ?? [],
     });
     const of = (record: string) => {
       const candidate = candidates.find((c) => c.item.record === record);
@@ -749,6 +802,146 @@ describe('candidate projections', () => {
     expect(head.postSwap?.meets).toBe(false);
     expect(head.postSwap?.gaps.map((g) => g.attr)).toEqual(['level']);
     expect(aggregate.level).toBe(50);
+  });
+
+  /**
+   * Like-for-like: the worn helm's component and augment follow the swap into
+   * the bare candidate, so what the line shows is the helm's own delta. Every
+   * point of Aether and Vitality here is the socket package — a bare
+   * projection printed both falling to 0, the package's loss dressed up as
+   * the candidate's.
+   */
+  it('carries the outgoing component and augment into a bare candidate, and says how each is had', () => {
+    const socketed = instance({ baseName: HELM, relicName: COMPONENT, augmentName: AUGMENT });
+    const { of } = scene({
+      bag: [bag(BETTER_HELM, 0, 7)],
+      helm: socketed,
+      obtain: new Map([[AUGMENT, [`Buy: ${BUY}`]]]),
+      freeComponents: new Map([[COMPONENT, 'loose']]),
+    });
+    const head = of(BETTER_HELM).projection.targets[0]!;
+    expect(head.carried.component).toMatchObject({ via: 'loose' });
+    expect(head.carried.component?.item.name).toBe('Test Seal');
+    expect(head.carried.augment).toMatchObject({ via: 'rebuy', rebuy: BUY });
+    expect(head.carried.notCarried).toEqual([]);
+    const resist = (label: string) => head.projection!.resistances.find((r) => r.label === label)!;
+    expect(resist('Aether')).toMatchObject({ before: 12, after: 12 });
+    expect(resist('Vitality')).toMatchObject({ before: 15, after: 15 });
+    expect(resist('Fire')).toMatchObject({ before: 20, after: 35 });
+  });
+
+  it('carries a component by salvage when no free copy exists, and drops an augment no vendor sells', () => {
+    const socketed = instance({ baseName: HELM, relicName: COMPONENT, augmentName: AUGMENT });
+    const head = scene({ bag: [bag(BETTER_HELM, 0, 7)], helm: socketed }).of(BETTER_HELM).projection.targets[0]!;
+    expect(head.carried.component).toMatchObject({ via: 'salvage' });
+    expect(head.carried.augment).toBeUndefined();
+    expect(head.carried.notCarried).toEqual(['Test Powder lost — no vendor reached sells it']);
+    const vitality = head.projection!.resistances.find((r) => r.label === 'Vitality')!;
+    expect(vitality).toMatchObject({ before: 15, after: 0 });
+  });
+
+  it('leaves a socket the candidate already holds as saved, and a component that does not refit behind', () => {
+    const fitted = { ...bag(BETTER_HELM, 0, 7), relicName: COMPONENT };
+    const held = scene({
+      bag: [fitted],
+      helm: instance({ baseName: HELM, relicName: COMPONENT }),
+      freeComponents: new Map([[COMPONENT, 'loose']]),
+    }).of(BETTER_HELM).projection.targets[0]!;
+    expect(held.carried.component).toBeUndefined();
+    expect(held.carried.notCarried).toEqual(['Test Seal not carried — the candidate already holds Test Seal']);
+    expect(held.projection!.resistances.find((r) => r.label === 'Aether')).toMatchObject({ before: 12, after: 12 });
+
+    const stuck = scene({
+      bag: [bag(BETTER_HELM, 0, 7)],
+      helm: instance({ baseName: HELM, relicName: RING_ONLY }),
+      freeComponents: new Map([[RING_ONLY, 'loose']]),
+    }).of(BETTER_HELM).projection.targets[0]!;
+    expect(stuck.carried.component).toBeUndefined();
+    expect(stuck.carried.notCarried).toEqual(['Ring Stone does not refit']);
+    expect(stuck.projection!.resistances.find((r) => r.label === 'Aether')).toMatchObject({ before: 12, after: 0 });
+  });
+
+  /**
+   * The gap a swap opens, and whether the loadout's own sockets close it. The
+   * gap helm loses the old helm's 20 Fire Resistance — below cap already, so
+   * the target is "back to 20", not 80 — while its carried augment keeps
+   * Vitality where it was.
+   */
+  describe('closable gaps', () => {
+    const socketed = instance({ baseName: HELM, relicName: COMPONENT, augmentName: AUGMENT });
+    const firePowder: AugmentOption = { item: sceneDb.getItem(FIRE_POWDER)!, source: 'Test Faction Revered', iron: 1_000 };
+    const common = {
+      bag: [bag(GAP_HELM, 0, 7)],
+      helm: socketed,
+      obtain: new Map([[AUGMENT, [`Buy: ${BUY}`]]]),
+      freeComponents: new Map<string, 'loose' | 'craftable'>([[COMPONENT, 'loose']]),
+    };
+
+    it('names the gap, and a re-augment of another armour socket that closes it', () => {
+      const head = scene({ ...common, shoulders: instance({ baseName: SHOULDERS }), augments: [firePowder] }).of(GAP_HELM)
+        .projection.targets[0]!;
+      expect(head.gaps).toEqual([{ key: 'fire', label: 'Fire', short: 20 }]);
+      expect(head.notClosable).toBeUndefined();
+      expect(head.closable?.reaugments).toMatchObject([{ slot: 'Shoulders', augment: { iron: 1_000 } }]);
+      expect(head.closable?.reaugments[0]!.replaces).toBeUndefined();
+      expect(head.closable?.fill).toBeUndefined();
+      expect(head.closable?.iron).toBe(1_000);
+      expect(head.closable?.predicted.fire).toBe(20);
+    });
+
+    it('never trades one gap for another — a re-augment that would drop Vitality is not a witness', () => {
+      // Only the head socket exists, and Fire Powder there would displace the
+      // carried Test Powder: Fire closed, Vitality opened. Not closable.
+      const head = scene({ ...common, augments: [firePowder] }).of(GAP_HELM).projection.targets[0]!;
+      expect(head.closable).toBeUndefined();
+      expect(head.notClosable).toMatch(/not closable/);
+    });
+
+    it('closes a gap through the incoming component socket when no augment can', () => {
+      const head = scene({
+        ...common,
+        augments: [firePowder],
+        freeComponents: new Map<string, 'loose' | 'craftable'>([
+          [COMPONENT, 'loose'],
+          [FIRE_STONE, 'craftable'],
+        ]),
+      }).of(GAP_HELM).projection.targets[0]!;
+      expect(head.closable?.reaugments).toEqual([]);
+      expect(head.closable?.fill).toMatchObject({ component: { source: 'craftable' } });
+      expect(head.closable?.fill?.component.item.name).toBe('Fire Stone');
+      // It displaces the carried component, and says so.
+      expect(head.closable?.fill?.displaces?.name).toBe('Test Seal');
+      expect(head.closable?.iron).toBe(0);
+    });
+
+    it('does not displace a carried component whose own lines the fill would lose', () => {
+      // Fire Stone without the Aether line: putting it in opens Aether 12 → 0.
+      const bare = { ...sceneDb.getItem(FIRE_STONE)!, stats: { defensiveFire: 20 } };
+      const dbWithout = { ...sceneDb, getItem: (r: string) => (r === FIRE_STONE ? bare : sceneDb.getItem(r)) };
+      const head = scene({
+        ...common,
+        db: dbWithout,
+        augments: [firePowder],
+        freeComponents: new Map<string, 'loose' | 'craftable'>([
+          [COMPONENT, 'loose'],
+          [FIRE_STONE, 'craftable'],
+        ]),
+      }).of(GAP_HELM).projection.targets[0]!;
+      expect(head.closable).toBeUndefined();
+      expect(head.notClosable).toMatch(/not closable/);
+    });
+
+    it('states not closable when nothing reachable closes it, and no gap when the swap opens none', () => {
+      const head = scene(common).of(GAP_HELM).projection.targets[0]!;
+      expect(head.gaps).toHaveLength(1);
+      expect(head.closable).toBeUndefined();
+      expect(head.notClosable).toBe('not closable by re-augmenting armour and the incoming socket');
+
+      const better = scene({ ...common, bag: [bag(BETTER_HELM, 0, 7)] }).of(BETTER_HELM).projection.targets[0]!;
+      expect(better.gaps).toEqual([]);
+      expect(better.closable).toBeUndefined();
+      expect(better.notClosable).toBeUndefined();
+    });
   });
 
   it('flags a candidate that improves nothing the projection tracks, and never one that does', () => {

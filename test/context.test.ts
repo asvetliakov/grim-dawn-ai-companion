@@ -726,6 +726,42 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     expect(doc.markdown).toContain('**augment: NONE**');
   });
 
+  it('never ranks Physical Resistance as a shortfall a candidate covers', async () => {
+    // §2 says no realistic loadout caps it, §3 keeps it out of the under-cap
+    // list — and for a while §7 still handed every item with a Physical
+    // Resistance line the ranking's dominant term and a "covers a shortfall"
+    // note, the reading the rest of the document tells the model to ignore.
+    const doc = buildContextDoc(await context('_Suchka'));
+    expect(section(doc.markdown, 7)).not.toMatch(/shortfall in[^\n]*\bphysical\b/);
+  });
+
+  it('lists a loose augment on hand among the resistance levers, ahead of the vendor copy', async () => {
+    const input = await context('_Suchka');
+    const powder = dbItem({
+      record: 'records/items/enchants/test_powder.dbr',
+      name: 'Test Powder',
+      slot: 'ItemEnchantment',
+      stats: { defensivePoison: 18 },
+      allowedSlots: ['head', 'chest', 'shoulders', 'legs', 'feet', 'hands', 'waist'],
+    });
+    const loose = resolved({
+      id: 'loose-powder',
+      baseId: 'loose-powder',
+      record: powder.record,
+      display: powder.name,
+      base: powder,
+      location: 'bag 1 (0,0)',
+    });
+    const doc = buildContextDoc(
+      { ...input, resolved: { ...input.resolved, items: [...input.resolved.items, loose] } },
+      { projections: true },
+    );
+    const levers = section(doc.markdown, 7).split('\n').find((l) => l.startsWith('- **Acid Resistance**'));
+    expect(levers).toBeDefined();
+    expect(levers).toContain('Test Powder');
+    expect(levers).toMatch(/Test Powder `#\w+` \+18% \([^)]*; loose 1×\)/);
+  });
+
   it('annotates candidate requirements against the character', async () => {
     const doc = buildContextDoc(await context('_Suchka'));
     const section = doc.markdown.slice(doc.markdown.indexOf('\n## 7. '), doc.markdown.indexOf('\n## 8. '));
