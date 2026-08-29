@@ -159,3 +159,39 @@ tokens, document ~78k tokens, zero structural warnings. What the run did with th
   be read off this run is that the four mechanisms are exercised — the `sockets:` clause is
   cited, the `closable:` witnesses were composed past, the KEEPs name their rivals — and that
   the answer is a plan of moves rather than a list of reasons to keep.
+
+## Review, and what it changed
+
+`/code-review high` over the commit found four things, all fixed in the follow-up:
+
+- **The search budget was per component option, and each node re-sorted its socket's
+  augments.** Measured on a synthetic worst case (7 sockets, 25 augments, 12 components, a goal
+  nothing reaches): **1,055 ms for one slot**. `adviceScope` runs this ~100 times in the Electron
+  main process. The budget is now shared across the whole `findClosable` call, the augments'
+  resistance vectors are resolved once, the DFS takes them in a static order instead of ranking
+  per node, and the cap is 4,000 nodes — no budget makes 26^7 exhaustive, so it is a time bound
+  and exhausting it under-claims. Same worst case: **40 ms**. On the live document, same save,
+  before and after: 230 ms vs 225 ms, the same 11 closable and 7 not-closable slots, one witness
+  naming a different but equally valid augment (both verified against a real aggregate — the
+  point of "a witness, not the only way").
+- **`avoidable-hold` never checked `wearable`.** `needs` is optional in `holdSchema`, so a hold
+  stating "until level 94" in prose alone reached the check and would have bought a repair call
+  telling the model to EQUIP an item the character cannot put on. It now skips an unwearable
+  candidate and one whose swap un-wears a third item — structurally, rather than trusting the
+  model to fill `needs`.
+- **The empty-augment check compared `after < capAfter` on 0.1-rounded figures**, so a 79.9
+  reported "0 under cap" and bought a corrective call on rounding — the trap `checkOverstatedCaps`
+  keeps its ±2 for. It now needs a full point.
+- **`unargued-keep` counted candidates the plan was already using.** A ring projects into both
+  fingers, so `EQUIP` in Ring 1 plus `KEEP` on Ring 2 warned that the KEEP argued against
+  nothing. Candidates the plan equips, holds, spends as an enabler or destroys as an extraction
+  host are now excluded; a *sold* one still counts, which is the failure this check exists for.
+
+One unrelated bug surfaced while re-running the suite: `test/advise-runner.test.ts` took its
+snapshot from `primaryLiveCharacter()` — the highest-level character — and then asserted the
+name `_Suchka` in six places. The user levelled `_Bitch` to 90 past `_Suchka`'s 88 during this
+session and six assertions failed on a fact about the save rather than about the run manager,
+which is exactly the failure `test/paths.ts` documents. The name is now derived.
+
+Gate after the review: **411 tests** (+3), `app:check` green, live document 225 ms / 46
+projections.

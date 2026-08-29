@@ -45,8 +45,16 @@ export const ARMOUR_SLOTS: readonly string[] = ['Head', 'Shoulders', 'Chest', 'H
 
 const CAPPABLE = RESIST_COLUMNS.filter((c) => c.key !== 'physical');
 const SCALAR = (value: StatValue): number => (typeof value === 'number' ? value : 0);
-/** DFS node budget — well above what seven sockets need, well below anything a document build would feel. */
-const NODE_CAP = 20_000;
+/**
+ * DFS node budget for one `findClosable` call, shared across its component
+ * options. Seven sockets by a couple of dozen augments is 26^7 arrangements —
+ * no budget makes this exhaustive, so the cap is a time bound, not a
+ * completeness one, and exhausting it means `not closable`: an under-claim,
+ * which is the direction this is allowed to be wrong in. Measured at ~30 µs a
+ * node, so this bounds one slot's search at ~120 ms even when nothing closes,
+ * and the greedy pass above answers the ordinary case without entering here.
+ */
+const NODE_CAP = 4_000;
 
 /** An augment that can be had: loose on hand, or bought at a reached tier. */
 export interface AugmentOption {
@@ -181,15 +189,21 @@ function touchesGap(lines: ResistVector, v: ResistVector, goal: ResistVector): b
   return false;
 }
 
+/** An augment legal in one socket, with its resistance lines resolved once. */
+interface SocketOption {
+  augment: AugmentOption;
+  lines: ResistVector;
+}
+
 /** The re-augmentation of `sockets` that brings `start` to `goal`, or undefined. */
 function reaugment(
   start: ResistVector,
   goal: ResistVector,
   sockets: readonly ArmourSocket[],
-  augments: readonly AugmentOption[],
+  options: readonly (readonly SocketOption[])[],
+  current: readonly ResistVector[],
+  budget: { nodes: number },
 ): { chosen: (AugmentOption | undefined)[]; v: ResistVector } | undefined {
-  const options = sockets.map((s) => augments.filter((a) => fitsFlag(a.item, s.flag) && a.item.record !== s.augment?.record));
-  const current = sockets.map((s) => resistOf(s.augment));
 
   // Greedy: the move that closes most, never one that opens or deepens a gap.
   let v = start;
@@ -198,8 +212,8 @@ function reaugment(
     let best: { i: number; a: AugmentOption; next: ResistVector; gain: number } | undefined;
     for (let i = 0; i < sockets.length; i++) {
       if (chosen[i]) continue;
-      for (const a of options[i]!) {
-        const next = combine(v, current[i]!, resistOf(a.item));
+      for (const { augment: a, lines } of options[i]!) {
+        const next = combine(v, current[i]!, lines);
         if (regresses(v, next, goal)) continue;
         const gain = shortfall(v, goal) - shortfall(next, goal);
         if (gain <= 0) continue;
@@ -213,19 +227,22 @@ function reaugment(
   if (shortfall(v, goal) <= 0) return { chosen, v };
 
   // Greedy stalled: a bounded exhaustive pass over the sockets in order, each
-  // either kept or given an augment that touches something still short.
-  let nodes = 0;
+  // either kept or given an augment that touches something still short. The
+  // node budget belongs to the whole `findClosable` call, not to this pass —
+  // a per-call budget times a dozen component options is a dozen times the
+  // work, on a document that runs this a hundred times in the main process.
   const pick: (AugmentOption | undefined)[] = sockets.map(() => undefined);
   const dfs = (i: number, at: ResistVector): ResistVector | undefined => {
     if (shortfall(at, goal) <= 0) return at;
-    if (i >= sockets.length || ++nodes > NODE_CAP) return undefined;
+    if (i >= sockets.length || ++budget.nodes > NODE_CAP) return undefined;
     const kept = dfs(i + 1, at);
     if (kept) return kept;
-    const ranked = options[i]!
-      .map((a) => ({ a, lines: resistOf(a.item) }))
-      .filter(({ lines }) => touchesGap(lines, at, goal))
-      .sort((x, y) => shortfall(combine(at, current[i]!, x.lines), goal) - shortfall(combine(at, current[i]!, y.lines), goal));
-    for (const { a, lines } of ranked) {
+    // Filter only: the options come pre-ordered by how much resistance they
+    // carry, and re-sorting them at every node by their effect on *this* node's
+    // vector cost more than the ordering was worth — a hundred `combine`s per
+    // node, on a search whose whole job is to be bounded.
+    for (const { augment: a, lines } of options[i]!) {
+      if (!touchesGap(lines, at, goal)) continue;
       const next = combine(at, current[i]!, lines);
       if (regresses(at, next, goal)) continue;
       pick[i] = a;
@@ -249,11 +266,35 @@ export function findClosable(input: ClosableInput): ClosableWitness | undefined 
   const goal = targets(input.before, input.caps);
   if (shortfall(input.after, goal) <= 0) return undefined;
 
+  // Resolved once for the whole call: every component option below re-runs the
+  // same socket search, and `resistContributions` is not free.
+  const lineCache = new Map<DbItem, ResistVector>();
+  const linesOf = (item: DbItem | undefined): ResistVector => {
+    if (!item) return {};
+    let v = lineCache.get(item);
+    if (!v) {
+      v = resistOf(item);
+      lineCache.set(item, v);
+    }
+    return v;
+  };
+  const magnitude = (v: ResistVector): number => CAPPABLE.reduce((n, c) => n + (v[c.key] ?? 0), 0);
+  const socketOptions: SocketOption[][] = input.sockets.map((s) =>
+    input.augments
+      .filter((a) => fitsFlag(a.item, s.flag) && a.item.record !== s.augment?.record)
+      .map((augment) => ({ augment, lines: linesOf(augment.item) }))
+      // Ordered once, by how much resistance the augment carries: the DFS below
+      // takes them in this order rather than re-ranking per node.
+      .sort((x, y) => magnitude(y.lines) - magnitude(x.lines)),
+  );
+  const socketCurrent = input.sockets.map((s) => linesOf(s.augment));
+  const budget = { nodes: 0 };
+
   const options: (ComponentOption | undefined)[] = [undefined];
   if (input.target) {
     const { flag, current } = input.target;
     const gapLines = (item: DbItem): number => {
-      const lines = resistOf(item);
+      const lines = linesOf(item);
       let sum = 0;
       for (const c of CAPPABLE) {
         if ((input.after[c.key] ?? 0) < (goal[c.key] ?? 0)) sum += lines[c.key] ?? 0;
@@ -268,8 +309,8 @@ export function findClosable(input: ClosableInput): ClosableWitness | undefined 
   }
 
   for (const option of options) {
-    const start = option ? combine(input.after, resistOf(input.target?.current), resistOf(option.item)) : input.after;
-    const found = reaugment(start, goal, input.sockets, input.augments);
+    const start = option ? combine(input.after, linesOf(input.target?.current), linesOf(option.item)) : input.after;
+    const found = reaugment(start, goal, input.sockets, socketOptions, socketCurrent, budget);
     if (!found) continue;
     const reaugments: Reaugment[] = [];
     let iron = 0;

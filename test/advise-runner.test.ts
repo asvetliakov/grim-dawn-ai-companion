@@ -40,11 +40,20 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
   let snapshot: CharacterSnapshot;
   let pushes: PushEvent[];
 
+  // Whichever character the roster discovers — never a name written down here.
+  // These assertions hardcoded `_Suchka` while the snapshot came from
+  // `primaryLiveCharacter()`, which returns the *highest-level* character: the
+  // day the user levelled another one past it, six assertions failed on a fact
+  // about the save rather than about the run manager. That is the failure
+  // `test/paths.ts` describes at length and the reason the roster is discovered.
+  let character: string;
+
   beforeEach(async () => {
     // Advice is written to `<appData>/advice/`, so every test gets its own.
     process.env.GD_DATA_DIR = mkdtempSync(join(tmpdir(), 'gd-runner-'));
     const db = await gameDb();
-    snapshot = loadSnapshot(db, resolveSettings(), { character: primaryLiveCharacter() });
+    character = primaryLiveCharacter();
+    snapshot = loadSnapshot(db, resolveSettings(), { character });
     pushes = [];
   });
 
@@ -105,22 +114,22 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
       'asking',
     ]);
     const envelope = (end as { envelope: { character: string; question?: string; calls: number } }).envelope;
-    expect(envelope.character).toBe('_Suchka');
+    expect(envelope.character).toBe(character);
     expect(envelope.question).toBe('focus on resistances');
     expect(envelope.calls).toBe(1);
 
     // Persisted, and reachable by the two channels the renderer actually calls:
     // the window opens on the empty state and gets to an answer by picking it out
     // of the history, so `history` → `advice` is the whole path in.
-    const persisted = loadLastAdvice('_Suchka');
+    const persisted = loadLastAdvice(character);
     expect(persisted?.answer).toBe(answer);
     // The computed projection rode along: an all-KEEP plan projects to the
     // loadout it started from, with every resistance row present.
     expect(persisted?.projection?.resistances).toHaveLength(10);
     expect(persisted?.projection?.skillRanks).toEqual([]);
-    const stored = runs.history('_Suchka');
+    const stored = runs.history(character);
     expect(stored).toHaveLength(1);
-    expect(runs.advice('_Suchka', stored[0]!.id)?.answer).toBe(answer);
+    expect(runs.advice(character, stored[0]!.id)?.answer).toBe(answer);
     // And the run is over: a second one is allowed, and the status is idle again.
     expect(runs.status().phase).toBe('idle');
     expect(runId).toMatch(/[0-9a-f-]{36}/);
@@ -155,7 +164,7 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     const status = runs.status();
     // Everything the renderer needs to draw the panel without having seen a
     // single push: which run, whose, what it is doing and how old it is.
-    expect(status).toMatchObject({ phase: 'asking', runId, character: '_Suchka' });
+    expect(status).toMatchObject({ phase: 'asking', runId, character });
     expect(status.elapsedMs).toBeGreaterThanOrEqual(0);
   });
 
@@ -173,7 +182,7 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     expect(end).toMatchObject({ type: 'advise-error', runId, message: 'Cancelled.' });
     expect(runs.status().phase).toBe('error');
     // Nothing was written: there is no answer to persist.
-    expect(loadLastAdvice('_Suchka')).toBeUndefined();
+    expect(loadLastAdvice(character)).toBeUndefined();
   });
 
   it('surfaces a backend that cannot run, in the backend’s own words', async () => {

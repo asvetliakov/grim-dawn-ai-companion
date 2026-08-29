@@ -931,6 +931,28 @@ describe('candidate projections', () => {
       expect(head.notClosable).toMatch(/not closable/);
     });
 
+    it('gives up and says not closable rather than searching an unreachable space', () => {
+      // Seven sockets by two dozen augments is 26^7 arrangements — the search
+      // is bounded by a node budget *shared across component options*, and
+      // exhausting it under-claims. Measured: 40 ms for this shape, against
+      // 1,055 ms when each component option had a budget of its own.
+      const many: AugmentOption[] = [];
+      for (let i = 0; i < 25; i++) {
+        many.push({ item: { ...sceneDb.getItem(FIRE_POWDER)!, record: `aug${i}`, name: `Aug ${i}` }, source: 'v', iron: 1_000 });
+      }
+      const started = Date.now();
+      const head = scene({
+        ...common,
+        shoulders: instance({ baseName: SHOULDERS }),
+        augments: many,
+        // A gap no augment in the world carries: nothing closes it.
+        helm: instance({ baseName: HELM, relicName: RING_ONLY, augmentName: AUGMENT }),
+      }).of(GAP_HELM).projection.targets[0]!;
+      expect(head.closable).toBeUndefined();
+      expect(head.notClosable).toMatch(/not closable/);
+      expect(Date.now() - started).toBeLessThan(3_000);
+    });
+
     it('states not closable when nothing reachable closes it, and no gap when the swap opens none', () => {
       const head = scene(common).of(GAP_HELM).projection.targets[0]!;
       expect(head.gaps).toHaveLength(1);

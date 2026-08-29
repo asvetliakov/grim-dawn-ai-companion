@@ -1490,6 +1490,17 @@ describe('checkPlan — avoidable holds and unargued keeps', () => {
     expect(worthRepairing(hits)).toBe(true);
   });
 
+  it('leaves a hold on an item that cannot be worn today, whatever `needs` says', () => {
+    // `needs` is optional in the schema, so a hold stating "until level 94" in
+    // prose alone reaches here — and telling the model to EQUIP an item the
+    // character cannot put on would buy a repair call for an impossible move.
+    const check = (t: SlotProjection) =>
+      kinds(checkPlan({ verdicts: [], hold: [drop], sell: [] }, { ...world(), candidateProjections: projections(t) }), 'avoidable-hold');
+    expect(check(target({ gaps: [gap], closable: witness(), wearable: false }))).toEqual([]);
+    // And one whose swap un-wears a third item: the witness closes resistances, not requirements.
+    expect(check(target({ gaps: [gap], closable: witness(), unworn: ['Some Ring (Ring 2)'] }))).toEqual([]);
+  });
+
   it('leaves a threshold hold, a not-closable gap, a set break, a no-gain swap and a gapless swap alone', () => {
     const check = (hold: typeof drop, t: SlotProjection) =>
       kinds(checkPlan({ verdicts: [], hold: [hold], sell: [] }, { ...world(), candidateProjections: projections(t) }), 'avoidable-hold');
@@ -1527,6 +1538,28 @@ describe('checkPlan — avoidable holds and unargued keeps', () => {
     expect(run('attack speed', target({ noTrackedGain: true }))).toEqual([]);
     expect(run('attack speed', target({ gaps: [gap], notClosable: 'not closable' }))).toEqual([]);
     expect(run('attack speed', target({ gaps: [gap], closable: witness() }))).toHaveLength(1);
+  });
+
+  it('does not count a candidate the plan is already using elsewhere', () => {
+    // A ring projects into both fingers: equipping it in Ring 1 leaves the
+    // Ring 2 KEEP nothing to argue against, and the same holds for a held one.
+    const keep = { slot: 'Ring 1', itemId: 'ring01', verdict: 'KEEP' as const, reason: 'attack speed wins' };
+    const equipped = kinds(
+      checkPlan(
+        { verdicts: [keep, { slot: 'Ring 2', itemId: 'ring02', verdict: 'EQUIP', target: 'bag01', reason: 'r' }], hold: [], sell: [] },
+        { ...world(), candidateProjections: projections(target()) },
+      ),
+      'unargued-keep',
+    );
+    expect(equipped).toEqual([]);
+    const held = kinds(
+      checkPlan(
+        { verdicts: [keep], hold: [{ ...drop, itemId: 'bag01' }], sell: [] },
+        { ...world(), candidateProjections: projections(target()) },
+      ),
+      'unargued-keep',
+    );
+    expect(held).toEqual([]);
   });
 
   it('is satisfied by naming one arguable candidate among several, and never checks a SELL on its own', () => {
@@ -1587,6 +1620,9 @@ describe('checkPlan — empty augment sockets', () => {
 
   it('stays silent when everything is capped, when the projection is partial, when nothing legal helps, or when the socket is filled', () => {
     expect(hits(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, input(85)))).toEqual([]);
+    // The projection rounds to 0.1: a 79.9 is capped for this purpose, and
+    // reporting it as "0 under cap" would buy a corrective call on rounding.
+    expect(hits(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, input(79.9)))).toEqual([]);
     expect(hits(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, input(60, ['head'], [{ slot: 'Relic', verdict: 'CRAFT', reason: 'x' }])))).toEqual([]);
     expect(hits(checkPlan({ verdicts: [keepHead], hold: [], sell: [] }, input(60, ['ring'])))).toEqual([]);
     expect(

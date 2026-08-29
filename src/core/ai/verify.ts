@@ -493,6 +493,12 @@ function checkAvoidableHolds(
     if (h.needs?.levels || h.needs?.attributePoints) continue;
     const t = projectionInto(projections, h.itemId, h.slot);
     if (!t?.projection || t.noTrackedGain || !t.gaps.length || !t.closable) continue;
+    // A threshold hold, structurally: an item the character cannot wear today
+    // is not an EQUIP the plan missed, whatever `needs` says — that field is
+    // optional, so a hold that states its level in prose alone would otherwise
+    // be told to equip something it cannot put on. Same for a swap that
+    // un-wears a third item: the witness closes resistances, not requirements.
+    if (!t.wearable || t.unworn.length) continue;
     if (t.setPieces.some((s) => s.before >= 2 && s.after < s.before)) continue;
     if (t.notes.some((n) => n.includes('dual-wield'))) continue;
     const name = input.itemsById.get(h.itemId)?.display ?? `#${h.itemId}`;
@@ -532,6 +538,20 @@ function checkUnarguedKeeps(
     (!!item?.base && text.includes(normalizeName(item.base.name)));
   const list = (items: string[]): string => (items.length > 3 ? `${items.slice(0, 3).join(', ')} and ${items.length - 3} more` : andList(items));
 
+  // A ring projects into both fingers and a one-hander into both hands, so a
+  // candidate this plan is already *using* — equipped into the sibling slot,
+  // held, spent as an enabler or an extraction host — is not one the KEEP here
+  // passed over in silence. A sold one is: that is the failure this check
+  // exists for.
+  const spokenFor = new Set<string>();
+  for (const v of plan.verdicts) {
+    if (v.verdict === 'EQUIP' && v.target) spokenFor.add(v.target);
+    if (v.targetId) spokenFor.add(v.targetId);
+    if (v.componentFrom) spokenFor.add(v.componentFrom);
+    for (const e of v.enablers ?? []) spokenFor.add(e);
+  }
+  for (const h of plan.hold) spokenFor.add(h.itemId);
+
   for (const v of plan.verdicts) {
     if (v.verdict !== 'KEEP') continue;
     const text = normalizeName([v.reason, ...(v.gains ?? []), ...(v.costs ?? [])].join(' '));
@@ -540,7 +560,7 @@ function checkUnarguedKeeps(
     let argued = false;
     for (const [id, cp] of projections) {
       const t = cp.targets.find((x) => x.slot.toLowerCase() === slot);
-      if (!t || !arguable(t)) continue;
+      if (!t || !arguable(t) || spokenFor.has(id)) continue;
       const item = input.itemsById.get(id);
       if (named(text, id, item)) argued = true;
       arguableHere.push(`${item?.display ?? '?'} (\`#${id}\`)`);
@@ -658,7 +678,12 @@ function checkEmptySockets(
   for (const row of projection.resistances) {
     const column = RESIST_COLUMNS.find((c) => c.label === row.label);
     if (!column || column.key === 'physical') continue;
-    if (row.after < row.capAfter) short.set(column.key, { label: row.label, by: Math.round(row.capAfter - row.after) });
+    // The projection rounds to 0.1, so a bare `<` reports "0 under cap" on a
+    // 79.9 and buys a corrective call on rounding — the same trap
+    // `checkOverstatedCaps` keeps its ±2 for. A point is the smallest gap
+    // worth an augment.
+    const by = row.capAfter - row.after;
+    if (by >= 1) short.set(column.key, { label: row.label, by: Math.round(by) });
   }
   if (short.size === 0) return;
   const scalar = (value: StatValue): number => (typeof value === 'number' ? value : 0);
