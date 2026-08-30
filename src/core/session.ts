@@ -195,10 +195,11 @@ export function loadSnapshot(
 export function adviceScope(
   snapshot: CharacterSnapshot,
   includeStash: boolean,
-  opts: { projections?: boolean } = {},
+  opts: { projections?: boolean; reviewStashForSale?: boolean } = {},
 ): { input: ContextInput; doc: ContextDoc } {
   const projections = opts.projections ?? true;
-  const key = `${includeStash ? 'stash' : 'no-stash'}:${projections ? 'projected' : 'plain'}`;
+  const reviewStashForSale = includeStash && (opts.reviewStashForSale ?? false);
+  const key = `${includeStash ? 'stash' : 'no-stash'}:${reviewStashForSale ? 'review' : 'shop'}:${projections ? 'projected' : 'plain'}`;
   const cached = scopeCache.get(snapshot) ?? new Map<string, Scope>();
   const hit = cached.get(key);
   if (hit) return hit;
@@ -208,7 +209,7 @@ export function adviceScope(
     const items = snapshot.resolved.items.filter((i) => i.source !== 'stash' && i.source !== 'transfer');
     input = { ...snapshot.input, resolved: { ...snapshot.resolved, items } };
   }
-  const scope = { input, doc: buildContextDoc(input, { projections }) };
+  const scope = { input, doc: buildContextDoc(input, { projections, reviewStashForSale }) };
   cached.set(key, scope);
   scopeCache.set(snapshot, cached);
   return scope;

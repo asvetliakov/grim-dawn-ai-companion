@@ -52,10 +52,12 @@ export interface PlanCheckInput {
   socketablesById?: ReadonlyMap<string, DbItem>;
   /**
    * The gear ids the document actually offered — §7's ranked candidates plus
-   * its carried-but-unranked line. The coverage check runs only when this is
+   * its unranked disposition list. The coverage check runs only when this is
    * given: an item the model was never shown cannot be demanded a verdict on.
    */
   candidateIds?: ReadonlySet<string>;
+  /** Allow stored candidates to be sold and require a disposition for them. */
+  reviewStashForSale?: boolean;
   /**
    * Component ids that are *free* to install — a loose copy on hand, or a
    * learned blueprint craftable right now (`ContextDoc.freeComponentIds`; §8's
@@ -330,11 +332,10 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
   }
   for (const id of plan.sell) {
     if (!known(id, `SELL entry`)) continue;
-    // Stored items are being kept on purpose. The player moved them there, so
-    // "sell it" second-guesses a decision the dossier already shows was made —
-    // a stored item may be recommended for wearing or holding, never disposal.
+    // Ordinary upgrade-shopping leaves deliberately stored items alone. An
+    // explicit stash-review run changes that contract and may dispose of them.
     const item = input.itemsById.get(id);
-    if (item && (item.source === 'stash' || item.source === 'transfer')) {
+    if (!input.reviewStashForSale && item && (item.source === 'stash' || item.source === 'transfer')) {
       warn(
         'sell-in-stash',
         `SELL on ${item.display}, which is stored in the ${item.source === 'transfer' ? 'transfer stash' : 'personal stash'} — stored items are kept on purpose; leave it unmentioned, or HOLD it if it is worth wearing one day`,
@@ -374,11 +375,10 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     );
   }
 
-  // Coverage: everything the document offered from the *carried bags* must end
-  // somewhere. A verdict, a hold or a sell all count; so does being spent as an
-  // extraction host or named as an enabler — those are dispositions too. Stash
-  // candidates are exempt for the same reason selling them is an error: stored
-  // items owe the plan nothing.
+  // Coverage: carried candidates always owe a disposition; an explicit stash
+  // review extends the same rule to personal and transfer-stash candidates.
+  // A verdict, hold or sell all count, as does being spent as an extraction
+  // host or named as an enabler.
   if (input.candidateIds) {
     const addressed = new Set<string>();
     for (const v of plan.verdicts) {
@@ -393,10 +393,13 @@ export function checkPlan(plan: AdvisorPlan, input: PlanCheckInput, opts: PlanCh
     for (const id of input.candidateIds) {
       if (addressed.has(id)) continue;
       const item = input.itemsById.get(id);
-      if (!item || item.source !== 'inventory') continue;
+      const needsDisposition =
+        item?.source === 'inventory' ||
+        (input.reviewStashForSale && (item?.source === 'stash' || item?.source === 'transfer'));
+      if (!item || !needsDisposition) continue;
       warn(
         'unaddressed-item',
-        `${item.display} (\`#${id}\`) is in the carried bags and was offered in §7, but the plan gives it no verdict, HOLD or SELL`,
+        `${item.display} (\`#${id}\`) is ${item.source === 'inventory' ? 'in the carried bags' : `in the ${item.source === 'transfer' ? 'transfer stash' : 'personal stash'}`} and was offered in §7, but the plan gives it no verdict, HOLD or SELL`,
       );
     }
   }

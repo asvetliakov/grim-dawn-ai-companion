@@ -47,6 +47,7 @@ const DOCUMENT: ContextDocumentView = {
   difficulty: 'Ultimate',
   tokenEstimate: 36_204,
   stashIncluded: true,
+  stashReviewForSale: false,
   markdown: [
     '# Grim Dawn character dossier',
     '',

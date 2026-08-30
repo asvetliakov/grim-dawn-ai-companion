@@ -142,7 +142,8 @@ export class AdviseRunner {
     // What the dossier covers is a stored preference, read at the moment the
     // run starts — the header checkbox writes it through `updateSettings`.
     const includeStash = settings.includeStashInAdvice ?? true;
-    const scope = adviceScope(snapshot, includeStash);
+    const reviewStashForSale = includeStash && (settings.reviewStashForSale ?? false);
+    const scope = adviceScope(snapshot, includeStash, { reviewStashForSale });
 
     const run: ActiveRun = {
       runId: randomUUID(),
@@ -388,6 +389,7 @@ export function planCheckInput(scope: { input: ContextInput; doc: ContextDoc }):
     socketables: new Map(documentSocketables(scope.input).map((item) => [normalizeName(item.name), item])),
     socketablesById: scope.doc.socketablesById,
     candidateIds: scope.doc.candidateIds,
+    reviewStashForSale: scope.doc.reviewStashForSale,
     freeComponentIds: scope.doc.freeComponentIds,
     freeAugmentIds: scope.doc.freeAugmentIds,
     candidateProjections: scope.doc.projections,

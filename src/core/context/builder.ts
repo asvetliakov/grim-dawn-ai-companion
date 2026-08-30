@@ -84,6 +84,11 @@ export interface ContextOptions {
    * to the window — `adviceScope` turns it on for the document the model reads.
    */
   projections?: boolean;
+  /**
+   * Put every included stash gear item in the exhaustive disposition scope,
+   * allowing the advisor to mark stored dead weight for sale. Off by default.
+   */
+  reviewStashForSale?: boolean;
 }
 
 /**
@@ -129,11 +134,12 @@ export interface ContextDoc {
   socketablesById: Map<string, DbItem>;
   /**
    * The gear the document actually put in front of the model: everything §7
-   * ranked, plus the carried-but-unranked line at its foot. The coverage check
-   * measures a plan against this — an item the document never showed cannot be
-   * demanded a verdict on, and one it did show must not simply be ignored.
+   * ranked, plus its unranked disposition list (bags only normally; bags and
+   * stashes during a review). An unseen item cannot be demanded a verdict on.
    */
   candidateIds: Set<string>;
+  /** Whether stored candidates owe a disposition and may be put in `sell`. */
+  reviewStashForSale: boolean;
   /**
    * Components that cost nothing to install: a loose copy on hand, or a
    * learned blueprint craftable right now — the two origins §8's census calls
@@ -172,6 +178,7 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
   // equipped blocks are never touched — they are the parts a swap is judged on.
   const tightest = CAP_LADDER[CAP_LADDER.length - 1] ?? 3;
   const projections = opts.projections ?? false;
+  const reviewStashForSale = opts.reviewStashForSale ?? false;
   const ladder: Trim[] = [
     // A projection is derivable from the rest of the document; a dropped
     // candidate is not. So the projections go first, before any candidate does.
@@ -195,10 +202,15 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
   // Projections are computed once and shared across the trim rungs — a rung
   // only ever shrinks the candidate set, so nothing new is ever needed.
   const projectionCache = new Map<ResolvedItem, CandidateProjection>();
-  let doc = render(input, { perGroup: startCap, projections, note: 'nothing trimmed' }, projectionCache);
+  let doc = render(
+    input,
+    { perGroup: startCap, projections, note: 'nothing trimmed' },
+    projectionCache,
+    reviewStashForSale,
+  );
   for (const step of ladder) {
     if (estimateTokens(doc.text) <= maxTokens) break;
-    doc = render(input, step, projectionCache);
+    doc = render(input, step, projectionCache, reviewStashForSale);
     trimmed.push(step.note);
   }
 
@@ -220,6 +232,7 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
     itemsById,
     socketablesById,
     candidateIds: doc.candidateIds,
+    reviewStashForSale,
     freeComponentIds: doc.freeComponentIds,
     freeAugmentIds: doc.freeAugmentIds,
     projections: doc.projections,
@@ -297,6 +310,7 @@ function render(
   input: ContextInput,
   trim: Trim,
   projectionCache: Map<ResolvedItem, CandidateProjection>,
+  reviewStashForSale: boolean,
 ): {
   text: string;
   candidateIds: Set<string>;
@@ -317,6 +331,7 @@ function render(
     ids,
     socketableIds,
     projections: trim.projections ? projectionCache : new Map(),
+    reviewStashForSale,
     equipped,
     invested,
     ranks: new Map(input.aggregate.ranks.map((r) => [r.record, r])),
@@ -330,7 +345,7 @@ function render(
   buildProfile(out, ctx, trim);
   equippedSection(out, ctx);
   const selection = candidateSelection(ctx, trim.perGroup);
-  const fodder = bagFodder(ctx, selection);
+  const fodder = unrankedGear(ctx, selection);
   const components = componentCensus(ctx, selection);
   const augments = augmentCensus(ctx);
   if (trim.projections) {
@@ -402,6 +417,8 @@ interface RenderContext extends ContextInput {
   ids: Map<ResolvedItem, string>;
   /** Projected swaps by candidate — empty when this render prints none. */
   projections: ReadonlyMap<ResolvedItem, CandidateProjection>;
+  /** Whether included stored gear owes a disposition and may be sold. */
+  reviewStashForSale: boolean;
   /** Component/augment record path → its dossier id. */
   socketableIds: Map<string, string>;
   equipped: ResolvedItem[];
@@ -1806,10 +1823,10 @@ function candidateSelection(ctx: RenderContext, perGroup: number): CandidateSele
 }
 
 /**
- * The carried gear §7 did not rank: outside the level window, or Common
- * covering nothing. Bags only — the same items in a stash stay unlisted,
- * because stored items are being kept on purpose and the plan is told to leave
- * them alone.
+ * Gear §7 did not rank: outside the level window, or Common covering nothing.
+ * Bags are always listed. Stored gear joins them only for an explicit stash
+ * review; ordinary upgrade-shopping keeps the historical leave-stored-items-
+ * alone behaviour.
  *
  * Listed by name and id, without stats, so the plan can give each one the
  * disposition the coverage rule demands — mostly `sell`. Before this line
@@ -1817,7 +1834,7 @@ function candidateSelection(ctx: RenderContext, perGroup: number): CandidateSele
  * silent about a third of what the character was actually carrying, and the
  * reader could not tell "sell it" from "never saw it".
  */
-function bagFodder(
+function unrankedGear(
   ctx: RenderContext,
   selection: CandidateSelection,
 ): { item: ResolvedItem; group: EquipGroup }[] {
@@ -1825,7 +1842,10 @@ function bagFodder(
   for (const list of selection.byGroup.values()) for (const c of list) ranked.add(c.item);
   const out: { item: ResolvedItem; group: EquipGroup }[] = [];
   for (const item of ctx.resolved.items) {
-    if (item.source !== 'inventory' || ranked.has(item)) continue;
+    const inScope =
+      item.source === 'inventory' ||
+      (ctx.reviewStashForSale && (item.source === 'stash' || item.source === 'transfer'));
+    if (!inScope || ranked.has(item)) continue;
     const group = equipGroup(item.base);
     if (!group) continue;
     out.push({ item, group });
@@ -1847,7 +1867,7 @@ function candidatesSection(
   if (ctx.projections.size) {
     out.line();
     out.line(
-      '**Projected swaps.** Under each candidate, `projected in <slot>` is the tool\'s own arithmetic for that one swap against the loadout §3 and §5 describe: the save with the candidate in that slot, re-aggregated and diffed. Its sockets are **carried over** where they legally can be: the outgoing item\'s component refitted (a loose or craftable copy, else by salvaging the outgoing item) and its augment re-bought where a reached vendor sells it — the `sockets:` clause says which, and what it costs, so the figures are the item\'s own delta and not the socket package\'s. A socket the candidate already holds stays as saved, and an empty socket it still has is a further gain not counted; a carried-over component is projected without a rolled completion bonus, a slight understatement. Use it in place of your own subtraction. Where the swap leaves a cappable resistance short, `closable:` is one re-assignment of the loadout\'s armour augment sockets and the incoming component socket that closes every gap the swap opens — verified by the tool, ids included, a witness that it can be done and not a recommendation of how; `not closable` means by those means alone, and leaves jewellery and weapon augments, other components and joint moves to you. It sees exactly what §3 counts and **nothing on §3\'s exclusion list**: procs, granted skills, on-hit effects and set-completion *potential* are for you to weigh. **Projections do not add**: each is one swap against today\'s loadout, so a joint move is yours to sum from §3\'s rows, and past a cap the sum is not the sum of the parts. `no tracked figure improves` means exactly that and is **not a disposition** — a carried item still needs `hold` or `sell`, and a stored item is never sold. A ring, and a one-hander on a dual-wielder, is projected into each slot it could take.',
+      `**Projected swaps.** Under each candidate, \`projected in <slot>\` is the tool's own arithmetic for that one swap against the loadout §3 and §5 describe: the save with the candidate in that slot, re-aggregated and diffed. Its sockets are **carried over** where they legally can be: the outgoing item's component refitted (a loose or craftable copy, else by salvaging the outgoing item) and its augment re-bought where a reached vendor sells it — the \`sockets:\` clause says which, and what it costs, so the figures are the item's own delta and not the socket package's. A socket the candidate already holds stays as saved, and an empty socket it still has is a further gain not counted; a carried-over component is projected without a rolled completion bonus, a slight understatement. Use it in place of your own subtraction. Where the swap leaves a cappable resistance short, \`closable:\` is one re-assignment of the loadout's armour augment sockets and the incoming component socket that closes every gap the swap opens — verified by the tool, ids included, a witness that it can be done and not a recommendation of how; \`not closable\` means by those means alone, and leaves jewellery and weapon augments, other components and joint moves to you. It sees exactly what §3 counts and **nothing on §3's exclusion list**: procs, granted skills, on-hit effects and set-completion *potential* are for you to weigh. **Projections do not add**: each is one swap against today's loadout, so a joint move is yours to sum from §3's rows, and past a cap the sum is not the sum of the parts. \`no tracked figure improves\` means exactly that and is **not a disposition** — ${ctx.reviewStashForSale ? 'every offered item needs `hold` or `sell` when it is not equipped' : 'a carried item still needs `hold` or `sell`, and a stored item is never sold'}. A ring, and a one-hander on a dual-wielder, is projected into each slot it could take.`,
     );
     const levers = resistanceLevers(ctx, components, augments);
     if (levers.length) {
@@ -1875,15 +1895,24 @@ function candidatesSection(
   }
   if (selection.outOfWindow) {
     out.line();
-    out.line(`*(${selection.outOfWindow} further item(s) fell outside the level window around level ${ctx.aggregate.level} — −${LEVEL_WINDOW.below} below it, +${LEVEL_WINDOW.above} above it (+${LEVEL_WINDOW.aboveEndgame} for Epic and Legendary) — or were Common rarity covering nothing. The carried ones are named below; stored ones are omitted.)*`);
+    out.line(`*(${selection.outOfWindow} further item(s) fell outside the level window around level ${ctx.aggregate.level} — −${LEVEL_WINDOW.below} below it, +${LEVEL_WINDOW.above} above it (+${LEVEL_WINDOW.aboveEndgame} for Epic and Legendary) — or were Common rarity covering nothing. ${ctx.reviewStashForSale ? 'All gear in disposition scope is named below.' : 'The carried ones are named below; stored ones are omitted.'})*`);
   }
   if (fodder.length) {
     out.line();
-    out.line(`### Carried but unranked — ${fodder.length} item(s) in the bags`);
-    out.line('Not ranked above (outside the level window, or Common covering nothing), but the character is carrying them, so each needs a disposition: put it in `sell` unless it is genuinely worth keeping, and say why if it is.');
+    out.line(
+      ctx.reviewStashForSale
+        ? `### Unranked gear to disposition — ${fodder.length} item(s) in bags and stashes`
+        : `### Carried but unranked — ${fodder.length} item(s) in the bags`,
+    );
+    out.line(
+      ctx.reviewStashForSale
+        ? 'Not ranked above (outside the level window, or Common covering nothing), but stash review is enabled, so each needs a disposition: put it in `sell` unless it is genuinely worth equipping or holding, and say why if it is.'
+        : 'Not ranked above (outside the level window, or Common covering nothing), but the character is carrying them, so each needs a disposition: put it in `sell` unless it is genuinely worth keeping, and say why if it is.',
+    );
     for (const { item, group } of fodder) {
       const level = item.requirements?.level ?? item.base?.levelReq;
-      out.line(`- **${item.display}** \`#${ctx.ids.get(item) ?? item.id}\` (${group}${level ? `, level ${level}` : ''})`);
+      const source = ctx.reviewStashForSale ? `${SOURCE_TAG[item.source] ?? `[${item.source}]`} ` : '';
+      out.line(`- ${source}**${item.display}** \`#${ctx.ids.get(item) ?? item.id}\` (${group}${level ? `, level ${level}` : ''})`);
     }
   }
 }
@@ -2923,6 +2952,12 @@ function blueprints(out: Writer, ctx: RenderContext, selection: CandidateSelecti
 function task(out: Writer, ctx: RenderContext): void {
   out.h(2, '11. Task');
   out.line(`You are advising **${ctx.save.name}** on gear. Everything you need is above; do not rely on remembered Grim Dawn knowledge that conflicts with §2.`);
+  out.line();
+  out.line(
+    ctx.reviewStashForSale
+      ? '**Stash review is ON.** Every personal- and transfer-stash gear item §7 offers owes exactly one EQUIP, HOLD or SELL disposition, just like carried gear. Stored items that earn no place may and should go in `sell`.'
+      : '**Stash review is OFF.** Stored gear may be recommended for EQUIP or HOLD when it earns that, but must never go in `sell`; otherwise leave it unmentioned. Carried gear still owes a disposition.',
+  );
   out.line();
   out.line('Optimise the loadout **as a whole** — gear, components and augments assigned together — not slot by slot. A component or augment freed by one change is available to another.');
   out.line();

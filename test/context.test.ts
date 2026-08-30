@@ -521,6 +521,7 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
    */
   it('exposes what §7 offered as candidateIds', async () => {
     const doc = buildContextDoc(await context('_Suchka'));
+    expect(doc.reviewStashForSale).toBe(false);
     expect(doc.candidateIds.size).toBeGreaterThan(0);
     for (const id of doc.candidateIds) {
       const item = doc.itemsById.get(id);
@@ -536,6 +537,26 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
         expect(doc.candidateIds.has(id!), id).toBe(true);
         expect(doc.itemsById.get(id!)!.source).toBe('inventory');
       }
+    }
+  });
+
+  it('puts stored gear in exhaustive disposition scope only for a stash review', async () => {
+    const input = await context('_Suchka');
+    const shopping = buildContextDoc(input);
+    const review = buildContextDoc(input, { reviewStashForSale: true });
+
+    expect(shopping.reviewStashForSale).toBe(false);
+    expect(review.reviewStashForSale).toBe(true);
+    expect(shopping.markdown).toContain('**Stash review is OFF.**');
+    expect(review.markdown).toContain('**Stash review is ON.**');
+    expect(review.markdown).toContain('### Unranked gear to disposition');
+    expect(review.candidateIds.size).toBeGreaterThanOrEqual(shopping.candidateIds.size);
+
+    const start = review.markdown.indexOf('### Unranked gear to disposition');
+    const block = review.markdown.slice(start, review.markdown.indexOf('\n## ', start));
+    expect(block).toMatch(/\[(stash|transfer)\]/);
+    for (const [, id] of block.matchAll(/`#([^`]+)`/g)) {
+      expect(review.candidateIds.has(id!), id).toBe(true);
     }
   });
 

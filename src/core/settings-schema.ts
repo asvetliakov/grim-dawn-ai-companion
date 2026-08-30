@@ -73,6 +73,12 @@ export const settingsSchema = z.object({
    */
   includeStashInAdvice: z.boolean().optional(),
   /**
+   * Give every included personal/transfer-stash gear item an explicit
+   * equip/hold/sell disposition. Absent means false: merely including the
+   * stash still shops it for upgrades without treating it as a clean-out job.
+   */
+  reviewStashForSale: z.boolean().optional(),
+  /**
    * Keep the window above the game's.
    *
    * A *choice*, so it lives here — unlike the window's size and position, which
