@@ -198,6 +198,24 @@ check('the run was written to advice/<character>/<run>.json', runFiles.length ==
 const stored = JSON.parse(readFileSync(join(adviceDir, runFiles[0] ?? 'missing.json'), 'utf8'));
 check('the stored envelope carries the question', stored.question === QUESTION);
 check('and the table it rendered', Array.isArray(stored.verdictRows), `${stored.verdictRows?.length} row(s)`);
+
+// The answer is reading material, but it also gets carried into notes and chat.
+// Prove both routes: ordinary drag-to-select, and the button that preserves its
+// Markdown structure on the system clipboard.
+await page.locator('.advice-tabs .tab', { hasText: 'Full answer' }).click();
+const answerText = await page.locator('.advice-answer').innerText();
+const selectable = await page.locator('.advice-answer').evaluate((element) => getComputedStyle(element).userSelect);
+check('the full answer can be selected as text', selectable === 'text', selectable);
+await page.locator('.copy-answer').click();
+const copiedText = await app.evaluate(({ clipboard }) => clipboard.readText());
+const firstAnswerLine = answerText.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
+check(
+  'and Copy answer puts the complete answer on the system clipboard',
+  copiedText.length > 0 && firstAnswerLine.length > 0 && copiedText.includes(firstAnswerLine),
+  `${copiedText.length} character(s)`,
+);
+check('with visible confirmation', (await page.locator('.copy-answer').innerText()).trim() === 'Copied');
+await page.locator('.advice-tabs .tab', { hasText: 'Plan' }).click();
 // And the loadout it was written against, which is what lets a stored run say
 // whether it is still about the save in front of the reader.
 check(

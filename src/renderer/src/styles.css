@@ -1603,11 +1603,17 @@ h3 {
   margin-bottom: 10px;
 }
 
+.advice-tabs .copy-answer {
+  margin-left: auto;
+}
+
 /* Prose, not a table: a measure this long is read line by line, and the panel
    is as wide as the loadout beside it. */
 .advice-answer {
   font-size: 14px;
   max-width: 78ch;
+  user-select: text;
+  cursor: text;
 }
 
 .markdown .md-h {

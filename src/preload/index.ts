@@ -28,6 +28,7 @@ const invoke = <T>(method: keyof GdApi, ...args: unknown[]): Promise<T> =>
 
 const api: GdApi = {
   getBootstrap: () => invoke('getBootstrap'),
+  copyText: (text: string) => invoke<void>('copyText', text),
   getSnapshot: (character?: string) => invoke<UiSnapshot>('getSnapshot', character),
   setActiveCharacter: (name: string) => invoke<void>('setActiveCharacter', name),
   updateSettings: (patch: Partial<Settings>) => invoke<Settings>('updateSettings', patch),
