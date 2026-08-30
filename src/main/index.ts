@@ -7,7 +7,7 @@
  */
 
 import { join } from 'node:path';
-import { app, BrowserWindow, Menu, screen, session as electronSession, shell } from 'electron';
+import { app, BrowserWindow, clipboard, Menu, screen, session as electronSession, shell } from 'electron';
 
 import { AdviseRunner } from './advise.js';
 import { createApi, registerHandlers } from './ipc.js';
@@ -150,6 +150,7 @@ void app.whenReady().then(() => {
   registerHandlers(
     createApi({
       getBootstrap: () => state.getBootstrap(),
+      copyText: (text) => clipboard.writeText(text),
       getSnapshot: (character) => state.getSnapshot(character),
       setActiveCharacter: (name) => state.setActiveCharacter(name),
       updateSettings: async (patch) => {

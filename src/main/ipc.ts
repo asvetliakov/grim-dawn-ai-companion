@@ -26,6 +26,7 @@ export function channelName(method: string): string {
 /** The whole API over one session, with the advise run manager behind it. */
 export function createApi(impl: {
   getBootstrap: GdApi['getBootstrap'];
+  copyText: (text: string) => void;
   getSnapshot: (character?: string) => Promise<UiSnapshot>;
   setActiveCharacter: (name: string) => Promise<void>;
   updateSettings: (patch: Partial<Settings>) => Promise<Settings>;
@@ -44,6 +45,7 @@ export function createApi(impl: {
     // runner: reading a file and reading a field are not asynchronous, and
     // pretending otherwise there would hide that from the run manager's tests.
     cancelAdvise: async (runId: string) => impl.cancelAdvise(runId),
+    copyText: async (text: string) => impl.copyText(text),
     getAdviseStatus: async () => impl.getAdviseStatus(),
     getAdviceHistory: async (character: string) => impl.getAdviceHistory(character),
     getAdvice: async (character: string, id: string) => impl.getAdvice(character, id),

@@ -240,6 +240,7 @@ export function AdvicePanel({
             {label}
           </button>
         ))}
+        {tab === 'answer' && prose && <CopyAnswerButton text={prose} />}
       </div>
 
       {/* The prose, without the plan block that ends it. Everything in that block
@@ -753,3 +754,38 @@ const TABS: readonly (readonly ['plan' | 'answer', string])[] = [
   ['plan', 'Plan'],
   ['answer', 'Full answer'],
 ];
+
+/** Copy the unrendered Markdown so headings, lists and tables survive a paste. */
+function CopyAnswerButton({ text }: { text: string }): React.ReactNode {
+  const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const reset = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (reset.current) clearTimeout(reset.current);
+    },
+    [],
+  );
+
+  const copy = async (): Promise<void> => {
+    if (reset.current) clearTimeout(reset.current);
+    try {
+      await window.gd.copyText(text);
+      setStatus('copied');
+    } catch {
+      setStatus('failed');
+    }
+    reset.current = setTimeout(() => setStatus('idle'), 1800);
+  };
+
+  return (
+    <button
+      type="button"
+      className="tab copy-answer"
+      onClick={() => void copy()}
+      title="Copy the complete answer as Markdown"
+    >
+      {status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : 'Copy answer'}
+    </button>
+  );
+}

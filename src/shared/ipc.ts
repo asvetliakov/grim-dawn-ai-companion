@@ -149,6 +149,8 @@ export interface DetectedPaths {
 
 export interface GdApi {
   getBootstrap(): Promise<Bootstrap>;
+  /** Put plain text on the system clipboard. */
+  copyText(text: string): Promise<void>;
   getSnapshot(character?: string): Promise<UiSnapshot>;
   setActiveCharacter(name: string): Promise<void>;
   updateSettings(patch: Partial<Settings>): Promise<Settings>;
@@ -192,6 +194,7 @@ export interface GdApi {
 /** Every request channel, so main and preload cannot spell one differently. */
 export const IPC_CHANNELS = [
   'getBootstrap',
+  'copyText',
   'getSnapshot',
   'setActiveCharacter',
   'updateSettings',
