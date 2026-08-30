@@ -50,6 +50,7 @@ export function App(): React.ReactNode {
         onSelectAdvice={session.selectAdvice}
         onNewRun={session.newRun}
         onIncludeStash={(include) => session.updateSettings({ includeStashInAdvice: include })}
+        onReviewStash={(review) => session.updateSettings({ reviewStashForSale: review })}
         onSettings={() => session.openPane('settings')}
       />
 

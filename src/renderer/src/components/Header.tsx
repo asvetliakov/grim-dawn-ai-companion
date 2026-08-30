@@ -27,6 +27,7 @@ export function Header({
   onSelectAdvice,
   onNewRun,
   onIncludeStash,
+  onReviewStash,
   onSettings,
 }: {
   bootstrap?: Bootstrap;
@@ -46,6 +47,8 @@ export function Header({
   onNewRun?: () => void;
   /** Persist whether the next run's dossier includes the stashes. */
   onIncludeStash?: (include: boolean) => void;
+  /** Persist whether included stash gear should receive sale dispositions. */
+  onReviewStash?: (review: boolean) => void;
   /** Open the settings pane — which is also where the paths now live. */
   onSettings?: () => void;
 }): React.ReactNode {
@@ -53,6 +56,7 @@ export function Header({
   const characters = bootstrap?.characters ?? [];
   const override = bootstrap?.settings.difficultyOverride ?? '';
   const includeStash = bootstrap?.settings.includeStashInAdvice ?? true;
+  const reviewStash = bootstrap?.settings.reviewStashForSale ?? false;
 
   return (
     <header className="app-header">
@@ -162,6 +166,27 @@ export function Header({
               onChange={(e) => onIncludeStash(e.target.checked)}
             />
             Stash
+          </label>
+        )}
+        {includeStash && (!hasAdvice || runningAdvice) && onReviewStash && (
+          <label
+            className="include-stash"
+            onMouseOver={(e) =>
+              tooltip.showNote(
+                e.currentTarget,
+                'Mark stored dead weight for sale',
+                'Checked, every gear item in your personal and transfer stash gets an equip, hold or sell decision, and sell recommendations are marked on the stash grid. The app never moves or sells anything itself. Unchecked, the model may shop the stash for upgrades but leaves rejected stored items alone.',
+              )
+            }
+            onMouseLeave={tooltip.hide}
+          >
+            <input
+              type="checkbox"
+              checked={reviewStash}
+              disabled={runningAdvice}
+              onChange={(e) => onReviewStash(e.target.checked)}
+            />
+            Review stash
           </label>
         )}
         {hasAdvice && onNewRun && (

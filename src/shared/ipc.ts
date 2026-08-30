@@ -137,8 +137,10 @@ export interface ContextDocumentView {
   difficulty: Difficulty;
   markdown: string;
   tokenEstimate: number;
-  /** Whether the stashes are in it, which is the one thing the toggle changes. */
+  /** Whether personal and transfer stashes are included as upgrade sources. */
   stashIncluded: boolean;
+  /** Whether included stored gear owes an equip/hold/sell disposition. */
+  stashReviewForSale: boolean;
 }
 
 /** Where the tool can see a Grim Dawn install and its saves on this machine. */

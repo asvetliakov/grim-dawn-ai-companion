@@ -990,6 +990,7 @@ function contextFor(
   opts: DocRequest,
   includeStash = true,
   projections = true,
+  reviewStashForSale = false,
 ): {
   name: string;
   input: ContextInput;
@@ -1008,7 +1009,7 @@ function contextFor(
   );
   // `adviceScope` filters the stashes out of the document when asked; with them
   // included it hands back the snapshot's own pair untouched.
-  const scope = adviceScope(snap, includeStash, { projections });
+  const scope = adviceScope(snap, includeStash, { projections, reviewStashForSale });
   // The loadout the document describes, so a stored envelope can later say
   // whether it is still describing the save in front of the reader.
   return {
@@ -1213,6 +1214,7 @@ program
   .option('--dry-run', 'build and report the document without calling the provider')
   .option('--no-repair', 'do not spend a second call correcting a plan that fails the checks')
   .option('--no-stash', 'leave the personal and transfer stash out of the dossier (materials always ship)')
+  .option('--review-stash', 'give every included stash gear item an equip, hold or sell disposition')
   .option('--no-projections', 'leave the projected swap lines out of §7 (the pre-Stage-11 document; the A/B control arm)')
   .option('--no-fast', 'codex only: skip fast mode (service_tier=fast), trading speed for a lower credit burn')
   .option('--refresh', 'rebuild the database first')
@@ -1232,6 +1234,7 @@ program
       dryRun?: boolean;
       repair?: boolean;
       stash?: boolean;
+      reviewStash?: boolean;
       projections?: boolean;
       fast?: boolean;
       refresh?: boolean;
@@ -1287,6 +1290,8 @@ program
         // The flag wins; without it the window's stored preference applies, so
         // a CLI run and a window run on the same save read the same dossier.
         const includeStash = opts.stash === false ? false : (settings.includeStashInAdvice ?? true);
+        const reviewStashForSale =
+          includeStash && (opts.reviewStash === true || (settings.reviewStashForSale ?? false));
         const { name, input, doc, worn, wornSockets, snapshot } = contextFor(
           db,
           {
@@ -1296,6 +1301,7 @@ program
           },
           includeStash,
           opts.projections !== false,
+          reviewStashForSale,
         );
 
         console.error(
@@ -1329,6 +1335,7 @@ program
           socketables,
           socketablesById: doc.socketablesById,
           candidateIds: doc.candidateIds,
+          reviewStashForSale: doc.reviewStashForSale,
           freeComponentIds: doc.freeComponentIds,
           freeAugmentIds: doc.freeAugmentIds,
           candidateProjections: doc.projections,

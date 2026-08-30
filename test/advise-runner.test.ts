@@ -227,6 +227,12 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     expect(full.doc.projections.size).toBeGreaterThan(0);
     expect(full.doc.markdown).toContain('- projected in ');
 
+    const review = adviceScope(snapshot, true, { reviewStashForSale: true });
+    expect(review.doc).not.toBe(full.doc);
+    expect(review.doc.reviewStashForSale).toBe(true);
+    expect(review.doc.markdown).toContain('**Stash review is ON.**');
+    expect(adviceScope(snapshot, true, { reviewStashForSale: true }).doc).toBe(review.doc);
+
     const filtered = adviceScope(snapshot, false);
     expect(filtered.doc.projections.size).toBeGreaterThan(0);
     expect(filtered.doc.itemsById.size).toBeLessThan(snapshot.doc.itemsById.size);
@@ -237,6 +243,7 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     expect(filtered.doc.markdown).not.toContain('[stash]');
     expect(filtered.doc.markdown).not.toContain('[transfer]');
     expect([...filtered.doc.itemsById.values()].some((i) => i.source === 'materials')).toBe(true);
+    expect(adviceScope(snapshot, false, { reviewStashForSale: true }).doc.reviewStashForSale).toBe(false);
   });
 
   it('checks the plan against the document, not against the database', () => {
@@ -245,6 +252,7 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     expect(check.socketablesById).toBe(snapshot.doc.socketablesById);
     // Coverage is measured against what §7 offered, not against every id.
     expect(check.candidateIds).toBe(snapshot.doc.candidateIds);
+    expect(check.reviewStashForSale).toBe(snapshot.doc.reviewStashForSale);
     // Keyed by normalized name, which is the fallback for an answer that gave no
     // socketable id at all.
     expect(check.socketables.size).toBeGreaterThan(0);

@@ -158,20 +158,22 @@ export class SessionState {
   /**
    * The document the next advice run would send, for the context viewer.
    *
-   * Built through `adviceScope`, exactly as a run builds it, so the stash toggle
-   * shows through — a viewer that rendered the unfiltered document would be
-   * showing something no run has ever been sent.
+   * Built through `adviceScope`, exactly as a run builds it, so both stash
+   * scope choices show through — a viewer that rendered a different document
+   * would be showing something no run has ever been sent.
    */
   async contextDocument(): Promise<ContextDocumentView> {
     const snap = await this.characterSnapshot();
     const stashIncluded = this.settings.includeStashInAdvice ?? true;
-    const { doc } = adviceScope(snap, stashIncluded);
+    const reviewStashForSale = stashIncluded && (this.settings.reviewStashForSale ?? false);
+    const { doc } = adviceScope(snap, stashIncluded, { reviewStashForSale });
     return {
       character: snap.character,
       difficulty: snap.difficulty,
       markdown: doc.markdown,
       tokenEstimate: doc.tokenEstimate,
       stashIncluded,
+      stashReviewForSale: doc.reviewStashForSale,
     };
   }
 

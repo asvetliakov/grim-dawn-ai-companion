@@ -51,7 +51,7 @@ export function ContextViewer({
 
   const subtitle = doc
     ? `${doc.character} · ${doc.difficulty} · ~${doc.tokenEstimate.toLocaleString('en-US')} tokens · ` +
-      `${doc.stashIncluded ? 'stashes included' : 'stashes excluded'}`
+      `${doc.stashIncluded ? `stashes included · sale review ${doc.stashReviewForSale ? 'on' : 'off'}` : 'stashes excluded'}`
     : undefined;
 
   return (

@@ -904,15 +904,18 @@ describe('checkPlan', () => {
     expect(ghost.map((x) => x.kind)).toEqual(['unknown-id']);
   });
 
-  /**
-   * Stored items are being kept on purpose — the player moved them there. A
-   * plan may recommend wearing or holding one; disposing of it second-guesses
-   * a decision the dossier already shows was made.
-   */
-  it('rejects SELL on an item that lives in the stash', () => {
+  it('rejects SELL on a stored item during ordinary stash shopping', () => {
     const warnings = checkPlan({ verdicts: [], hold: [], sell: ['ring02'] }, world());
     expect(warnings.map((x) => x.kind)).toEqual(['sell-in-stash']);
     expect(warnings[0]!.message).toContain('Spare Band');
+  });
+
+  it('allows SELL on a stored item during an explicit stash review', () => {
+    const warnings = checkPlan(
+      { verdicts: [], hold: [], sell: ['ring02'] },
+      { ...world(), reviewStashForSale: true },
+    );
+    expect(warnings).toEqual([]);
   });
 
   /**
@@ -932,6 +935,18 @@ describe('checkPlan', () => {
     // check cannot run at all, which is what an older caller gets.
     expect(checkPlan({ verdicts: [], hold: [], sell: ['bag01'] }, w)).toEqual([]);
     expect(checkPlan({ verdicts: [], hold: [], sell: [] }, world())).toEqual([]);
+  });
+
+  it('extends exhaustive dispositions to stored candidates during a stash review', () => {
+    const w = {
+      ...world(),
+      candidateIds: new Set(['ring02', 'bag01']),
+      reviewStashForSale: true,
+    };
+    const ignored = checkPlan({ verdicts: [], hold: [], sell: [] }, w);
+    expect(ignored.map((x) => x.kind)).toEqual(['unaddressed-item', 'unaddressed-item']);
+    expect(ignored.map((x) => x.message).join('\n')).toContain('personal stash');
+    expect(checkPlan({ verdicts: [], hold: [], sell: ['ring02', 'bag01'] }, w)).toEqual([]);
   });
 
   it('checks nextLevels unlocks like any other id', () => {
