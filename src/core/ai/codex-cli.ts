@@ -26,6 +26,9 @@
  */
 
 // Same runaway ceiling as claude-cli, for the same measured reasons.
+import { existsSync } from 'node:fs';
+import { win32 } from 'node:path';
+
 import { DEFAULT_TIMEOUT_MS } from './claude-cli.js';
 import { ADVISOR_SYSTEM_PROMPT, buildUserTurn } from './prompt.js';
 import {
@@ -76,6 +79,84 @@ export interface CodexCliOptions {
 const NOT_LOGGED_IN =
   'the codex CLI is not signed in — run `codex login` once to sign in with your ChatGPT account, then try again';
 
+interface CodexLaunch {
+  command: string;
+  argsPrefix: readonly string[];
+}
+
+/**
+ * Windows cannot execute npm's `.cmd`/`.ps1` shims through `spawn()` without a
+ * shell. A shell is the wrong answer here: the system prompt is an argument,
+ * contains shell metacharacters, and is far longer than cmd.exe's command-line
+ * limit. Resolve the official npm launcher's native executable instead.
+ *
+ * Kept injectable so the path arithmetic is testable on every host. If a future
+ * package layout is unfamiliar, leave the command untouched and let the normal
+ * spawn error name what failed rather than guessing.
+ */
+export function resolveWindowsCodexLaunch(
+  binary: string,
+  env: NodeJS.ProcessEnv = process.env,
+  arch: NodeJS.Architecture = process.arch,
+  fileExists: (path: string) => boolean = existsSync,
+): CodexLaunch {
+  const entry = findWindowsCommand(binary, env, fileExists);
+  if (!entry) return { command: binary, argsPrefix: [] };
+  if (win32.extname(entry).toLowerCase() === '.exe') return { command: entry, argsPrefix: [] };
+
+  const packageRoot =
+    win32.basename(entry).toLowerCase() === 'codex.js'
+      ? win32.dirname(win32.dirname(entry))
+      : win32.join(win32.dirname(entry), 'node_modules', '@openai', 'codex');
+  const target = arch === 'arm64' ? 'aarch64-pc-windows-msvc' : 'x86_64-pc-windows-msvc';
+  const platformPackage = arch === 'arm64' ? 'codex-win32-arm64' : 'codex-win32-x64';
+  const executable = [
+    win32.join(
+      packageRoot,
+      'node_modules',
+      '@openai',
+      platformPackage,
+      'vendor',
+      target,
+      'bin',
+      'codex.exe',
+    ),
+    win32.join(packageRoot, 'vendor', target, 'bin', 'codex.exe'),
+  ].find(fileExists);
+  if (executable) return { command: executable, argsPrefix: [] };
+
+  // Older/newer Codex packages may arrange the native optional dependency
+  // differently. Their public JS launcher remains a safe fallback: unlike the
+  // npm command shim it is handed to node.exe as an ordinary argv entry.
+  const script = win32.join(packageRoot, 'bin', 'codex.js');
+  const node = fileExists(script) ? findWindowsCommand('node', env, fileExists, ['.exe']) : undefined;
+  return node ? { command: node, argsPrefix: [script] } : { command: binary, argsPrefix: [] };
+}
+
+function findWindowsCommand(
+  command: string,
+  env: NodeJS.ProcessEnv,
+  fileExists: (path: string) => boolean,
+  suffixes = ['.exe', '.cmd', '.ps1', ''],
+): string | undefined {
+  const hasDirectory = win32.isAbsolute(command) || command.includes('\\') || command.includes('/');
+  const directories = hasDirectory
+    ? [win32.dirname(command)]
+    : (Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1] ?? '')
+        .split(';')
+        .map((part) => part.trim().replace(/^"|"$/g, ''))
+        .filter(Boolean);
+  const name = hasDirectory ? win32.basename(command) : command;
+  const candidates = win32.extname(name) ? [''] : suffixes;
+  for (const directory of directories) {
+    for (const suffix of candidates) {
+      const path = win32.join(directory, `${name}${suffix}`);
+      if (fileExists(path)) return path;
+    }
+  }
+  return undefined;
+}
+
 export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvider {
   const binary = opts.binary ?? 'codex';
   const model = opts.model ?? CODEX_DEFAULT_MODEL;
@@ -84,6 +165,12 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const systemPrompt = opts.systemPrompt ?? ADVISOR_SYSTEM_PROMPT;
   const spawn = opts.spawn ?? defaultSpawn;
+  // Test doubles receive the literal command they were given. Real Windows
+  // runs unwrap npm's shell shim, which node:child_process cannot execute.
+  const launch =
+    opts.spawn === undefined && process.platform === 'win32'
+      ? resolveWindowsCodexLaunch(binary)
+      : { command: binary, argsPrefix: [] };
   // Per-instance rather than a module constant, because it names the binary it
   // looked for — which a settings path makes worth stating.
   const notInstalled = notFoundMessage(
@@ -92,19 +179,25 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
     'install the Codex CLI (`npm install -g @openai/codex`)',
   );
   const run = (args: readonly string[], input: string, timeout: number, signal?: AbortSignal, onStdout?: (chunk: string) => void): Promise<RunResult> =>
-    runCommand(spawn, binary, args, input, timeout, signal, {
+    runCommand(spawn, launch.command, [...launch.argsPrefix, ...args], input, timeout, signal, {
       label: 'codex CLI',
       notFoundMessage: notInstalled,
       ...(onStdout ? { onStdout } : {}),
     });
 
   /** `codex login status` reads a local file — cheap enough to gate every run on. */
-  const loginStatus = async (): Promise<'ok' | 'logged-out' | 'missing'> => {
+  const loginStatus = async (): Promise<
+    | { kind: 'ok' }
+    | { kind: 'logged-out' }
+    | { kind: 'missing' }
+    | { kind: 'failed'; error: Error }
+  > => {
     try {
       const probe = await run(['login', 'status'], '', 15_000);
-      return probe.code === 0 ? 'ok' : 'logged-out';
+      return probe.code === 0 ? { kind: 'ok' } : { kind: 'logged-out' };
     } catch (err) {
-      return (err as Error).message === notInstalled ? 'missing' : 'logged-out';
+      const error = err instanceof Error ? err : new Error(String(err));
+      return error.message === notInstalled ? { kind: 'missing' } : { kind: 'failed', error };
     }
   };
 
@@ -112,7 +205,7 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
     id: CODEX_CLI_ID,
 
     async available(): Promise<boolean> {
-      return (await loginStatus()) === 'ok';
+      return (await loginStatus()).kind === 'ok';
     },
 
     async advise(req: AdvisorRequest, signal?: AbortSignal, onActivity?: ActivityListener): Promise<AdvisorResult> {
@@ -120,8 +213,9 @@ export function createCodexCliProvider(opts: CodexCliOptions = {}): AdvisorProvi
       // minutes in into the right sentence now. This is also the sentence the
       // availability gate harvests when `available()` said no.
       const status = await loginStatus();
-      if (status === 'missing') throw new Error(notInstalled);
-      if (status === 'logged-out') throw new Error(NOT_LOGGED_IN);
+      if (status.kind === 'missing') throw new Error(notInstalled);
+      if (status.kind === 'logged-out') throw new Error(NOT_LOGGED_IN);
+      if (status.kind === 'failed') throw status.error;
 
       const args = [
         'exec',
