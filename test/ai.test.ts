@@ -52,6 +52,8 @@ import type { CandidateProjection, SlotProjection } from '../src/core/context/pr
 import type { PlanWarning } from '../src/core/ai/verify.js';
 import type { ClosableWitness } from '../src/core/context/closable.js';
 import type { PlanProjection } from '../src/core/ai/envelope.js';
+import { resolveWindowsCodexLaunch } from '../src/core/ai/codex-cli.js';
+import { MAX_TIMEOUT_MS, timerDelay } from '../src/core/ai/subprocess.js';
 
 // ---------------------------------------------------------------------------
 // A fake `claude`
@@ -642,6 +644,23 @@ function fakeCodex(respond: (run: FakeRun, child: FakeChild) => void, loggedIn =
 }
 
 describe('codex-cli provider', () => {
+  it('unwraps the Windows npm shim to the native Codex executable', () => {
+    const npm = 'C:\\Users\\me\\AppData\\Roaming\\npm';
+    const native =
+      `${npm}\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64` +
+      '\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe';
+    const files = new Set([`${npm}\\codex.cmd`, native]);
+
+    expect(resolveWindowsCodexLaunch('codex', { Path: npm }, 'x64', (path) => files.has(path))).toEqual({
+      command: native,
+      argsPrefix: [],
+    });
+    expect(resolveWindowsCodexLaunch(`${npm}\\codex.cmd`, {}, 'x64', (path) => files.has(path))).toEqual({
+      command: native,
+      argsPrefix: [],
+    });
+  });
+
   it('answers, with the reasoning streamed and the usage mapped', async () => {
     const spawn = fakeCodex((_run, child) => finish(child, codexStream(CANNED_ANSWER)));
     const provider = createCodexCliProvider({ spawn: spawn.fn });
@@ -725,6 +744,17 @@ describe('codex-cli provider', () => {
     await expect(provider.advise({ contextDoc: 'x' })).rejects.toThrow(/install the Codex CLI/);
   });
 
+  it('does not call a launch failure a login failure', async () => {
+    const broken: SpawnFn = () => {
+      const err = new Error('spawn EINVAL') as NodeJS.ErrnoException;
+      err.code = 'EINVAL';
+      throw err;
+    };
+    const provider = createCodexCliProvider({ spawn: broken });
+    expect(await provider.available()).toBe(false);
+    await expect(provider.advise({ contextDoc: 'x' })).rejects.toThrow(/could not run the codex CLI.*EINVAL/);
+  });
+
   it('surfaces the stream error when the run fails', async () => {
     const stream = `${JSON.stringify({ type: 'turn.failed', error: { message: 'model overloaded' } })}\n`;
     const spawn = fakeCodex((_run, child) => finish(child, stream, 1));
@@ -748,6 +778,14 @@ describe('codex-cli provider', () => {
     const spawn = fakeCodex((_run, child) => finish(child, stream));
     const provider = createCodexCliProvider({ spawn: spawn.fn });
     await expect(provider.advise({ contextDoc: 'x' })).rejects.toThrow(/produced no answer/);
+  });
+});
+
+describe('advisor subprocess timeout', () => {
+  it('caps oversized Node timers instead of letting them become 1 ms', () => {
+    expect(timerDelay(1_200_000)).toBe(1_200_000);
+    expect(timerDelay(999_999_999_000)).toBe(MAX_TIMEOUT_MS);
+    expect(() => timerDelay(Number.NaN)).toThrow(/invalid timeout/);
   });
 });
 

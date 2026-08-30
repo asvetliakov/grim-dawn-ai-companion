@@ -16,6 +16,21 @@ export type SpawnFn = (command: string, args: readonly string[], options: SpawnO
 
 export const defaultSpawn: SpawnFn = nodeSpawn as SpawnFn;
 
+/** Largest delay Node can represent without clamping it to 1 ms. */
+export const MAX_TIMEOUT_MS = 0x7fffffff;
+
+/**
+ * Node timers use a signed 32-bit millisecond delay. Larger values emit a
+ * TimeoutOverflowWarning and, dangerously, become 1 ms — the exact opposite of
+ * the very long timeout the reader asked for.
+ */
+export function timerDelay(timeoutMs: number): number {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`invalid timeout ${timeoutMs}ms — expected a positive finite number`);
+  }
+  return Math.min(Math.trunc(timeoutMs), MAX_TIMEOUT_MS);
+}
+
 export interface RunResult {
   code: number | null;
   stdout: string;
@@ -50,6 +65,9 @@ export function runCommand(
   signal: AbortSignal | undefined,
   opts: RunOptions,
 ): Promise<RunResult> {
+  // Validate before spawning: an invalid timeout must not leave a child behind
+  // when the Promise rejects.
+  const timeoutDelay = timerDelay(timeoutMs);
   return new Promise<RunResult>((resolve, reject) => {
     let child: ChildProcess;
     try {
@@ -92,7 +110,7 @@ export function runCommand(
     const timer = setTimeout(() => {
       timedOut = true;
       kill();
-    }, timeoutMs);
+    }, timeoutDelay);
     // The timer must not hold the process open once everything else is done.
     timer.unref?.();
     signal?.addEventListener('abort', onAbort, { once: true });

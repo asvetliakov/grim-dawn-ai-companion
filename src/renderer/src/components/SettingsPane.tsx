@@ -65,6 +65,9 @@ const CODEX_EFFORTS: readonly { id: string; label: string; note: string }[] = [
   { id: 'ultra', label: 'ultra', note: 'The deepest tier, untested for this tool. Only gpt-5.6-sol and -terra accept it.' },
 ];
 
+/** Node's setTimeout ceiling, rounded down to whole seconds. */
+const MAX_ADVISOR_TIMEOUT_SECONDS = 2_147_483;
+
 /** Every tier the schema allows, for a backend set by hand in settings.json. */
 const GENERIC_EFFORTS: readonly { id: string; label: string; note: string }[] = [
   'low',
@@ -367,12 +370,17 @@ export function SettingsPane({
           <input
             type="number"
             min={60}
+            max={MAX_ADVISOR_TIMEOUT_SECONDS}
             step={60}
             placeholder="1200"
             value={settings?.advisorTimeoutSeconds ?? ''}
-            onChange={(e) =>
-              onChange({ advisorTimeoutSeconds: e.target.value ? Number(e.target.value) : undefined })
-            }
+            onChange={(e) => {
+              const seconds = e.target.value ? Number(e.target.value) : undefined;
+              onChange({
+                advisorTimeoutSeconds:
+                  seconds === undefined ? undefined : Math.min(seconds, MAX_ADVISOR_TIMEOUT_SECONDS),
+              });
+            }}
           />
           <span className="settings-unit">seconds</span>
         </label>

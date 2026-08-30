@@ -75,7 +75,7 @@ function dataDirectory() {
  */
 function saveTree() {
   const source = JSON.parse(
-    execFileSync('npx', ['tsx', 'src/cli/index.ts', 'paths', '--json'], { encoding: 'utf8' }),
+    execFileSync(process.execPath, ['--import', 'tsx', 'src/cli/index.ts', 'paths', '--json'], { encoding: 'utf8' }),
   ).saveDir;
   const dir = mkdtempSync(join(tmpdir(), 'gd-app-saves-'));
   mkdirSync(join(dir, 'main'), { recursive: true });
