@@ -874,6 +874,36 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     expect(tight.markdown).toContain('\n## 5. Equipped');
   });
 
+  it('compresses the faction stock to counts before it gives up the rank tables', async () => {
+    // §9 is the second largest section of a stocked character's dossier and was
+    // the only bulk one the ladder could not touch, which is what put its floor
+    // above the 32k budget the builder is supposed to be able to hit. It is a
+    // shopping list, so it compresses the way §8 and §10 do — and before §4's
+    // rank tables, which are smaller and are what a candidate's `+N to <skill>`
+    // is read against.
+    const input = await context('_Suchka');
+    const full = buildContextDoc(input, { maxTokens: 200_000 });
+    const tight = buildContextDoc(input, { maxTokens: PLAN_TOKEN_BUDGET });
+
+    expect(section(full.markdown, 9)).toMatch(/^- \*\*.+use-on: /m);
+    expect(tight.trimmed).toContain('faction augment stock compressed to counts');
+    expect(tight.trimmed).not.toContain('rank-by-rank skill tables omitted');
+
+    const compressed = section(tight.markdown, 9);
+    expect(compressed).toMatch(/\d+ augment\(s\) in stock across \d+ faction tier\(s\)/);
+    expect(compressed).not.toMatch(/^- \*\*.+use-on: /m);
+    // A list withheld for size is not an empty one, and the difference decides
+    // whether re-augmenting is on the table at all — so it is said outright.
+    expect(compressed).toContain('left out to fit this document');
+    // Availability is not visibility: the socket checks measure what the
+    // character can actually obtain, exactly as they do under a compressed §8.
+    expect(tight.freeAugmentIds).toEqual(full.freeAugmentIds);
+
+    // And the rung earns its place: it is what puts the document under budget.
+    expect(tight.tokenEstimate).toBeLessThanOrEqual(PLAN_TOKEN_BUDGET);
+    expect(section(tight.markdown, 4)).toMatch(/\| \*\*\d+\*\* \|/);
+  });
+
   it('gives every rendered item a unique id', async () => {
     const doc = buildContextDoc(await context('_Suchka'));
     const ids = [...doc.markdown.matchAll(/`#(\w+)`/g)].map((m) => m[1]!);

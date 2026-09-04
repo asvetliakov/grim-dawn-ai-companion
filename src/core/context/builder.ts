@@ -189,10 +189,21 @@ export function buildContextDoc(input: ContextInput, opts: ContextOptions = {}):
     })),
     { perGroup: tightest, compressRecipes: true, note: 'blueprint section compressed to counts' },
     { perGroup: tightest, compressRecipes: true, compressCensus: true, note: 'component census compressed to counts' },
+    // The faction stock is a shopping list, so it compresses the way the other
+    // two shopping lists do — and it goes before the rank tables, which are
+    // both smaller and the thing a candidate's `+N to <skill>` is read against.
     {
       perGroup: tightest,
       compressRecipes: true,
       compressCensus: true,
+      compressAugments: true,
+      note: 'faction augment stock compressed to counts',
+    },
+    {
+      perGroup: tightest,
+      compressRecipes: true,
+      compressCensus: true,
+      compressAugments: true,
       dropRankTables: true,
       note: 'rank-by-rank skill tables omitted',
     },
@@ -245,6 +256,14 @@ interface Trim {
   projections?: boolean;
   compressRecipes?: boolean;
   compressCensus?: boolean;
+  /**
+   * §9's faction stock becomes counts per faction and tier. It is the second
+   * largest section of a stocked character's dossier — 133 augments and 6.1k
+   * tokens on the level-82 test character — and was the only bulk one with no
+   * rung at all, which is what put the ladder's floor above a 32k budget it is
+   * meant to be able to hit.
+   */
+  compressAugments?: boolean;
   /** Last resort: §4's rank-by-rank skill tables go, with a line saying so. */
   dropRankTables?: boolean;
   /** What this step gives up, for the caller to report. */
@@ -369,7 +388,7 @@ function render(
   setStatus(out, ctx);
   candidatesSection(out, ctx, selection, fodder, components, augments);
   census(out, ctx, components, augments, trim);
-  factionAugments(out, ctx);
+  factionAugments(out, ctx, trim);
   blueprints(out, ctx, selection, trim);
   task(out, ctx);
   unlockLadder(out, ctx, selection);
@@ -389,7 +408,13 @@ function render(
   }
 
   // The free half of the census, by dossier id — what the empty-socket check
-  // measures a plan against. Availability, so trimming never changes it.
+  // measures a plan against. Availability, so trimming never changes it: a
+  // compressed §8 or §9 still says how many there are, and the fact that a
+  // component is on hand does not stop being true because the list of them was
+  // shortened. The consequence is deliberate and belongs to the tight budgets
+  // alone — under `compressAugments` the socket check can name a fill the
+  // document only counted, which is why that rung's own line tells the model to
+  // propose only ids the document printed.
   const freeComponentIds = new Set<string>();
   for (const e of components.values()) {
     if (e.loose.size > 0 || (e.craft && e.craft.plan.missing.length === 0)) {
@@ -2501,12 +2526,22 @@ export function documentSocketables(input: ContextInput, recipes?: RecipeView): 
   return [...out.values()];
 }
 
-function factionAugments(out: Writer, ctx: RenderContext): void {
+function factionAugments(out: Writer, ctx: RenderContext, trim: Trim): void {
   const { save, db, aggregate } = ctx;
   out.h(2, '9. Faction augments available now');
   out.line('Only factions this character has unlocked, only tiers actually reached, only augments at or below the character\'s level. Prices are per augment; iron on hand is in §1.');
 
   const groups = vendorStock(save, db, aggregate.level);
+  if (trim.compressAugments) {
+    out.line();
+    out.line(
+      `- ${groups.reduce((n, g) => n + g.augments.length, 0)} augment(s) in stock across ${groups.length} faction tier(s): ${groups.map((g) => `${g.factionName} ${g.tier} (${g.augments.length})`).join(', ')}`,
+    );
+    // Said outright, because a list withheld for size is not a list that is
+    // empty, and the difference decides whether re-augmenting is on the table.
+    out.line('- The per-augment detail was left out to fit this document into the requested size. Recommend a purchase from this stock only by a name and id that appear elsewhere in this document.');
+    return;
+  }
   for (const group of groups) {
     out.line();
     out.line(`### ${group.factionName} — ${group.tier} (${Math.round(group.reputation).toLocaleString('en-US')} reputation)`);

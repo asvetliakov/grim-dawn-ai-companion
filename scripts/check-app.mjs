@@ -207,6 +207,16 @@ const answerText = await page.locator('.advice-answer').innerText();
 const selectable = await page.locator('.advice-answer').evaluate((element) => getComputedStyle(element).userSelect);
 check('the full answer can be selected as text', selectable === 'text', selectable);
 await page.locator('.copy-answer').click();
+// The confirmation is the perishable half of this: the label says `Copied` for
+// 1.8 s and then goes back to itself. So wait for it *before* reading the
+// clipboard — that read is a round trip to the main process, and sampling the
+// label after it raced the timeout and reported a working button as broken.
+const confirmed = await page
+  .locator('.copy-answer')
+  .filter({ hasText: 'Copied' })
+  .waitFor({ state: 'visible', timeout: 1_500 })
+  .then(() => true, () => false);
+check('with visible confirmation', confirmed);
 const copiedText = await app.evaluate(({ clipboard }) => clipboard.readText());
 const firstAnswerLine = answerText.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
 check(
@@ -214,7 +224,6 @@ check(
   copiedText.length > 0 && firstAnswerLine.length > 0 && copiedText.includes(firstAnswerLine),
   `${copiedText.length} character(s)`,
 );
-check('with visible confirmation', (await page.locator('.copy-answer').innerText()).trim() === 'Copied');
 await page.locator('.advice-tabs .tab', { hasText: 'Plan' }).click();
 // And the loadout it was written against, which is what lets a stored run say
 // whether it is still about the save in front of the reader.
