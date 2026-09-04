@@ -97,12 +97,41 @@ export interface ContextOptions {
  *
  * The document's real size is bounded by the level window in `filters.ts`, not
  * by this number: everything a normally-stocked character can reach comes to
- * roughly 36k tokens, 76k with projections on the stocked test character, and
- * no budget above that changes the file at all. The headroom is for the hoarder
- * case — a transfer stash five times that size — and it is headroom rather than
- * a knife because the only thing over the budget can cost now is the
- * projections. The receiving model has a 1M-token window, so a document that
- * runs long is a document that costs more to send, not one that cannot be read.
+ * roughly 36k tokens, and the biggest live character on the development machine
+ * is 105k with projections. The headroom is for the hoarder case — a transfer
+ * stash several times that — and it is headroom rather than a knife because the
+ * only thing over the budget can cost now is the projections.
+ *
+ * **200k is a ceiling, not a round number, and raising it would break a run
+ * rather than enlarge one.** It comes from the *smaller* of the two backends:
+ * `gpt-5.6-sol` — and every 5.4/5.5/5.6 model codex offers — has a **272k**
+ * context window (codex's own `models_cache.json`; `gpt-5.3-codex-spark` is
+ * 128k, so that model cannot take a stocked dossier at all). That window is
+ * total, and three things share it:
+ *
+ * - the dossier;
+ * - on the repair call, the *first answer* as well — every provider call is a
+ *   fresh stateless subprocess, so `buildUserTurn` re-sends the whole document
+ *   and the reply it is correcting. The stored envelopes show it plainly: two
+ *   `_Suchka` codex runs report 158,889 and 164,824 input tokens against a
+ *   document half that size;
+ * - the generation — **and reasoning is part of it, inside the window, not
+ *   beside it**. Both APIs report reasoning as a *subset* of `output_tokens`
+ *   (`reasoning_output_tokens` on codex, the thinking count on claude), which
+ *   the stored envelopes bear out at about three quarters: 18,791 of 24,246,
+ *   34,351 of 46,317. So a run that "thinks 30k tokens" has spent 30k of the
+ *   window, and the largest codex generation on record here is 30,890 in total.
+ *   What reasoning does *not* do is survive into the next call: each call is a
+ *   fresh subprocess, so the repair sends the document and the prior answer's
+ *   text, never its thinking.
+ *
+ * So the peak single request is roughly `document + 15k of prior answer + 31k
+ * of generation`, and high effort on a hoarder's dossier would push that last
+ * term further. A 200k document leaves about 25k of slack in 272k; a 250k one
+ * leaves none, and the failure arrives minutes and real money into a run rather
+ * than at the moment somebody typed the number. Claude's window is far larger
+ * and is not the constraint; the smaller backend sets this, and one constant
+ * serves both because no real document is near either limit.
  */
 export const DEFAULT_MAX_TOKENS = 200_000;
 
