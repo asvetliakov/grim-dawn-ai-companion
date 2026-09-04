@@ -79,6 +79,15 @@ export interface CharacterSnapshot {
   aggregate: CharacterAggregate;
   input: ContextInput;
   doc: ContextDoc;
+  /**
+   * The document settings this snapshot was built with, so the document the
+   * *model* reads is built with them too. `adviceScope` rebuilds — it always
+   * does, if only to switch the projections on — and it used to rebuild with
+   * the defaults, so `--max-tokens` and `--candidates` reached the snapshot's
+   * own document (which only feeds ids to the window) and never the one that
+   * was sent.
+   */
+  docOptions: { maxTokens?: number | undefined; perGroup?: number | undefined };
 }
 
 /**
@@ -159,12 +168,13 @@ export function loadSnapshot(
   const input: ContextInput = { save, aggregate, resolved, db, account };
   // No projections here: this runs on every watcher tick and its document
   // only feeds ids to the window. `adviceScope` builds the one the model reads.
-  const doc = buildContextDoc(input, {
+  const docOptions = {
     ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
     ...(opts.perGroup !== undefined ? { perGroup: opts.perGroup } : {}),
-  });
+  };
+  const doc = buildContextDoc(input, docOptions);
 
-  return { character, savePath, save, difficulty, account, resolved, aggregate, input, doc };
+  return { character, savePath, save, difficulty, account, resolved, aggregate, input, doc, docOptions };
 }
 
 /**
@@ -209,7 +219,10 @@ export function adviceScope(
     const items = snapshot.resolved.items.filter((i) => i.source !== 'stash' && i.source !== 'transfer');
     input = { ...snapshot.input, resolved: { ...snapshot.resolved, items } };
   }
-  const scope = { input, doc: buildContextDoc(input, { projections, reviewStashForSale }) };
+  const scope = {
+    input,
+    doc: buildContextDoc(input, { ...snapshot.docOptions, projections, reviewStashForSale }),
+  };
   cached.set(key, scope);
   scopeCache.set(snapshot, cached);
   return scope;

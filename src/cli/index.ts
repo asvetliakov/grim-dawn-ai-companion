@@ -1028,8 +1028,8 @@ program
   .option('-c, --char <name>', 'character directory name under <saveDir>/main')
   .option('--difficulty <d>', 'Normal | Elite | Ultimate (or 0/1/2); default: the character’s current one')
   .option('-o, --out <file>', 'write the document here instead of stdout')
-  .option('--max-tokens <n>', 'token budget the document is trimmed to fit', String(DEFAULT_MAX_TOKENS))
-  .option('--candidates <n>', 'candidates per equipment slot before trimming', String(DEFAULT_PER_GROUP))
+  .option('--max-tokens <n>', 'token budget; over it, only the §7 projections are given up', String(DEFAULT_MAX_TOKENS))
+  .option('--candidates <n>', 'candidates per equipment slot', String(DEFAULT_PER_GROUP))
   .option('--refresh', 'rebuild the database first')
   .action(
     async (opts: {
@@ -1063,7 +1063,7 @@ program
         console.error(`  built in ${buildMs.toLocaleString('en-US')} ms, incl. the save read and resolution (${doc.projections.size} candidate projections)`);
         for (const note of doc.trimmed) console.error(`  trimmed: ${note}`);
         if (doc.trimmed.length) {
-          console.error('  raise --max-tokens to keep them — the untrimmed document is bounded by the candidate level window, not by this budget');
+          console.error('  raise --max-tokens to keep them — the document is bounded by the candidate level window, not by this budget');
         }
       });
     },
@@ -1078,9 +1078,12 @@ program
  *
  * Passed explicitly rather than inherited so the prompt size is a property of
  * this command's contract: a change to the document's default budget must not
- * silently change what gets sent to the model.
+ * silently change what gets sent to the model. Raised to 200k with the
+ * document's own default, and for the same reason — over the budget the only
+ * thing given up is the projections, so the number is headroom rather than a
+ * knife, and it should be nowhere near what a real dossier costs.
  */
-const ADVISE_MAX_TOKENS = 100_000;
+const ADVISE_MAX_TOKENS = 200_000;
 
 function printPlan(plan: AdvisorPlan): void {
   const byVerdict = new Map<string, number>();

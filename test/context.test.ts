@@ -457,14 +457,17 @@ const skipReason = !haveSaves()
 
 /**
  * The plan's original ceiling. It is no longer the default — the document is
- * bounded by the candidate level window rather than by a budget — but the
- * builder must still be able to hit it on demand, because a tighter budget is
- * exactly what a smaller-context provider would ask for. Raised from 30k when
- * Stage 8 grew §4's untrimmable core (the RR categories, the build-focus
- * magnitudes and the projection guidance); the trim ladder's floor sits just
- * above the old number even with the rank tables dropped.
+ * bounded by the candidate level window rather than by a budget, and since the
+ * trim ladder lost every rung that cost the model information, a budget cannot
+ * bring it down either: over the number, all the gate gives up is §7's
+ * projections, which are arithmetic the model can redo.
+ *
+ * So this is a ceiling on what a fully stocked character *costs*, not a size
+ * the builder squeezes into. 76k with projections on the level-82 test
+ * character; 200k is the default budget and this leaves room for a stash
+ * several times the size before anything is worth a second look.
  */
-const PLAN_TOKEN_BUDGET = 32_000;
+const PLAN_TOKEN_BUDGET = 200_000;
 
 async function context(character: string, difficulty?: 'Normal' | 'Elite' | 'Ultimate'): Promise<ContextInput> {
   const db = await gameDb();
@@ -560,12 +563,15 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     }
   });
 
-  it('still fits the plan’s 30k ceiling when asked to', async () => {
-    const doc = buildContextDoc(await context('_Suchka'), { maxTokens: PLAN_TOKEN_BUDGET });
+  it('costs what a stocked character costs, whole, inside the budget', async () => {
+    const doc = buildContextDoc(await context('_Suchka'), { maxTokens: PLAN_TOKEN_BUDGET, projections: true });
     expect(doc.tokenEstimate).toBeLessThanOrEqual(PLAN_TOKEN_BUDGET);
     for (let n = 2; n <= 12; n++) {
       expect(doc.markdown, `section ${n}`).toContain(`\n## ${n}. `);
     }
+    // Whole, and provably so: the budget bought nothing away.
+    expect(doc.trimmed).toEqual([]);
+    expect(doc.projections.size).toBeGreaterThan(0);
   });
 
   it('tabulates attack, RR and moving-stat buff skills rank by rank, and states the build focus by magnitude', async () => {
@@ -861,47 +867,35 @@ describe.skipIf(!canRunLive)(`context document (${canRunLive ? 'live' : skipReas
     }
   });
 
-  it('trims progressively and reports what it gave up', async () => {
+  it('gives up the projections to a budget, and nothing else at any budget', async () => {
+    // The ladder used to step candidates down to three a slot and compress §8,
+    // §9 and §10 to counts. On this character that hid 12 of 62 candidates from
+    // the model — and from `candidateIds`, so the exhaustive-disposition check
+    // never asked about them either — and argued re-augments from a stock it
+    // had stopped printing. A smaller file is not worth a worse answer, so the
+    // gate keeps exactly one rung: the projections, which are arithmetic over
+    // figures the document still carries.
     const input = await context('_Suchka');
-    const roomy = buildContextDoc(input, { maxTokens: 200_000 });
-    const tight = buildContextDoc(input, { maxTokens: 12_000 });
+    const roomy = buildContextDoc(input, { maxTokens: 500_000, projections: true });
+    const starved = buildContextDoc(input, { maxTokens: 1_000, projections: true });
 
     expect(roomy.trimmed).toEqual([]);
-    expect(tight.trimmed.length).toBeGreaterThan(0);
-    expect(tight.markdown.length).toBeLessThan(roomy.markdown.length);
-    // The matrix and the equipped blocks survive every trim.
-    expect(tight.markdown).toContain('**permanent total**');
-    expect(tight.markdown).toContain('\n## 5. Equipped');
-  });
+    expect(starved.trimmed).toEqual(['candidate projections omitted']);
+    expect(starved.projections.size).toBe(0);
 
-  it('compresses the faction stock to counts before it gives up the rank tables', async () => {
-    // §9 is the second largest section of a stocked character's dossier and was
-    // the only bulk one the ladder could not touch, which is what put its floor
-    // above the 32k budget the builder is supposed to be able to hit. It is a
-    // shopping list, so it compresses the way §8 and §10 do — and before §4's
-    // rank tables, which are smaller and are what a candidate's `+N to <skill>`
-    // is read against.
-    const input = await context('_Suchka');
-    const full = buildContextDoc(input, { maxTokens: 200_000 });
-    const tight = buildContextDoc(input, { maxTokens: PLAN_TOKEN_BUDGET });
-
-    expect(section(full.markdown, 9)).toMatch(/^- \*\*.+use-on: /m);
-    expect(tight.trimmed).toContain('faction augment stock compressed to counts');
-    expect(tight.trimmed).not.toContain('rank-by-rank skill tables omitted');
-
-    const compressed = section(tight.markdown, 9);
-    expect(compressed).toMatch(/\d+ augment\(s\) in stock across \d+ faction tier\(s\)/);
-    expect(compressed).not.toMatch(/^- \*\*.+use-on: /m);
-    // A list withheld for size is not an empty one, and the difference decides
-    // whether re-augmenting is on the table at all — so it is said outright.
-    expect(compressed).toContain('left out to fit this document');
-    // Availability is not visibility: the socket checks measure what the
-    // character can actually obtain, exactly as they do under a compressed §8.
-    expect(tight.freeAugmentIds).toEqual(full.freeAugmentIds);
-
-    // And the rung earns its place: it is what puts the document under budget.
-    expect(tight.tokenEstimate).toBeLessThanOrEqual(PLAN_TOKEN_BUDGET);
-    expect(section(tight.markdown, 4)).toMatch(/\| \*\*\d+\*\* \|/);
+    // Everything a swap is judged on survives a budget it cannot possibly meet.
+    expect(starved.tokenEstimate).toBeGreaterThan(1_000);
+    expect(starved.candidateIds).toEqual(roomy.candidateIds);
+    expect(starved.freeComponentIds).toEqual(roomy.freeComponentIds);
+    expect(starved.freeAugmentIds).toEqual(roomy.freeAugmentIds);
+    expect(starved.markdown).toContain('**permanent total**');
+    expect(starved.markdown).toContain('\n## 5. Equipped');
+    // §8's component list, §9's augment lines, §10's reagents and §4's rank
+    // tables: each was a rung once, and each is now unconditional.
+    expect(section(starved.markdown, 8)).toContain('**Components** (');
+    expect(section(starved.markdown, 9)).toMatch(/^- \*\*.+use-on: /m);
+    expect(section(starved.markdown, 10)).toMatch(/iron — /);
+    expect(section(starved.markdown, 4)).toMatch(/\| \*\*\d+\*\* \|/);
   });
 
   it('gives every rendered item a unique id', async () => {

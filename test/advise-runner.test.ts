@@ -246,6 +246,28 @@ describe.skipIf(!live)(`the advise run manager (${MISSING_GAME_MESSAGE}; ${MISSI
     expect(adviceScope(snapshot, false, { reviewStashForSale: true }).doc.reviewStashForSale).toBe(false);
   });
 
+  it('builds the sent document with the snapshot’s own settings, not the defaults', async () => {
+    const db = await gameDb();
+    // `adviceScope` always rebuilds, if only to switch the projections on, and
+    // it used to rebuild with the defaults — so `--max-tokens` and
+    // `--candidates` shaped the snapshot's document (which only feeds ids to
+    // the window) and never the one the model was actually sent.
+    const narrow = loadSnapshot(db, resolveSettings(), { character, perGroup: 1 });
+    expect(narrow.docOptions).toEqual({ perGroup: 1 });
+
+    const sent = adviceScope(narrow, true);
+    expect(sent.doc.candidateIds.size).toBe(narrow.doc.candidateIds.size);
+    expect(sent.doc.candidateIds.size).toBeLessThan(snapshot.doc.candidateIds.size);
+    // …and the option it is asked for on top still applies.
+    expect(sent.doc.projections.size).toBeGreaterThan(0);
+
+    // A budget too small for the document costs the projections and nothing
+    // else — the one rung the gate has left.
+    const starved = adviceScope(loadSnapshot(db, resolveSettings(), { character, maxTokens: 1_000 }), true);
+    expect(starved.doc.trimmed).toEqual(['candidate projections omitted']);
+    expect(starved.doc.candidateIds.size).toBe(snapshot.doc.candidateIds.size);
+  });
+
   it('checks the plan against the document, not against the database', () => {
     const check = planCheckInput(snapshot);
     expect(check.itemsById).toBe(snapshot.doc.itemsById);

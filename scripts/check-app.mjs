@@ -349,6 +349,16 @@ await page.locator('.view-tabs .tab', { hasText: 'Raw' }).click();
 await page.locator('.context-document').waitFor({ state: 'visible', timeout: 30_000 });
 const contextText = await page.locator('.context-document').innerText();
 check('and is the real document', contextText.length > 20_000, `${contextText.length} chars`);
+// The projections are the expensive half of §7 and the half a run is measurably
+// better for having (Stage 12: −34% thinking, −27% wall). Nothing in the window
+// asks for them by name — `adviceScope` defaults them on and every main-process
+// caller goes through it — so the only way to know the window still sends them
+// is to look at the document the window itself built.
+check(
+  'and it carries the §7 projections the run is measured with',
+  contextText.includes('projected in '),
+  contextText.includes('projected in ') ? 'present' : 'MISSING — adviceScope was called without them',
+);
 const contextSubtitle = await page.locator('.modal-subtitle').innerText();
 check('titled with the character and difficulty it was built for', contextSubtitle.includes(character), contextSubtitle);
 await page.locator('.modal .chrome-button', { hasText: 'Close' }).click();
